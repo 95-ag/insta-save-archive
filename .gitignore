@@ -1,15 +1,19 @@
-
+# dependencies
 node_modules/
-
 .venv/
 
+# secrets
 .env
-
 session_cookies.json
 
+# temp media (transcription audio, OCR frames, slide images)
+tmp/
+
+# python
 __pycache__/
-
 *.pyc
+*.pyo
+.pytest_cache/
 
+# os
 .DS_Store
-

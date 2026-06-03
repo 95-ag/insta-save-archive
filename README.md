@@ -1,12 +1,17 @@
 # Insta Save Archive
 
-Crawls an Instagram saved collection and writes post metadata to a Notion database. Runs locally — no servers, no daemons.
+Crawls an Instagram saved collection, writes post metadata to Notion, and runs deep extraction on each item — transcript, OCR text, and carousel slide text. Runs locally — no servers, no daemons.
 
 ## What it does
 
-For each post in a named Instagram saved collection:
+**Phase 1 — Ingestion** (`ingest.py`): for each post in a named saved collection:
 - Extracts: author, post type (Post / Reel / Carousel / IGTV), caption, posted date, source URL
 - Deduplicates against Notion before writing — safe to re-run and interrupt
+
+**Phase 2 — Deep extraction** (`run_extraction.py`): for each item manually set to `Queued` in Notion:
+- Reels: spoken transcript via faster-whisper + on-screen text from sampled video frames
+- Carousels: per-slide OCR text in slide order
+- Stores full outputs in Notion properties; preserves all prior extractions under versioned keys in `raw_extraction`
 
 ## Requirements
 
@@ -18,16 +23,22 @@ For each post in a named Instagram saved collection:
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install system dependencies
+
+```bash
+sudo apt install ffmpeg
+```
+
+### 2. Install Python dependencies
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install playwright python-dotenv notion-client
+pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. Configure environment
+### 3. Configure environment
 
 Copy `.env.example` to `.env` and fill in all values:
 
@@ -43,8 +54,11 @@ cp .env.example .env
 | `NOTION_DATABASE_ID` | 32-character hex ID from the Notion database URL |
 | `BATCH_SIZE` | Posts per batch (default `50`, unused in Phase 1) |
 | `NOTION_WRITE_DELAY` | Seconds between Notion writes (default `0.4`) |
+| `PROCESSING_VERSION` | Version key written to `raw_extraction` (default `v1.0-base`) |
+| `WHISPER_MODEL` | faster-whisper model size: `base` or `small` (default `base`) |
+| `TMP_DIR` | Directory for temporary media files (default `tmp`) |
 
-### 3. Set up Notion
+### 4. Set up Notion
 
 1. Create a new full-page database in Notion.
 2. Go to **Settings → Integrations → Develop your own integrations** and create an integration. Copy the secret.
@@ -52,6 +66,8 @@ cp .env.example .env
 4. Copy the database ID from the URL: `notion.so/your-workspace/<DATABASE_ID>?v=...`
 
 The database must have these properties with these exact names and types:
+
+**Phase 1 (ingestion):**
 
 | Property | Type |
 |---|---|
@@ -66,7 +82,18 @@ The database must have these properties with these exact names and types:
 | `pipeline_status` | Select |
 | `failure_notes` | Text |
 
-### 4. Authenticate Instagram
+**Phase 2 (extraction) — add these before running `run_extraction.py`:**
+
+| Property | Type |
+|---|---|
+| `transcript_available` | Checkbox |
+| `transcript` | Text |
+| `ocr_text` | Text |
+| `raw_extraction` | Text |
+| `last_processed_at` | Date |
+| `processing_version` | Text |
+
+### 5. Authenticate Instagram
 
 On first run, a browser window opens at the Instagram login page. Log in manually (username/password + 2FA if enabled). The session is saved to `session_cookies.json` and reused on subsequent runs — you should only need to do this once.
 
@@ -82,7 +109,11 @@ If VcXsrv is blocked, check Windows Firewall for Block rules on the Public profi
 
 ```bash
 source .venv/bin/activate
+```
 
+### Phase 1 — Ingest a collection
+
+```bash
 # Standard run
 python ingest.py
 
@@ -106,6 +137,23 @@ Re-running on the same collection skips already-ingested posts:
 ```
 13:46:54 INFO ingest: done — created=0 skipped=36 failed=0
 ```
+
+### Phase 2 — Deep extraction
+
+In Notion, set the `pipeline_status` of items you want to process to `Queued`, then run:
+
+```bash
+# Process all Queued items
+DISPLAY=172.22.48.1:1.0 python run_extraction.py
+
+# Process up to N items
+DISPLAY=172.22.48.1:1.0 python run_extraction.py --limit 10
+
+# Reprocess a single item by shortcode
+DISPLAY=172.22.48.1:1.0 python run_extraction.py --source_id DYUjq6US1Dg
+```
+
+Each processed item transitions to `Expanded`. On failure it transitions to `Failed` with a `failure_notes` message. Re-running a previously `Expanded` item appends a new version key to `raw_extraction` without overwriting prior data — set `PROCESSING_VERSION` in `.env` to distinguish reprocessing runs.
 
 ## Common failures
 
