@@ -14,6 +14,9 @@ class Config:
     target_collection: str
     batch_size: int
     notion_write_delay: float
+    processing_version: str
+    whisper_model: str
+    tmp_dir: str
 
 
 def load_config() -> Config:
@@ -52,6 +55,10 @@ def load_config() -> Config:
         missing.append("NOTION_WRITE_DELAY (must be a float)")
         notion_write_delay = 0.0
 
+    processing_version = os.getenv("PROCESSING_VERSION", "v1.0-base").strip()
+    whisper_model = os.getenv("WHISPER_MODEL", "base").strip()
+    tmp_dir = os.getenv("TMP_DIR", "tmp").strip()
+
     if missing:
         raise RuntimeError(
             "Missing or invalid required configuration:\n"
@@ -66,6 +73,9 @@ def load_config() -> Config:
         target_collection=target_collection,
         batch_size=batch_size,
         notion_write_delay=notion_write_delay,
+        processing_version=processing_version,
+        whisper_model=whisper_model,
+        tmp_dir=tmp_dir,
     )
 
 
