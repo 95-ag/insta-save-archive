@@ -52,7 +52,7 @@ def _resolve_collection_url(page, config: Config) -> str:
     saved_index = f"{INSTAGRAM_BASE}/{config.ig_username}/saved/"
     log.info("crawler: navigating to saved index to find collection '%s'", config.target_collection)
     page.goto(saved_index, wait_until="domcontentloaded", timeout=20_000)
-    time.sleep(2)
+    time.sleep(4)
 
     links = page.locator(COLLECTION_LINK_SELECTOR).all()
     target = config.target_collection.lower()
