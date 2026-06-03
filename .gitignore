@@ -1,0 +1,15 @@
+
+node_modules/
+
+.venv/
+
+.env
+
+session_cookies.json
+
+__pycache__/
+
+*.pyc
+
+.DS_Store
+
