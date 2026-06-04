@@ -13,9 +13,9 @@ import logging
 import sys
 import time
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, BrowserContext
 
-from config import load_config, validate_notion_config
+from config import Config, load_config, validate_notion_config
 from crawler import crawl_collection
 from extractor import extract_post
 from notion import create_page, query_by_source_id
@@ -24,47 +24,56 @@ from session import ensure_authenticated
 log = logging.getLogger(__name__)
 
 
+def ingest_with_context(context: BrowserContext, config: Config) -> dict:
+    """
+    Ingest one collection using an existing Playwright context.
+    Returns {"created": int, "skipped": int, "failed": int}.
+    Caller owns the browser lifecycle.
+    """
+    urls = crawl_collection(context, config)
+    log.info("ingest: found %d post URLs for %r", len(urls), config.target_collection)
+
+    created = skipped = failed = 0
+
+    for i, url in enumerate(urls, 1):
+        log.info("ingest: [%d/%d] %s", i, len(urls), url)
+
+        metadata = extract_post(context, url, config.target_collection)
+        source_id = metadata.get("source_id")
+
+        if not source_id:
+            log.warning("ingest: could not parse source_id from %s — skipping", url)
+            failed += 1
+            continue
+
+        existing = query_by_source_id(config, source_id)
+        if existing:
+            log.info("ingest: %s already exists (%s) — skipping", source_id, existing)
+            skipped += 1
+            continue
+
+        try:
+            page_id = create_page(config, metadata)
+            log.info("ingest: created %s → %s", source_id, page_id)
+            created += 1
+        except Exception as exc:
+            log.error("ingest: failed to write %s — %s", source_id, exc)
+            failed += 1
+
+        time.sleep(config.notion_write_delay)
+
+    return {"created": created, "skipped": skipped, "failed": failed}
+
+
 def run(headless: bool = True) -> None:
     config = load_config()
     validate_notion_config(config)
-
     log.info("ingest: starting — collection=%r", config.target_collection)
 
     with sync_playwright() as pw:
         browser, context = ensure_authenticated(pw, headless=headless)
         try:
-            urls = crawl_collection(context, config)
-            log.info("ingest: found %d post URLs", len(urls))
-
-            created = skipped = failed = 0
-
-            for i, url in enumerate(urls, 1):
-                log.info("ingest: [%d/%d] %s", i, len(urls), url)
-
-                metadata = extract_post(context, url, config.target_collection)
-                source_id = metadata.get("source_id")
-
-                if not source_id:
-                    log.warning("ingest: could not parse source_id from %s — skipping", url)
-                    failed += 1
-                    continue
-
-                existing = query_by_source_id(config, source_id)
-                if existing:
-                    log.info("ingest: %s already exists (%s) — skipping", source_id, existing)
-                    skipped += 1
-                    continue
-
-                try:
-                    page_id = create_page(config, metadata)
-                    log.info("ingest: created %s → %s", source_id, page_id)
-                    created += 1
-                except Exception as exc:
-                    log.error("ingest: failed to write %s — %s", source_id, exc)
-                    failed += 1
-
-                time.sleep(config.notion_write_delay)
-
+            stats = ingest_with_context(context, config)
         finally:
             browser.close()
             if not headless:
@@ -73,7 +82,7 @@ def run(headless: bool = True) -> None:
 
     log.info(
         "ingest: done — created=%d skipped=%d failed=%d",
-        created, skipped, failed,
+        stats["created"], stats["skipped"], stats["failed"],
     )
 
 
