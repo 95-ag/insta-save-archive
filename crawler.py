@@ -144,11 +144,16 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
+    import argparse
+    parser = argparse.ArgumentParser(description="Crawl an Instagram collection.")
+    parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
+    args = parser.parse_args()
+
     from config import load_config
     config = load_config()
 
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw)
+        browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
             urls = crawl_collection(context, config)
             print(f"\n{len(urls)} posts in '{config.target_collection}':")
@@ -159,3 +164,6 @@ if __name__ == "__main__":
             sys.exit(1)
         finally:
             browser.close()
+            if args.headed:
+                from display import close_display
+                close_display()

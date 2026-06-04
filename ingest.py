@@ -24,14 +24,14 @@ from session import ensure_authenticated
 log = logging.getLogger(__name__)
 
 
-def run() -> None:
+def run(headless: bool = True) -> None:
     config = load_config()
     validate_notion_config(config)
 
     log.info("ingest: starting — collection=%r", config.target_collection)
 
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw)
+        browser, context = ensure_authenticated(pw, headless=headless)
         try:
             urls = crawl_collection(context, config)
             log.info("ingest: found %d post URLs", len(urls))
@@ -67,6 +67,9 @@ def run() -> None:
 
         finally:
             browser.close()
+            if not headless:
+                from display import close_display
+                close_display()
 
     log.info(
         "ingest: done — created=%d skipped=%d failed=%d",
@@ -75,9 +78,13 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    run()
+    parser = argparse.ArgumentParser(description="Ingest Instagram collection into Notion.")
+    parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
+    args = parser.parse_args()
+    run(headless=not args.headed)

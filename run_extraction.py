@@ -5,9 +5,7 @@ Usage:
     python run_extraction.py                    # process all Queued items
     python run_extraction.py --limit 10         # process up to 10 items
     python run_extraction.py --source_id XXXXX  # process one specific item
-
-WSL display note:
-    DISPLAY=172.22.48.1:1.0 python run_extraction.py
+    python run_extraction.py --headed           # show browser window (auto-launches VcXsrv)
 """
 
 import argparse
@@ -39,6 +37,7 @@ def main() -> None:
         metavar="ID",
         help="Process only the item with this source_id (shortcode)",
     )
+    parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -52,7 +51,7 @@ def main() -> None:
     validate_notion_config(config)
 
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw)
+        browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
             result = run_queue(
                 config=config,
@@ -62,6 +61,9 @@ def main() -> None:
             )
         finally:
             browser.close()
+            if args.headed:
+                from display import close_display
+                close_display()
 
     sys.exit(0 if result["failed"] == 0 else 1)
 

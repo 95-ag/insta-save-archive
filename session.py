@@ -32,10 +32,13 @@ LOGIN_WAIT_TIMEOUT = 300_000 # ms — 5 min for manual login + 2FA
 log = logging.getLogger(__name__)
 
 
-def _launch_browser(playwright: Playwright) -> Browser:
+def _launch_browser(playwright: Playwright, headless: bool = True) -> Browser:
+    if not headless:
+        from display import ensure_display
+        ensure_display()
     return playwright.chromium.launch(
-        headless=False,
-        slow_mo=80,
+        headless=headless,
+        slow_mo=80 if not headless else 0,
         args=[
             "--no-sandbox",
             "--disable-gpu",
@@ -107,16 +110,18 @@ def _run_login(page, context: BrowserContext) -> None:
     _save_cookies(context)
 
 
-def ensure_authenticated(playwright: Playwright) -> tuple[Browser, BrowserContext]:
+def ensure_authenticated(playwright: Playwright, headless: bool = True) -> tuple[Browser, BrowserContext]:
     """
     Returns an authenticated (Browser, BrowserContext) pair.
 
     On first run: opens a browser window for manual login, saves cookies.
     On subsequent runs: loads cookies and validates — re-auths only if needed.
+    Re-auth always runs headed (requires visible browser for manual login).
+    If called headless and cookies are expired, relaunches headed automatically.
 
     The caller is responsible for closing the browser when done.
     """
-    browser = _launch_browser(playwright)
+    browser = _launch_browser(playwright, headless=headless)
     context = _new_context(browser)
 
     had_cookies = _load_cookies(context)
@@ -133,6 +138,18 @@ def ensure_authenticated(playwright: Playwright) -> tuple[Browser, BrowserContex
         if not had_cookies:
             _save_cookies(context)
     else:
+        if headless:
+            log.warning(
+                "session: cookies expired — re-auth requires a headed browser; relaunching headed"
+            )
+            page.close()
+            browser.close()
+            browser = _launch_browser(playwright, headless=False)
+            context = _new_context(browser)
+            _load_cookies(context)
+            page = context.new_page()
+            page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+            time.sleep(1)
         log.info("session: status=expired — starting re-auth")
         _run_login(page, context)
 
@@ -141,6 +158,7 @@ def ensure_authenticated(playwright: Playwright) -> tuple[Browser, BrowserContex
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
     from playwright.sync_api import sync_playwright
 
@@ -150,11 +168,18 @@ if __name__ == "__main__":
         datefmt="%H:%M:%S",
     )
 
+    parser = argparse.ArgumentParser(description="Instagram session health check.")
+    parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
+    args = parser.parse_args()
+
     with sync_playwright() as pw:
         try:
-            browser, context = ensure_authenticated(pw)
+            browser, context = ensure_authenticated(pw, headless=not args.headed)
             print("\nsession OK — authenticated and ready")
             browser.close()
+            if args.headed:
+                from display import close_display
+                close_display()
             sys.exit(0)
         except Exception as e:
             print(f"\nsession FAILED: {e}", file=sys.stderr)

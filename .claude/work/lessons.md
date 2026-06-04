@@ -8,7 +8,13 @@ One entry per lesson. Lead with the rule. Keep it to 2–3 lines max. Add/remove
 
 **Assumption validation is a task.** Add it to tasks.md. Include a cleanup step. Mark done only after findings are documented and artifacts resolved.
 
-**Playwright on this machine requires VcXsrv.** WSLg windows are non-interactable. All Playwright runs: `DISPLAY=172.22.48.1:1.0`. VcXsrv must be running on `:1` (`vcxsrv.exe :1 -multiwindow -ac -noclipboard` from Windows).
+**Headed Playwright is opt-in; headless is the default.** `display.py` handles all X setup. Run with `--headed` for a visible browser; omit for headless (no VcXsrv needed). `display.py` auto-detects IP, auto-launches VcXsrv, and closes it after use.
+
+**WSL2 Windows host IP comes from `ip route`, not `/etc/resolv.conf`.** The nameserver in `/etc/resolv.conf` is the NAT gateway (e.g. `10.255.255.254`) — unreachable for X11. The default gateway from `ip route show default` is the WSL adapter IP (e.g. `172.22.48.1`) — where VcXsrv actually listens. These are different addresses.
+
+**VcXsrv must be launched directly with `:1 -multiwindow -ac -noclipboard`.** XLaunch (GUI) uses `-displayfd` for dynamic display assignment — do not use it. Launch via PowerShell `Start-Process` from WSL. `cmd.exe /c start` silently fails due to UNC path rejection when CWD is inside WSL.
+
+**Hyper-V NAT firewall blocks inbound rules for WSL2.** `New-NetFirewallHyperVRule` with `NATInboundRuleNotApplicable` means the rule was accepted but doesn't apply. The WSL adapter IP (gateway) bypasses this — use it instead of the NAT gateway IP.
 
 **Commit lessons.md with tasks.md and session.md.** When closing out a phase or task group, stage all three together — tasks, session, and lessons — in the same commit. Never leave lessons behind.
 
