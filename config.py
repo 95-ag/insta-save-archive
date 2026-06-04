@@ -17,6 +17,9 @@ class Config:
     processing_version: str
     whisper_model: str
     tmp_dir: str
+    anthropic_api_key: str
+    enrichment_model: str
+    enrichment_version: str
 
 
 def load_config() -> Config:
@@ -59,6 +62,11 @@ def load_config() -> Config:
     whisper_model = os.getenv("WHISPER_MODEL", "base").strip()
     tmp_dir = os.getenv("TMP_DIR", "tmp").strip()
 
+    # Enrichment config — optional at startup; validated by validate_enrichment_config()
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    enrichment_model = os.getenv("ENRICHMENT_MODEL", "claude-opus-4-5").strip()
+    enrichment_version = os.getenv("ENRICHMENT_VERSION", "v1.0-enrich").strip()
+
     if missing:
         raise RuntimeError(
             "Missing or invalid required configuration:\n"
@@ -76,6 +84,9 @@ def load_config() -> Config:
         processing_version=processing_version,
         whisper_model=whisper_model,
         tmp_dir=tmp_dir,
+        anthropic_api_key=anthropic_api_key,
+        enrichment_model=enrichment_model,
+        enrichment_version=enrichment_version,
     )
 
 

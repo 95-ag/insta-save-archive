@@ -339,3 +339,90 @@ def write_extraction(config: Config, page_id: str, results: dict) -> None:
         raise RuntimeError(
             f"notion: failed to write extraction for {page_id}: {e}"
         ) from e
+
+
+def get_page_content(config: Config, page_id: str) -> dict:
+    """
+    Retrieve all fields needed for Phase 3 enrichment from a Notion page.
+
+    Returns dict with keys:
+      page_id, source_id, title, author, type, collection (list[str]),
+      caption, transcript, ocr_text, expanded_summary (None = not yet enriched).
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    page = client.pages.retrieve(page_id=page_id)
+    props = page.get("properties", {})
+
+    def _text(prop_name: str) -> str | None:
+        blocks = props.get(prop_name, {}).get("rich_text", [])
+        return "".join(b["text"]["content"] for b in blocks) or None
+
+    def _title_text() -> str | None:
+        blocks = props.get("title", {}).get("title", [])
+        return "".join(b["text"]["content"] for b in blocks) or None
+
+    def _select_val(prop_name: str) -> str | None:
+        sel = props.get(prop_name, {}).get("select")
+        return sel["name"] if sel else None
+
+    def _multi_select_vals(prop_name: str) -> list[str]:
+        items = props.get(prop_name, {}).get("multi_select", [])
+        return [item["name"] for item in items]
+
+    return {
+        "page_id": page_id,
+        "source_id": _text("source_id"),
+        "title": _title_text(),
+        "author": _text("author"),
+        "type": _select_val("type"),
+        "collection": _multi_select_vals("collection"),
+        "caption": _text("caption"),
+        "transcript": _text("transcript"),
+        "ocr_text": _text("ocr_text"),
+        "expanded_summary": _text("expanded_summary"),  # None = not yet enriched
+    }
+
+
+def write_enrichment(config: Config, page_id: str, enrichment: dict, version: str) -> None:
+    """
+    Write Phase 3 enrichment fields to a Notion page.
+
+    enrichment keys: title (str), expanded_summary (str),
+                     key_insights (list[str]), extracted_externals (str).
+
+    Does NOT touch pipeline_status or raw_extraction.
+    Updates title, expanded_summary, key_insights, extracted_externals,
+    processing_version, last_processed_at.
+    """
+    import datetime
+
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+
+    key_insights_text = "\n".join(
+        f"• {insight}" for insight in (enrichment.get("key_insights") or [])
+    )
+
+    props: dict = {
+        "title": _title(enrichment["title"]),
+        "processing_version": _rich_text(version),
+        "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
+    }
+
+    if enrichment.get("expanded_summary"):
+        props["expanded_summary"] = _rich_text_chunked(enrichment["expanded_summary"])
+
+    if key_insights_text:
+        props["key_insights"] = _rich_text_chunked(key_insights_text)
+
+    if enrichment.get("extracted_externals"):
+        props["extracted_externals"] = _rich_text_chunked(enrichment["extracted_externals"])
+
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: wrote enrichment %s for page %s", version, page_id)
+    except APIResponseError as e:
+        raise RuntimeError(
+            f"notion: failed to write enrichment for {page_id}: {e}"
+        ) from e
