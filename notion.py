@@ -212,6 +212,61 @@ def query_by_status(config: Config, status: str) -> list[dict]:
     return results
 
 
+def mark_queued(config: Config, page_id: str) -> None:
+    """Set pipeline_status to Queued on an existing page."""
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    try:
+        client.pages.update(
+            page_id=page_id,
+            properties={"pipeline_status": _select("Queued")},
+        )
+        log.info("notion: marked %s as Queued", page_id)
+    except APIResponseError as e:
+        log.error("notion: could not mark %s as Queued: %s", page_id, e)
+
+
+def query_by_collection_and_status(
+    config: Config, collection_name: str, status: str
+) -> list[dict]:
+    """
+    Returns pages where collection contains collection_name AND
+    pipeline_status equals status.
+    Each item: {"page_id": str, "source_id": str}.
+    Paginates automatically.
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    ds_id = _get_data_source_id(client, config.notion_database_id)
+
+    results = []
+    cursor = None
+    while True:
+        kwargs = {
+            "filter": {
+                "and": [
+                    {"property": "pipeline_status", "select": {"equals": status}},
+                    {"property": "collection", "multi_select": {"contains": collection_name}},
+                ]
+            }
+        }
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = client.data_sources.query(ds_id, **kwargs)
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            source_id_blocks = props.get("source_id", {}).get("rich_text", [])
+            results.append({
+                "page_id": page["id"],
+                "source_id": source_id_blocks[0]["text"]["content"] if source_id_blocks else None,
+            })
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
+    return results
+
+
 def write_extraction(config: Config, page_id: str, results: dict) -> None:
     """
     Writes Stage 2 extraction results back to an existing Notion page.
