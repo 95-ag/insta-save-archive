@@ -2,7 +2,7 @@
 
 ## Current state
 
-**Phase 2 COMPLETE.** All exit criteria met. Phase 3 may begin.
+**Phase 2 COMPLETE.** Headless-default + headed auto-setup shipped (commit `13500be`). Phase 3 may begin.
 
 ## Phase 2 exit criteria (verified 2026-06-03)
 
