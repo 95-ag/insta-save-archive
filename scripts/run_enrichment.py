@@ -1,33 +1,64 @@
 """
-Phase 3 enrichment CLI.
+Phase 3 enrichment CLI (Anthropic API).
 
-Queries Expanded items from Notion, calls Claude to generate enrichment fields,
-writes title / expanded_summary / key_insights / extracted_externals back.
+Queries Enriched items from Notion (post-local Ollama pass), calls Claude via API
+to generate expanded_summary and key_insights, writes them back.
 
+Title and extracted_externals are NOT touched — written by the local Ollama pass.
 By default skips items that already have expanded_summary populated (idempotent).
 Use --force to overwrite existing enrichment.
 
+For Claude Code session-based enrichment (no API key needed), use:
+  python scripts/run_enrichment_claude_code.py
+
 Usage:
-    python run_enrichment.py                          # all Expanded, skip enriched
-    python run_enrichment.py --limit 5               # first 5 items
-    python run_enrichment.py --source_id DYet7HfCwpj # single item
-    python run_enrichment.py --dry-run               # print output, no writes
-    python run_enrichment.py --force                 # overwrite existing enrichment
+    python scripts/run_enrichment.py                              # all Enriched items
+    python scripts/run_enrichment.py --collection "<NAME>"        # one collection in priority order
+    python scripts/run_enrichment.py --limit 5                    # first 5 items
+    python scripts/run_enrichment.py --source_id DYet7HfCwpj     # single item
+    python scripts/run_enrichment.py --dry-run                    # print output, no writes
+    python scripts/run_enrichment.py --force                      # overwrite existing enrichment
 """
 
 import logging
 import sys
 
+from pipeline.collections import pilot_collections_by_enrichment_priority
 from pipeline.config import load_config
 from pipeline.enrich_claude import enrich_item, validate_enrichment_config
-from pipeline.notion import get_page_content, query_by_source_id, query_by_status, write_enrichment
+from pipeline.notion import (
+    get_page_content,
+    query_by_collection_and_status,
+    query_by_source_id,
+    query_by_status,
+    write_enrichment,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _collect_items(config, collection: str | None) -> list[dict]:
+    """
+    Return Enriched item stubs to process.
+
+    If collection is given, queries that collection only (must be in priority list).
+    Otherwise returns all Enriched items across the database.
+    """
+    if collection:
+        priority_names = [c.name for c in pilot_collections_by_enrichment_priority()]
+        if collection not in priority_names:
+            log.warning(
+                "_collect_items: %r not in enrichment priority list — querying anyway",
+                collection,
+            )
+        return query_by_collection_and_status(config, collection, "Enriched")
+    return query_by_status(config, "Enriched")
 
 
 def run(
     limit: int | None = None,
     source_id: str | None = None,
+    collection: str | None = None,
     dry_run: bool = False,
     force: bool = False,
 ) -> None:
@@ -41,7 +72,7 @@ def run(
             sys.exit(1)
         items = [{"page_id": page_id, "source_id": source_id}]
     else:
-        items = query_by_status(config, "Expanded")
+        items = _collect_items(config, collection)
         if limit:
             items = items[:limit]
 
@@ -62,7 +93,7 @@ def run(
 
         if not force and content.get("expanded_summary"):
             log.info(
-                "run_enrichment: %s already enriched — skipping (use --force to overwrite)", sid
+                "run_enrichment: %s already has summary — skipping (use --force to overwrite)", sid
             )
             skipped += 1
             continue
@@ -76,16 +107,14 @@ def run(
 
         if dry_run:
             print(f"\n--- {sid} ---")
-            print(f"Title:     {result.get('title')}")
             print(f"Summary:   {(result.get('expanded_summary') or '')[:300]}...")
             print(f"Insights:  {result.get('key_insights')}")
-            print(f"Externals: {(result.get('extracted_externals') or '')[:200]}...")
             enriched += 1
             continue
 
         try:
             write_enrichment(config, page_id, result, config.enrichment_version)
-            log.info("run_enrichment: enriched %s", sid)
+            log.info("run_enrichment: wrote enrichment for %s", sid)
             enriched += 1
         except Exception as exc:
             log.error("run_enrichment: failed to write enrichment for %s — %s", sid, exc)
@@ -100,15 +129,25 @@ def run(
 
 if __name__ == "__main__":
     import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    parser = argparse.ArgumentParser(description="Run Phase 3 AI enrichment on Expanded items.")
+    parser = argparse.ArgumentParser(
+        description="Run Phase 3 AI enrichment (Anthropic API) on Enriched items."
+    )
     parser.add_argument("--limit", type=int, metavar="N", help="Process at most N items.")
     parser.add_argument("--source_id", metavar="SHORTCODE", help="Enrich a single item by shortcode.")
+    parser.add_argument("--collection", metavar="NAME", help="Enrich only items from this collection.")
     parser.add_argument("--dry-run", action="store_true", help="Print enrichment output without writing.")
     parser.add_argument("--force", action="store_true", help="Overwrite existing enrichment fields.")
     args = parser.parse_args()
-    run(limit=args.limit, source_id=args.source_id, dry_run=args.dry_run, force=args.force)
+    run(
+        limit=args.limit,
+        source_id=args.source_id,
+        collection=args.collection,
+        dry_run=args.dry_run,
+        force=args.force,
+    )

@@ -1,8 +1,11 @@
 """
-Phase 3 enrichment — AI-generated title, summary, insights, and externals.
+Phase 3 enrichment — AI-generated summary and insights.
 
 Uses the Anthropic API with tool_use to enforce structured output.
 Prompt template loaded from prompts/enrichment_{version}.txt.
+
+Title and extracted_externals are written by the local Ollama pass (enrich_local.py).
+This module writes only expanded_summary and key_insights — sets status Summarised.
 
 Exposes:
   validate_enrichment_config  — check ANTHROPIC_API_KEY is set
@@ -19,37 +22,30 @@ from pipeline.config import Config
 log = logging.getLogger(__name__)
 
 # Tool definition — Claude must call this; tool_use enforces structured output.
+# Title and extracted_externals are handled by the local Ollama pass — not written here.
 _SAVE_ENRICHMENT_TOOL = {
     "name": "save_enrichment",
-    "description": "Write enrichment fields for a saved Instagram post",
+    "description": "Write AI-generated summary and insights for a saved Instagram post",
     "input_schema": {
         "type": "object",
         "properties": {
-            "title": {
-                "type": "string",
-                "description": "Concise, descriptive title. Not the caption. Max 80 chars.",
-            },
             "expanded_summary": {
                 "type": "string",
                 "description": (
                     "Full content summary. 2-4 paragraphs. "
-                    "Sufficient to understand the content without watching the original."
+                    "Enough to replace rewatching. Capture the method, reasoning, and details."
                 ),
             },
             "key_insights": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "3-7 distilled, transferable, actionable insights.",
-            },
-            "extracted_externals": {
-                "type": "string",
                 "description": (
-                    "Every tool, app, product, brand, creator, technique, or location mentioned. "
-                    "One per line: [type] name — context."
+                    "3-7 transferable, actionable insights. "
+                    "Reusable principles, not a recap of the content."
                 ),
             },
         },
-        "required": ["title", "expanded_summary", "key_insights", "extracted_externals"],
+        "required": ["expanded_summary", "key_insights"],
     },
 }
 
@@ -77,7 +73,7 @@ def enrich_item(config: Config, item: dict) -> dict:
 
     item keys used: author, type, collection (list), caption, transcript, ocr_text.
 
-    Returns dict with keys: title, expanded_summary, key_insights (list), extracted_externals.
+    Returns dict with keys: expanded_summary (str), key_insights (list[str]).
     Raises RuntimeError if Claude does not return a valid tool call.
     """
     template = _load_prompt_template(config.enrichment_version)

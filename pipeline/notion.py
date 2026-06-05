@@ -386,14 +386,13 @@ def get_page_content(config: Config, page_id: str) -> dict:
 
 def write_enrichment(config: Config, page_id: str, enrichment: dict, version: str) -> None:
     """
-    Write Phase 3 enrichment fields to a Notion page.
+    Write Phase 3 Claude enrichment fields to a Notion page.
 
-    enrichment keys: title (str), expanded_summary (str),
-                     key_insights (list[str]), extracted_externals (str).
+    enrichment keys: expanded_summary (str), key_insights (list[str]).
 
-    Sets pipeline_status to Summarised. Does NOT touch raw_extraction.
-    Updates title, expanded_summary, key_insights, extracted_externals,
-    processing_version, last_processed_at.
+    Sets pipeline_status to Summarised. Does NOT touch title, extracted_externals,
+    or raw_extraction — those are written by the local Ollama pass.
+    Updates expanded_summary, key_insights, processing_version, last_processed_at.
     """
     import datetime
 
@@ -406,7 +405,6 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
 
     props: dict = {
         "pipeline_status": _select("Summarised"),
-        "title": _title(enrichment["title"]),
         "processing_version": _rich_text(version),
         "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
     }
@@ -416,9 +414,6 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
 
     if key_insights_text:
         props["key_insights"] = _rich_text_chunked(key_insights_text)
-
-    if enrichment.get("extracted_externals"):
-        props["extracted_externals"] = _rich_text_chunked(enrichment["extracted_externals"])
 
     try:
         client.pages.update(page_id=page_id, properties=props)

@@ -79,6 +79,25 @@ def pilot_collections() -> list[CollectionEntry]:
     return [e for e in ordered_for_ingestion() if e.extract]
 
 
+def pilot_collections_by_enrichment_priority() -> list[CollectionEntry]:
+    """
+    Return collections that have enrichment_order set in config/collections.json,
+    sorted ascending by that value. Collections without enrichment_order are excluded.
+
+    enrichment_order is set manually in config/collections.json:
+      "enrichment_order": 1   ← first priority
+      "enrichment_order": 2   ← second priority
+      (absent or null)        ← not in Claude enrichment scope
+    """
+    data = json.loads(_COLLECTIONS_FILE.read_text(encoding="utf-8"))
+    ordered = [
+        (meta["enrichment_order"], entry)
+        for entry in COLLECTIONS
+        if (meta := data.get(entry.name, {})).get("enrichment_order") is not None
+    ]
+    return [entry for _, entry in sorted(ordered, key=lambda x: x[0])]
+
+
 def classify_new_collection(name: str) -> str:
     """
     Interactive prompt to assign a new collection to a group.
