@@ -17,6 +17,7 @@ Usage:
 import logging
 import re
 import sys
+import time
 
 from pipeline.config import load_config
 from pipeline.enrich_local import enrich_local, validate_local_enrichment_config
@@ -56,11 +57,19 @@ def run(
 
     log.info("run_enrichment_local: %d items to process", len(items))
     enriched = skipped = failed = 0
+    t_start = time.time()
 
     for i, stub in enumerate(items, 1):
         page_id = stub["page_id"]
         sid = stub.get("source_id", page_id)
-        log.info("run_enrichment_local: [%d/%d] %s", i, len(items), sid)
+        if i > 1:
+            elapsed_so_far = time.time() - t_start
+            avg = elapsed_so_far / (i - 1)
+            eta_secs = int(avg * (len(items) - i + 1))
+            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
+        else:
+            eta_str = ""
+        log.info("run_enrichment_local: [%d/%d] %s%s", i, len(items), sid, eta_str)
 
         try:
             content = get_page_content(config, page_id)
@@ -101,8 +110,13 @@ def run(
             log.error("run_enrichment_local: write failed for %s — %s", sid, exc)
             failed += 1
 
+    elapsed = int(time.time() - t_start)
     action = "dry-run" if dry_run else "enriched"
-    log.info("run_enrichment_local: done — %s=%d skipped=%d failed=%d", action, enriched, skipped, failed)
+    print(flush=True)
+    print("=" * 50, flush=True)
+    print(f"  DONE — {action}={enriched}  skipped={skipped}  failed={failed}", flush=True)
+    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
+    print("=" * 50, flush=True)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ Usage:
 import dataclasses
 import logging
 import sys
+import time
 
 from playwright.sync_api import sync_playwright
 
@@ -57,10 +58,17 @@ def run(headless: bool = True, start_from_group: str | None = None, dry_run: boo
         browser, context = ensure_authenticated(pw, headless=headless)
         try:
             total_created = total_skipped = total_failed = 0
+            t_start = time.time()
             for i, entry in enumerate(collections, 1):
+                if i > 1:
+                    avg = (time.time() - t_start) / (i - 1)
+                    eta_secs = int(avg * (len(collections) - i + 1))
+                    eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
+                else:
+                    eta_str = ""
                 log.info(
-                    "batch: [%d/%d] %s (%s)",
-                    i, len(collections), entry.name, entry.group,
+                    "batch: [%d/%d] %s (%s)%s",
+                    i, len(collections), entry.name, entry.group, eta_str,
                 )
                 col_config = dataclasses.replace(config, target_collection=entry.name)
                 stats = ingest_with_context(context, col_config)
@@ -77,10 +85,12 @@ def run(headless: bool = True, start_from_group: str | None = None, dry_run: boo
                 from pipeline.display import close_display
                 close_display()
 
-    log.info(
-        "batch: complete — total created=%d skipped=%d failed=%d",
-        total_created, total_skipped, total_failed,
-    )
+    elapsed = int(time.time() - t_start)
+    print(flush=True)
+    print("=" * 50, flush=True)
+    print(f"  DONE — created={total_created}  skipped={total_skipped}  failed={total_failed}", flush=True)
+    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
+    print("=" * 50, flush=True)
 
 
 if __name__ == "__main__":

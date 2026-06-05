@@ -22,6 +22,7 @@ Usage:
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 from pipeline.collections import pilot_collections_by_enrichment_priority
@@ -75,10 +76,17 @@ def prepare(collection_name: str) -> None:
 
     log.info("prepare: fetching content for %d items", len(stubs))
     items = []
+    t_fetch = time.time()
     for i, stub in enumerate(stubs, 1):
         page_id = stub["page_id"]
         sid = stub.get("source_id", page_id)
-        log.info("prepare: [%d/%d] %s", i, len(stubs), sid)
+        if i > 1:
+            avg = (time.time() - t_fetch) / (i - 1)
+            eta_secs = int(avg * (len(stubs) - i + 1))
+            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
+        else:
+            eta_str = ""
+        log.info("prepare: [%d/%d] %s%s", i, len(stubs), sid, eta_str)
         try:
             content = get_page_content(config, page_id)
             items.append(content)
@@ -176,10 +184,18 @@ def upload() -> None:
 
     config = load_config()
     written = failed = 0
+    t_start = time.time()
 
-    for item in results:
+    for i, item in enumerate(results, 1):
         page_id = item.get("page_id")
         sid = item.get("source_id", page_id)
+        if i > 1:
+            avg = (time.time() - t_start) / (i - 1)
+            eta_secs = int(avg * (len(results) - i + 1))
+            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
+        else:
+            eta_str = ""
+        log.info("upload: [%d/%d] %s%s", i, len(results), sid, eta_str)
 
         if not page_id:
             log.error("upload: item missing page_id — %s", item)
@@ -204,7 +220,12 @@ def upload() -> None:
             log.error("upload: failed for %s — %s", sid, exc)
             failed += 1
 
-    log.info("upload: done — written=%d failed=%d", written, failed)
+    elapsed = int(time.time() - t_start)
+    print(flush=True)
+    print("=" * 50, flush=True)
+    print(f"  DONE — written={written}  failed={failed}", flush=True)
+    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
+    print("=" * 50, flush=True)
 
     if failed == 0 and written > 0:
         for path in [_BATCH_FILE, _PROMPT_FILE, _RESULTS_FILE]:

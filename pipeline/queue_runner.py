@@ -150,10 +150,17 @@ def run_queue(
         items = items[:limit]
 
     expanded = failed = skipped = 0
+    t_start = time.time()
 
     for i, item in enumerate(items, 1):
         sid = item["source_id"]
-        log.info("queue: [%d/%d] %s", i, len(items), sid)
+        if i > 1:
+            avg = (time.time() - t_start) / (i - 1)
+            eta_secs = int(avg * (len(items) - i + 1))
+            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
+        else:
+            eta_str = ""
+        log.info("queue: [%d/%d] %s%s", i, len(items), sid, eta_str)
         try:
             run_item(config, context, item)
             expanded += 1
@@ -166,5 +173,10 @@ def run_queue(
                 log.error("queue: could not mark %s as Failed — %s", sid, mark_exc)
             failed += 1
 
-    log.info("queue: done — expanded=%d failed=%d skipped=%d", expanded, failed, skipped)
+    elapsed = int(time.time() - t_start)
+    print(flush=True)
+    print("=" * 50, flush=True)
+    print(f"  DONE — expanded={expanded}  failed={failed}  skipped={skipped}", flush=True)
+    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
+    print("=" * 50, flush=True)
     return {"expanded": expanded, "failed": failed, "skipped": skipped}
