@@ -29,13 +29,30 @@ log = logging.getLogger(__name__)
 # Property builders — Notion API payload helpers
 # ---------------------------------------------------------------------------
 
+def _notion_truncate(text: str, limit: int = 2000) -> str:
+    """
+    Truncate text to Notion's 2000 UTF-16 code unit limit.
+
+    Notion (and JavaScript) count characters as UTF-16 code units.
+    Characters above U+FFFF (emoji, some symbols) consume 2 units each.
+    Python's len() / slicing counts code points — so text[:2000] can exceed
+    2000 Notion units if the text contains non-BMP characters (e.g. emoji).
+    """
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > limit:
+            return text[:i]
+    return text
+
+
 def _title(text: str) -> dict:
-    return {"title": [{"text": {"content": text[:2000]}}]}
+    return {"title": [{"text": {"content": _notion_truncate(text)}}]}
 
 def _rich_text(text: str | None) -> dict | None:
     if text is None:
         return None
-    return {"rich_text": [{"text": {"content": text[:2000]}}]}
+    return {"rich_text": [{"text": {"content": _notion_truncate(text)}}]}
 
 def _url(value: str | None) -> dict | None:
     if not value:
@@ -58,12 +75,17 @@ def _date(iso: str | None) -> dict | None:
 
 def _rich_text_chunked(text: str) -> dict:
     """
-    Splits text into ≤2000-char rich-text objects (Notion's per-object cap).
-    An array of up to 100 objects supports ~200KB per property — sufficient
-    for any expected transcript or OCR output.
+    Splits text into ≤2000 UTF-16 code unit rich-text objects (Notion's per-object cap).
+    An array of up to 100 objects supports large transcripts and OCR outputs.
+    Uses UTF-16 unit counting so emoji and non-BMP characters don't cause 400 errors.
     """
-    chunks = [text[i:i + 2000] for i in range(0, len(text), 2000)]
-    return {"rich_text": [{"text": {"content": chunk}} for chunk in chunks[:100]]}
+    chunks = []
+    remaining = text
+    while remaining and len(chunks) < 100:
+        chunk = _notion_truncate(remaining, limit=2000)
+        chunks.append({"text": {"content": chunk}})
+        remaining = remaining[len(chunk):]
+    return {"rich_text": chunks}
 
 
 def _build_properties(metadata: dict) -> dict:
@@ -90,7 +112,7 @@ def _build_properties(metadata: dict) -> dict:
         ("ig_link",     lambda v: _url(v)),
         ("author",      lambda v: _rich_text(v)),
         ("type",        lambda v: _select(v)),
-        ("caption",     lambda v: _rich_text(v)),
+        ("caption",     lambda v: _rich_text_chunked(v)),
         ("posted_date", lambda v: _date(v)),
     ]:
         val = metadata.get(key)
