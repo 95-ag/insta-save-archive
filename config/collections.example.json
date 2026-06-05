@@ -1,0 +1,14 @@
+{
+  "My Collection Name": {
+    "slug": "my-collection-name",
+    "numeric_id": "12345678901234567",
+    "group": "Hustling",
+    "extract": true
+  },
+  "Another Collection": {
+    "slug": "another-collection",
+    "numeric_id": "98765432109876543",
+    "group": "Lifestyle",
+    "extract": false
+  }
+}

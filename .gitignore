@@ -9,6 +9,9 @@ session_cookies.json
 # temp media (transcription audio, OCR frames, slide images)
 tmp/
 
+# private collection data — generate with: python scripts/list_collections.py --update
+config/collections.json
+
 # python
 __pycache__/
 *.pyc
