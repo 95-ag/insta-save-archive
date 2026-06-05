@@ -2,91 +2,73 @@
 
 ## Active Plan
 
-`/home/ag-95/.claude/plans/2026-06-05-repo-restructure.md`
+`/home/ag-95/.claude/plans/2026-06-05-split-enrichment-local-claude.md`
+(file paths in plan are pre-restructure — use paths in session.md Cluster 2 section)
 
 ---
 
-## Repo Restructure + Privacy Scrub
+## Cluster 2 — Claude Code enrichment pass
 
-### Pre-refactor baseline
-- [ ] P1: Baseline check — import/help on each working script
-- [ ] P2: Commit 0 — pending enrichment_local.py, notion.py, run_enrichment_local.py
+### Pre-condition: set enrichment_order in collections.json
+- [ ] Manually add `"enrichment_order": N` (integer) to priority collection entries in `config/collections.json`
+      (null or absent = not in Claude scope; 1 = first, 2 = second, etc.)
 
-### Commit 1 — pyproject + scaffold
-- [ ] T1: Create `pyproject.toml`
-- [ ] T2: Create `pipeline/__init__.py`
-- [ ] T3: `pip install -e .` — verify `from pipeline.config import load_config` works
-- [ ] Commit 1: `chore: add pyproject.toml for editable install and pipeline package scaffold`
-
-### Commit 2 — library modules
-- [ ] T4: `pipeline/config.py`
-- [ ] T5: `pipeline/notion.py`
-- [ ] T6: `pipeline/session.py`
-- [ ] T7: `pipeline/crawler.py`
-- [ ] T8: `pipeline/extractor.py`
-- [ ] T9: `pipeline/extractor_deep.py`
-- [ ] T10: `pipeline/ingest.py` — ingest_with_context only, strip run() + argparse
-- [ ] T11: `pipeline/queue_runner.py`
-- [ ] T12: `pipeline/enrich_claude.py` (was enrichment.py)
-- [ ] T13: `pipeline/enrich_local.py` (was enrichment_local.py)
-- [ ] T14: `pipeline/display.py`
-- [ ] T15: `pipeline/collections.py` — loads JSON, keeps all functions
-- [ ] Commit 2: `refactor: move library modules into pipeline package`
-
-### Commit 3 — scripts
-- [ ] T16: `scripts/ingest.py` — run() + argparse, imports from pipeline.*
-- [ ] T17: `scripts/ingest_batch.py`
-- [ ] T18: `scripts/list_collections.py` — add --update flag
-- [ ] T19: `scripts/queue_pilot.py`
-- [ ] T20: `scripts/run_extraction.py`
-- [ ] T21: `scripts/run_enrichment.py`
-- [ ] T22: `scripts/run_enrichment_local.py`
-- [ ] Commit 3: `refactor: move CLI scripts into scripts directory`
-
-### Commit 4 — collections JSON + gitignore
-- [ ] T23: `config/collections.example.json`
-- [ ] T24: `config/collections.json` (gitignored, from current COLLECTIONS)
-- [ ] T25: Add `config/collections.json` to `.gitignore`
-- [ ] T26: Verify `python scripts/list_collections.py --update` merges without clobbering
-- [ ] Commit 4: `feat: move collections data to gitignored JSON, add example template`
-
-### Commit 5 — delete old root files
-- [ ] T27: git rm all 18 original root .py files
-- [ ] Commit 5: `refactor: remove root-level files superseded by pipeline/ and scripts/`
-
-### Post-refactor verification
-- [ ] V1: `python scripts/ingest_batch.py --dry-run` — correct order
-- [ ] V2: `python scripts/run_enrichment_local.py --help`
-- [ ] V3: `python scripts/run_enrichment_local.py --dry-run --limit 1`
-- [ ] V4: `python scripts/queue_pilot.py --dry-run --all-pilot`
-- [ ] V5: `python scripts/run_extraction.py --help`
-- [ ] V6: `python -c "from pipeline.collections import ordered_for_ingestion; print(len(ordered_for_ingestion()))"` → 43
-
-### Commit 6 — docs scrub
-- [ ] D1: README.md — replace collection names, update paths to scripts/
-- [ ] D2: .claude/work/session.md — remove collection registry
-- [ ] D3: .claude/work/tasks.md — remove collection names from operational section
-- [ ] D4: .claude/work/lessons.md — add collections JSON lesson
-- [ ] PV1: `git grep "<collection name>"` → zero results
-- [ ] PV2: `git check-ignore -v config/collections.json` → confirmed gitignored
-- [ ] Commit 6: `docs: scrub private collection names and update paths for new structure`
+### Implementation
+- [ ] T7: `pipeline/collections.py` — add `pilot_collections_by_enrichment_priority()` (reads enrichment_order from JSON)
+- [ ] T8: `pipeline/enrich_claude.py` — narrow `_SAVE_ENRICHMENT_TOOL` to `expanded_summary + key_insights` only
+- [ ] T9: `pipeline/notion.py` — remove title + extracted_externals from `write_enrichment`; update docstring
+- [ ] T10: `scripts/run_enrichment_claude_code.py` — new file: `--prepare`, `--upload`, `--list-priority`; queries Enriched items
+- [ ] T11: `scripts/run_enrichment.py` — add `--collection` flag; change queries from Expanded → Enriched; add priority ordering
+- [ ] Verify T12: `--list-priority` shows correct order; `--prepare --collection X` creates tmp/enrichment_prompt.txt
+- [ ] Verify T13: hand-craft 1-item results.json → `--upload` writes summary+insights; title+externals untouched
+- [ ] Commit: `feat: add Claude Code enrichment pass for summary and insights`
+      Files: `pipeline/collections.py`, `pipeline/enrich_claude.py`, `pipeline/notion.py`,
+             `scripts/run_enrichment_claude_code.py`, `scripts/run_enrichment.py`
+- [ ] Commit docs: `docs: update tasks and session after cluster 2`
+      Files: `.claude/work/tasks.md`, `.claude/work/session.md`, `.claude/work/lessons.md`
 
 ---
 
-## Previously Completed
+## Operational runs
 
-### Split Enrichment — Cluster 1 DONE, Cluster 2 DEFERRED until after restructure
+- [ ] O1: `python scripts/run_enrichment_local.py 2>&1 | tee /tmp/local_enrichment.log`
+      All 155 Expanded items → title + extracted_externals → status: Enriched
+      Run overnight. Re-runnable (skips Enriched items).
+- [ ] O2: Set `enrichment_order` in `config/collections.json` for priority collections
+- [ ] O3: Per priority collection (in enrichment_order): `--prepare --collection X` → Claude reads prompt → `--upload`
+- [ ] O4: Spot-check 5 Notion pages — title real, externals formatted, summary substantive, insights actionable
+
+---
+
+## Completed
+
+### Repo Restructure + Privacy Scrub — COMPLETE
+Plan: `/home/ag-95/.claude/plans/2026-06-05-repo-restructure.md`
+- [x] Baseline verify (all scripts working pre-restructure)
+- [x] Commit 0: enrichment format + status transitions
+- [x] Commit 1: pyproject.toml + pipeline scaffold
+- [x] Commit 2: 12 library modules → pipeline/
+- [x] Commit 3: 7 CLI scripts → scripts/
+- [x] Commit 4: collections JSON + gitignore
+- [x] Commit 5: git rm 18 old root files
+- [x] Post-refactor verify (all scripts pass, 43 collections, privacy clean)
+- [x] Commit 6: docs scrub, privacy clean, README updated
+
+### Split Enrichment — Cluster 1 COMPLETE
 Plan: `/home/ag-95/.claude/plans/2026-06-05-split-enrichment-local-claude.md`
-- [x] Ollama setup (qwen2.5:7b, GPU confirmed, ~2.5GB VRAM)
-- [x] T1: config.py + requirements.txt (ollama fields)
-- [x] T2: enrichment_local.py (prompt, normalization, tool_use)
-- [x] T3: notion.py (write_local_enrichment, status transitions Enriched/Summarised)
-- [x] T4: run_enrichment_local.py
-- [x] T5: Verified dry-run + live write + skip logic
-- [x] T6: Commit cluster 1 (faa4703)
-- [ ] T7–T13: Cluster 2 (Claude Code pass) — implement AFTER restructure in scripts/
+- [x] Ollama setup (qwen2.5:7b, GPU verified, ~2.5GB VRAM)
+- [x] config.py + requirements.txt (ollama fields)
+- [x] pipeline/enrich_local.py (Ollama tool_use, two-stage normalization, _normalize_externals)
+- [x] pipeline/notion.py (write_local_enrichment, status Enriched; write_enrichment status Summarised)
+- [x] scripts/run_enrichment_local.py (per-item, skip logic, dry-run, force)
+- [x] Verified: dry-run + live write + skip logic + format check
+- [x] Committed (faa4703 pre-restructure, 0584f8c enrichment improvements)
+- [x] Restructured to pipeline/enrich_local.py + scripts/run_enrichment_local.py
 
 ### Batch Ingest + Phase 3 Infra — COMPLETE
-- [x] A1–A3: Collections registry, batch ingest, all 43 collections ingested
-- [x] B1–B2: Queue pilot, 155 items Expanded
-- [x] C1–C5: Enrichment infra built
+- [x] A1: pipeline/collections.py — 43 collections loaded from JSON
+- [x] A2: pipeline/ingest.py + scripts/ingest_batch.py
+- [x] A3: [Operational] All 43 collections ingested
+- [x] B1: scripts/queue_pilot.py + notion.py additions
+- [x] B2: [Operational] 155 items Expanded
+- [x] C1-C5: Enrichment infra built (API-based structure remains in pipeline/enrich_claude.py)
