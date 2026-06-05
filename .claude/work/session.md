@@ -3,10 +3,12 @@
 ## Current State
 
 **Branch:** `feature-batch-ingest-phase3-enrich`
-**Last commit:** `bbee814` — docs: update tasks and session for Phase 3 enrichment plan
+**Last commit:** `e6e887d` — refactor: remove root-level files superseded by pipeline/ and scripts/
 
-Phase 2 COMPLETE. All 43 collections ingested. 155 pilot items Expanded (transcript + OCR done).
-Split enrichment plan written. Next: execute split enrichment plan (Ollama setup + implementation).
+Phase 2 COMPLETE. 43 collections ingested. 155 pilot items Expanded.
+Repo restructure COMPLETE — pipeline/ + scripts/ layout, collections data gitignored.
+Local enrichment (Cluster 1) COMPLETE and verified. Cluster 2 (Claude pass) pending.
+Next: run `scripts/run_enrichment_local.py` overnight, then implement Cluster 2.
 
 ---
 
@@ -47,18 +49,17 @@ Split enrichment plan written. Next: execute split enrichment plan (Ollama setup
 - Ollama is system-wide (not project-scoped); models at `~/.ollama/models/`
 - Pattern: per-item sequential — Notion READ → Ollama → Notion WRITE (interrupt-safe)
 - Skip condition: title is not a placeholder (`{author} — {shortcode}` pattern)
-- Script: `run_enrichment_local.py`
+- Script: `scripts/run_enrichment_local.py`
 
 ### Claude Code pass
-- Scope: **Hustling only** — 6 collections, Branding & Logo last
-- Order: Coding AI → Coding Web Design → Website Handling → Inspo Website → Job Hunt → Branding & Logo
+- Scope: priority collections only — order defined in `pipeline/collections.py:ENRICHMENT_HUSTLING_ORDER`
 - Pattern: batch read all items for collection → one Claude turn (entire collection in one prompt) → per-item upload
 - Token efficiency: instructions once per batch, compact JSON array output, ~6 turns total
-- Script: `run_enrichment_claude_code.py --prepare --collection X` → Claude writes results → `--upload`
+- Script: `scripts/run_enrichment_claude_code.py --prepare --collection X` → Claude writes results → `--upload`
 - All other collections (Biz, Content, Lifestyle) deferred
 
 ### Future enrichment (deferred)
-- Biz pilot (Hustle Ideas, Side Hustle Help, Inspo - BoI Biz) — Claude or local later
+- Biz pilot collections — Claude or local later
 - Content + Lifestyle pilot — same
 - Stage 3 (tags, duplicate_confidence, similar_info, source_assets) — all local
 - `detected_entities` REMOVED (redundant with extracted_externals)
@@ -82,8 +83,8 @@ Split enrichment plan written. Next: execute split enrichment plan (Ollama setup
 - `enrichment.py` — narrow `_SAVE_ENRICHMENT_TOOL` to `expanded_summary + key_insights` only
 - `notion.py` — add `write_local_enrichment(config, page_id, title, extracted_externals)`; remove title + extracted_externals from `write_enrichment`
 - `run_enrichment.py` — add `--collection` flag, order by enrichment priority
-- `config.py` — add `ollama_model: str`, `ollama_base_url: str` to Config + load_config
-- `collections_config.py` — add `ENRICHMENT_HUSTLING_ORDER`, `pilot_collections_by_enrichment_priority()`
+- `pipeline/config.py` — add `ollama_model: str`, `ollama_base_url: str` to Config + load_config
+- `pipeline/collections.py` — add `ENRICHMENT_HUSTLING_ORDER`, `pilot_collections_by_enrichment_priority()`
 - `requirements.txt` — add `ollama>=0.3.0`
 
 **Commits:**
@@ -105,41 +106,15 @@ ollama run qwen2.5:7b "List tools: I use Figma, Notion, VS Code."  # test GPU in
 
 ### Operational order after plan executes
 1. `python run_enrichment_local.py` (overnight, all 155 items)
-2. Per collection: `--prepare --collection "Coding - AI"` → Claude reads prompt file → `--upload`
+2. Per collection: `--prepare --collection "<NAME>"` → Claude reads prompt file → `--upload`
 3. Repeat for all 6 Hustling collections
 
 ---
 
-## Collection Registry (43 collections)
+## Collection Registry
 
-Group priority: Hustling → Content → Creative → Biz → Biz - Clothing → Lifestyle
-
-```
-Hustling (extract=True, Claude enrichment):
-  Job Hunt | Coding - AI | Coding - Web Design | Website Handling | Branding & Logo | Inspo - Website
-
-Content (partial extract):
-  Digital Content Creation ✓ | Tips - Content Creation ✓ | Inspo - Quotes/Captions/Audio ✓
-  Inspo - Reel/Post/Story Ideas | Inspo - Video Film/Editing | Photography/Filmography
-
-Creative (no extract):
-  Inspo - Art | Inspo - Digital Art | Inspo - Crafts | Arts & craft | Canva Hacks
-
-Biz (partial extract):
-  Hustle Ideas ✓ | Side Hustle Help ✓ | Inspo - BoI Biz ✓
-  Patches Collab | Info for patch | Photo booth | 3D printing
-
-Biz - Clothing (no extract):
-  Clothing - Tutorials/Making | Clothing - Brands/Ideas | Clothing - lino prints
-  Clothing - Accessories | Clothing - Suppliers
-
-Lifestyle (partial extract):
-  Foodie ✓ | Fitness ✓ | Quotes ✓
-  Clothing hacks | BLR | Hair hacks | Makeup | Home ideas | Plants & Pets
-  Interesting buys | Travel | Posing | boi saves | Tutorials
-```
-
-Slugs + numeric IDs → see `collections_config.py:COLLECTIONS`
+43 collections across 6 group priorities. Data lives in `config/collections.json` (gitignored — never committed).
+See `pipeline/collections.py` for group priority ordering and functions.
 
 ---
 

@@ -32,4 +32,8 @@ One entry per lesson. Lead with the rule. Keep it to 2–3 lines max. Add/remove
 
 **Carousel img scope must be `ul img`, not `img`.** Scoping to the full page picks up feed images that load below the post once the carousel reaches its last slide. The carousel slides live in the single `<ul>` on the post page — use `page.query_selector_all("ul img")` to stay within the target carousel.
 
+**Collection names are private — never hardcode in committed files.** Store in `config/collections.json` (gitignored). Discover via `scripts/list_collections.py --update` (smart merge preserves existing group/extract annotations). `pipeline/collections.py` loads at import time and fails clearly if the file is missing.
+
+**Notion schema properties must be created before first write.** Phase 3 enrichment properties (`expanded_summary`, `key_insights`, `extracted_externals`) don't auto-create. Add them once via `client.data_sources.update(ds_id, properties={"name": {"rich_text": {}}})`. `databases.update` does not work in API 2025-09-03 — use `data_sources.update` with the ds_id (not the database_id).
+
 **Venv binaries not on PATH in subprocess calls.** `subprocess.run(["yt-dlp", ...])` raises `FileNotFoundError` because the system PATH doesn't include `.venv/bin/`. Resolve via `Path(sys.executable).parent / "binary-name"` — gives the correct venv-local path regardless of how the script was invoked.
