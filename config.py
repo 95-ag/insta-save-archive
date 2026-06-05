@@ -20,6 +20,8 @@ class Config:
     anthropic_api_key: str
     enrichment_model: str
     enrichment_version: str
+    ollama_model: str
+    ollama_base_url: str
 
 
 def load_config() -> Config:
@@ -66,6 +68,8 @@ def load_config() -> Config:
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     enrichment_model = os.getenv("ENRICHMENT_MODEL", "claude-opus-4-5").strip()
     enrichment_version = os.getenv("ENRICHMENT_VERSION", "v1.0-enrich").strip()
+    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip()
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
 
     if missing:
         raise RuntimeError(
@@ -87,6 +91,8 @@ def load_config() -> Config:
         anthropic_api_key=anthropic_api_key,
         enrichment_model=enrichment_model,
         enrichment_version=enrichment_version,
+        ollama_model=ollama_model,
+        ollama_base_url=ollama_base_url,
     )
 
 

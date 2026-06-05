@@ -426,3 +426,33 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
         raise RuntimeError(
             f"notion: failed to write enrichment for {page_id}: {e}"
         ) from e
+
+
+def write_local_enrichment(
+    config: Config, page_id: str, title: str, extracted_externals: str
+) -> None:
+    """
+    Write local enrichment fields to a Notion page.
+    Only writes title and extracted_externals.
+    Does NOT touch expanded_summary, key_insights, pipeline_status, or raw_extraction.
+    """
+    import datetime
+
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+
+    props: dict = {
+        "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
+    }
+    if title:
+        props["title"] = _title(title)
+    if extracted_externals:
+        props["extracted_externals"] = _rich_text_chunked(extracted_externals)
+
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: wrote local enrichment for page %s", page_id)
+    except APIResponseError as e:
+        raise RuntimeError(
+            f"notion: failed to write local enrichment for {page_id}: {e}"
+        ) from e

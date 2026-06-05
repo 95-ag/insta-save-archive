@@ -16,5 +16,6 @@ rapidocr-onnxruntime==1.4.4
 
 # Phase 3 — AI enrichment
 anthropic>=0.50.0
+ollama>=0.3.0
 
 # System dep (not pip): ffmpeg — install with: sudo apt install ffmpeg
