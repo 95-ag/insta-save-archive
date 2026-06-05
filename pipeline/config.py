@@ -1,0 +1,116 @@
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+@dataclass(frozen=True)
+class Config:
+    notion_token: str
+    notion_database_id: str
+    ig_username: str
+    target_collection: str
+    batch_size: int
+    notion_write_delay: float
+    processing_version: str
+    whisper_model: str
+    tmp_dir: str
+    anthropic_api_key: str
+    enrichment_model: str
+    enrichment_version: str
+    ollama_model: str
+    ollama_base_url: str
+
+
+def load_config() -> Config:
+    """
+    Loads configuration from environment / .env file.
+
+    Always required: IG_USERNAME, TARGET_COLLECTION.
+    Notion credentials (NOTION_TOKEN, NOTION_DATABASE_ID) are loaded but not
+    required here — call validate_notion_config() before using the Notion client.
+    """
+    missing = []
+
+    def require(key: str) -> str:
+        val = os.getenv(key, "").strip()
+        if not val:
+            missing.append(key)
+        return val
+
+    ig_username = require("IG_USERNAME")
+    target_collection = require("TARGET_COLLECTION")
+
+    notion_token = os.getenv("NOTION_TOKEN", "").strip()
+    notion_database_id = os.getenv("NOTION_DATABASE_ID", "").strip()
+
+    batch_size_raw = os.getenv("BATCH_SIZE", "50").strip()
+    try:
+        batch_size = int(batch_size_raw)
+    except ValueError:
+        missing.append("BATCH_SIZE (must be an integer)")
+        batch_size = 0
+
+    notion_write_delay_raw = os.getenv("NOTION_WRITE_DELAY", "0.4").strip()
+    try:
+        notion_write_delay = float(notion_write_delay_raw)
+    except ValueError:
+        missing.append("NOTION_WRITE_DELAY (must be a float)")
+        notion_write_delay = 0.0
+
+    processing_version = os.getenv("PROCESSING_VERSION", "v1.0-base").strip()
+    whisper_model = os.getenv("WHISPER_MODEL", "base").strip()
+    tmp_dir = os.getenv("TMP_DIR", "tmp").strip()
+
+    # Enrichment config — optional at startup; validated by validate_enrichment_config()
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    enrichment_model = os.getenv("ENRICHMENT_MODEL", "claude-opus-4-5").strip()
+    enrichment_version = os.getenv("ENRICHMENT_VERSION", "v1.0-enrich").strip()
+    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip()
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+
+    if missing:
+        raise RuntimeError(
+            "Missing or invalid required configuration:\n"
+            + "\n".join(f"  - {key}" for key in missing)
+            + "\n\nCopy .env.example to .env and fill in the values."
+        )
+
+    return Config(
+        notion_token=notion_token,
+        notion_database_id=notion_database_id,
+        ig_username=ig_username,
+        target_collection=target_collection,
+        batch_size=batch_size,
+        notion_write_delay=notion_write_delay,
+        processing_version=processing_version,
+        whisper_model=whisper_model,
+        tmp_dir=tmp_dir,
+        anthropic_api_key=anthropic_api_key,
+        enrichment_model=enrichment_model,
+        enrichment_version=enrichment_version,
+        ollama_model=ollama_model,
+        ollama_base_url=ollama_base_url,
+    )
+
+
+def validate_notion_config(config: Config) -> None:
+    """
+    Raises RuntimeError if Notion credentials are missing.
+    Call this at notion_client initialisation, not at startup.
+    """
+    missing = [
+        key for key, val in [
+            ("NOTION_TOKEN", config.notion_token),
+            ("NOTION_DATABASE_ID", config.notion_database_id),
+        ]
+        if not val
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing Notion configuration:\n"
+            + "\n".join(f"  - {key}" for key in missing)
+            + "\n\nAdd these to your .env file."
+        )
