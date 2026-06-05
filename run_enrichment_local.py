@@ -83,6 +83,7 @@ def run(
 
         if dry_run:
             print(f"\n--- {sid} ---")
+            print(f"Status:    Expanded → Enriched")
             print(f"Title:     {result.get('title')}")
             print(f"Externals:\n{result.get('extracted_externals')}")
             enriched += 1

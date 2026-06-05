@@ -10,12 +10,24 @@ Exposes:
 """
 
 import logging
+import re
 
 import ollama
 
 from config import Config
 
 log = logging.getLogger(__name__)
+
+# Valid types for extracted_externals lines.
+_KNOWN_TYPES = frozenset(
+    {"tool", "app", "brand", "creator", "website", "link", "location", "technique", "ref"}
+)
+
+# Matches lines already in correct format: "[type] ..."
+_BRACKET_RE = re.compile(r"^\[([a-zA-Z]+)\]\s*\S")
+
+# Matches "type name" or "type: name" where type is a known word
+_PREFIX_RE = re.compile(r"^([a-zA-Z]+)[:\s]\s*(.+)$")
 
 _LOCAL_TOOL = {
     "type": "function",
@@ -35,9 +47,16 @@ _LOCAL_TOOL = {
                 "extracted_externals": {
                     "type": "string",
                     "description": (
-                        "Every tool, app, brand, creator, website, link, or location mentioned. "
-                        "One per line: [type] name — context. "
-                        "Types: tool, app, brand, creator, website, link, location, technique."
+                        "Every tool, app, brand, creator, website, link, or location explicitly mentioned. "
+                        "REQUIRED FORMAT — one entry per line, exactly: [type] name — context\n"
+                        "Valid types: tool, app, brand, creator, website, link, location, technique\n"
+                        "Examples:\n"
+                        "[tool] Figma — UI design tool used\n"
+                        "[brand] Dropbox — subject of the post\n"
+                        "[creator] @millmotion — animator referenced\n"
+                        "[website] brand.dropbox.com — brand guidelines\n"
+                        "[technique] grid layout — design method shown\n"
+                        "If nothing is mentioned, return an empty string."
                     ),
                 },
             },
@@ -57,27 +76,68 @@ Transcript: {transcript}
 OCR/Slides: {ocr_text}
 
 Call save_local_enrichment with:
-1. title — concise and specific, not the caption, max 80 chars
-2. extracted_externals — every tool, app, brand, creator, website, link, location mentioned, one per line
+1. title — concise and specific (not the caption), max 80 chars
+2. extracted_externals — every tool, app, brand, creator, website, link, or location explicitly mentioned.
+   Each entry MUST follow this exact format (one per line):
+   [type] name — context
+   Valid types: tool, app, brand, creator, website, link, location, technique
+   Example:
+   [tool] Figma — UI design tool used in tutorial
+   [brand] Dropbox — subject of the post
+   [creator] @millmotion — animator referenced
 """
+
+
+def _format_externals_line(line: str) -> str:
+    """
+    Normalise one extracted_externals line to [type] name — context format.
+
+    Passes through lines already in correct format.
+    Converts "type name" or "type: name" patterns where type is a known word.
+    Tags unrecognised lines as [ref] so they are still stored and parseable.
+    """
+    line = line.strip(" ,;-•*")
+    if not line:
+        return ""
+
+    # Already correct: starts with [type] followed by non-whitespace
+    if _BRACKET_RE.match(line):
+        return line
+
+    # "type name" or "type: name" where first word is a known type
+    m = _PREFIX_RE.match(line)
+    if m and m.group(1).lower() in _KNOWN_TYPES:
+        type_word = m.group(1).lower()
+        rest = m.group(2).strip()
+        return f"[{type_word}] {rest}"
+
+    # Unrecognised format — preserve content, tag as [ref] for downstream parsing
+    return f"[ref] {line}"
 
 
 def _normalize_externals(value) -> str:
     """
-    Coerce whatever the model returns for extracted_externals into a plain string.
-    qwen2.5 occasionally returns a list or dict instead of the expected string.
+    Two-stage normalisation for extracted_externals:
+    1. Type coercion — convert dict/list model outputs to a list of strings.
+    2. Line format — ensure every non-empty line is in [type] name — context format.
     """
     if value is None:
         return ""
+
+    # Stage 1: coerce to list of raw lines
     if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        # e.g. ["[tool] Figma — design", "[app] Notion — notes"]
-        return "\n".join(str(item).strip() for item in value if item)
-    if isinstance(value, dict):
-        # e.g. {"Figma": "tool", "Notion": "app"}  (name → type mapping)
-        return "\n".join(f"[{v}] {k}" for k, v in value.items())
-    return str(value).strip()
+        raw_lines = value.splitlines()
+    elif isinstance(value, list):
+        raw_lines = [str(item) for item in value if item]
+    elif isinstance(value, dict):
+        # e.g. {"Figma": "tool"} → already produces correct format
+        raw_lines = [f"[{str(v).lower()}] {k}" for k, v in value.items()]
+    else:
+        raw_lines = str(value).splitlines()
+
+    # Stage 2: normalise each line
+    formatted = [_format_externals_line(line) for line in raw_lines]
+    return "\n".join(line for line in formatted if line)
 
 
 def validate_local_enrichment_config(config: Config) -> None:

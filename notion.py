@@ -391,7 +391,7 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
     enrichment keys: title (str), expanded_summary (str),
                      key_insights (list[str]), extracted_externals (str).
 
-    Does NOT touch pipeline_status or raw_extraction.
+    Sets pipeline_status to Summarised. Does NOT touch raw_extraction.
     Updates title, expanded_summary, key_insights, extracted_externals,
     processing_version, last_processed_at.
     """
@@ -405,6 +405,7 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
     )
 
     props: dict = {
+        "pipeline_status": _select("Summarised"),
         "title": _title(enrichment["title"]),
         "processing_version": _rich_text(version),
         "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
@@ -442,6 +443,7 @@ def write_local_enrichment(
     client = Client(auth=config.notion_token)
 
     props: dict = {
+        "pipeline_status": _select("Enriched"),
         "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
     }
     if title:
