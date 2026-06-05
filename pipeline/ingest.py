@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright, BrowserContext
 from pipeline.config import Config
 from pipeline.crawler import crawl_collection
 from pipeline.extractor import extract_post
-from pipeline.notion import create_page, query_by_source_id
+from pipeline.notion import add_collection_if_missing, create_page, query_by_source_id
 
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,20 @@ def ingest_with_context(context: BrowserContext, config: Config) -> dict:
 
         existing = query_by_source_id(config, source_id)
         if existing:
-            log.info("ingest: %s already exists (%s) — skipping", source_id, existing)
+            try:
+                added = add_collection_if_missing(config, existing, config.target_collection)
+                if added:
+                    log.info(
+                        "ingest: %s exists — added collection %r",
+                        source_id, config.target_collection,
+                    )
+                else:
+                    log.info(
+                        "ingest: %s already in %r — skipping",
+                        source_id, config.target_collection,
+                    )
+            except Exception as exc:
+                log.warning("ingest: could not update collection for %s — %s", source_id, exc)
             skipped += 1
             continue
 
