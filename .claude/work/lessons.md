@@ -37,3 +37,13 @@ One entry per lesson. Lead with the rule. Keep it to 2–3 lines max. Add/remove
 **Notion schema properties must be created before first write.** Phase 3 enrichment properties (`expanded_summary`, `key_insights`, `extracted_externals`) don't auto-create. Add them once via `client.data_sources.update(ds_id, properties={"name": {"rich_text": {}}})`. `databases.update` does not work in API 2025-09-03 — use `data_sources.update` with the ds_id (not the database_id).
 
 **Venv binaries not on PATH in subprocess calls.** `subprocess.run(["yt-dlp", ...])` raises `FileNotFoundError` because the system PATH doesn't include `.venv/bin/`. Resolve via `Path(sys.executable).parent / "binary-name"` — gives the correct venv-local path regardless of how the script was invoked.
+
+**Instagram lazy-lists must be harvested DURING scroll, not after.** Instagram virtualizes long lists (saved index, collection grids) — items unmount as they scroll off-screen, so a single `.all()` at the end misses most. Accumulate hrefs into a set on every scroll step (`scroll_harvest` in crawler.py). This fixed saved-index discovery from 12 → 43 collections. Pair with incremental `scrollBy(0, innerHeight)` + bottom-detection.
+
+**Don't scrape the /saved/ index for collection URLs — build from collections.json.** The index lazy-loads unreliably (different subset each visit). Collection URLs are deterministic from `slug` + `numeric_id`: `/{user}/saved/{slug}/{numeric_id}/`. Discovery (additive) refreshes those ids; crawling uses them directly.
+
+**Ingest sync safety: presence reliable, absence not.** Finding a post in a collection is certain → ADD always safe (even from an incomplete crawl). NOT finding it is uncertain → REMOVE a tag only when that collection's crawl `complete`, or it's explicitly `--confirm-removed`. This prevents a transient render glitch from stripping valid tags. Reconciliation is a pure function (`reconcile.py`) with unit-tested invariants.
+
+**Notion text fields count UTF-16 code units, not Python chars.** Emoji (non-BMP) cost 2 units. `text[:2000]` can exceed Notion's 2000-unit cap and 400. Use `_notion_truncate` (UTF-16-aware) for single-object fields; `_rich_text_chunked` for full-length fields (caption/transcript/OCR) which split into ≤2000-unit objects.
+
+**Clean terminal = progress only; logs = file only.** Route all `logging` to a file handler (`setup_logging`), pin httpx/notion_client to file, and let `rich` own the terminal (`StageProgress`). Never mix — a stray log line breaks the live display. The module is stage-agnostic and reusable across ingest/extraction/enrichment.

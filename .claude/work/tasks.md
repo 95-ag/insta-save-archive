@@ -2,73 +2,81 @@
 
 ## Active Plan
 
-`/home/ag-95/.claude/plans/2026-06-05-split-enrichment-local-claude.md`
-(file paths in plan are pre-restructure — use paths in session.md Cluster 2 section)
+`/home/ag-95/.claude/plans/2026-06-06-ingest-sync-layer.md`
+Branch: `feature-batch-ingest-phase3-enrich`
 
 ---
 
-## Cluster 2 — Claude Code enrichment pass
+## Ingest Sync Layer — IN PROGRESS
 
-### Pre-condition: set enrichment_order in collections.json
-- [ ] Manually add `"enrichment_order": N` (integer) to priority collection entries in `config/collections.json`
-      (null or absent = not in Claude scope; 1 = first, 2 = second, etc.)
+### Cluster A — Observability foundation (generic, reusable) ✅ COMMITTED 37ab80d
+- [x] `requirements.txt`: add `rich>=13.0`
+- [x] `.gitignore`: add `logs/` (tmp/ already covers tmp/ingest/)
+- [x] `pipeline/observability.py`: `setup_logging(stage_name)` + generic `StageProgress`
+- [x] Manual check: bars + counters verified; log file written; zero terminal spam
+- [x] Commit: `feat: add reusable rich progress and file-only logging for all stages`
 
-### Implementation
-- [ ] T7: `pipeline/collections.py` — add `pilot_collections_by_enrichment_priority()` (reads enrichment_order from JSON)
-- [ ] T8: `pipeline/enrich_claude.py` — narrow `_SAVE_ENRICHMENT_TOOL` to `expanded_summary + key_insights` only
-- [ ] T9: `pipeline/notion.py` — remove title + extracted_externals from `write_enrichment`; update docstring
-- [ ] T10: `scripts/run_enrichment_claude_code.py` — new file: `--prepare`, `--upload`, `--list-priority`; queries Enriched items
-- [ ] T11: `scripts/run_enrichment.py` — add `--collection` flag; change queries from Expanded → Enriched; add priority ordering
-- [ ] Verify T12: `--list-priority` shows correct order; `--prepare --collection X` creates tmp/enrichment_prompt.txt
-- [ ] Verify T13: hand-craft 1-item results.json → `--upload` writes summary+insights; title+externals untouched
-- [ ] Commit: `feat: add Claude Code enrichment pass for summary and insights`
-      Files: `pipeline/collections.py`, `pipeline/enrich_claude.py`, `pipeline/notion.py`,
-             `scripts/run_enrichment_claude_code.py`, `scripts/run_enrichment.py`
-- [ ] Commit docs: `docs: update tasks and session after cluster 2`
-      Files: `.claude/work/tasks.md`, `.claude/work/session.md`, `.claude/work/lessons.md`
+### Cluster B — Hardened crawling + discovery ✅ COMMITTED 85c9a3b
+- [x] `pipeline/crawler.py`: `scroll_harvest` (accumulate + incremental + bottom-detect + complete flag); `resolve_collection_url` from collections.json; `crawl_collection` returns (posts, complete). Removed index-scrape + COLLECTION_LINK_SELECTOR (dead-code item from E done here).
+- [x] `pipeline/discovery.py`: hardened index crawl via scroll_harvest + additive collections.json merge + missing/complete flags
+- [x] No-browser verify: imports, URL resolution, shortcode/href regex, additive merge (annotations preserved)
+- [ ] Live verify deferred to Cluster E: `--discover-only` finds 43
+- [x] Commit: `feat: harden crawler with accumulate-scroll and direct-URL discovery`
+
+### Cluster C — Snapshots + bulk Notion state ✅ COMMITTED be08922
+- [x] `pipeline/snapshots.py`: write/read/is_reusable/clear_snapshots; tmp/ingest/snapshots/
+- [x] `pipeline/notion.py`: `bulk_load_state()` (one paginated pass → source_id→{page_id,collections}), `set_collections()` (idempotent absolute set)
+- [x] Verify: snapshot round-trip + reuse policy (fresh/incomplete/stale/None); notion fns import-clean (live in E)
+- [x] Commit: `feat: add collection snapshots and bulk Notion state load`
+
+### Cluster D — Reconciliation (pure + tested) ✅ COMMITTED 895b6b7
+- [x] `pipeline/reconcile.py`: pure diff + presence/absence safety gate (PostAction/Plan)
+- [x] `tests/test_reconcile.py`: 9 invariant tests (added confirmed-removal + add-from-incomplete)
+- [x] Run: `pytest tests/test_reconcile.py -v` → 9 passed; pytest added to requirements
+- [x] Commit: `feat: add pure reconciliation with presence/absence safety gate`
+
+### Cluster E — Orchestration + CLI + dead-code removal ✅ COMMITTED 8020ef1
+- [x] `pipeline/extractor.py`: dropped `collection` param; tags set by reconcile
+- [x] `pipeline/notion.py`: `_build_properties` uses `collections` list; removed dead `add_collection_if_missing`
+- [x] `pipeline/ingest.py`: `sync()` orchestrating stages 0→4 with StageProgress
+- [x] `scripts/ingest_batch.py`: flags `--dry-run --discover-only --fresh --max-snapshot-age --confirm-removed --headed`; StageProgress + file logging
+- [x] `scripts/ingest.py`: single-collection sync via same path
+- [x] Dead code removed; grep clean (add_collection_if_missing/ingest_with_context/old signatures gone)
+- [x] LIVE verify: `--discover-only` → 43 found 0 missing complete=True (22s); single-collection `--dry-run` → crawl+bulk-load+reconcile+gate (247 unsafe skipped correctly) zero writes
+- [ ] Operational (user-driven): full 43-collection live run with writes
+- [x] Commit: `feat: rebuild ingest as fail-safe collection sync with move handling`
+
+### Cluster F — Docs ← committing now
+- [x] README ingest section rewritten (sync model, safety, flags, dry-run summary)
+- [x] session.md, lessons.md, tasks.md updated
+- [ ] Commit: `docs: document fail-safe ingest sync layer and flags`
+
+### Cluster G — Migrate other stages (OPTIONAL, decide later)
+- [ ] Phase 2/3 scripts → StageProgress; remove ad-hoc ETA blocks
+- [ ] Commit: `refactor: migrate extraction and enrichment to shared progress display`
 
 ---
 
-## Operational runs
-
-- [ ] O1: `python scripts/run_enrichment_local.py 2>&1 | tee /tmp/local_enrichment.log`
-      All 155 Expanded items → title + extracted_externals → status: Enriched
-      Run overnight. Re-runnable (skips Enriched items).
-- [ ] O2: Set `enrichment_order` in `config/collections.json` for priority collections
-- [ ] O3: Per priority collection (in enrichment_order): `--prepare --collection X` → Claude reads prompt → `--upload`
-- [ ] O4: Spot-check 5 Notion pages — title real, externals formatted, summary substantive, insights actionable
+## Verification (end-to-end)
+- [ ] pytest reconcile invariants pass
+- [ ] `--discover-only` → 43 found
+- [ ] `--dry-run` → zero Notion writes
+- [ ] live move test → add+remove on Notion page; partial crawl → no removal
+- [ ] full 43-collection run; clean UI; full debug log
+- [ ] idempotent re-run → near-zero writes, snapshots reused
+- [ ] grep: no dead references
 
 ---
 
-## Completed
+## Completed (prior work)
 
-### Repo Restructure + Privacy Scrub — COMPLETE
-Plan: `/home/ag-95/.claude/plans/2026-06-05-repo-restructure.md`
-- [x] Baseline verify (all scripts working pre-restructure)
-- [x] Commit 0: enrichment format + status transitions
-- [x] Commit 1: pyproject.toml + pipeline scaffold
-- [x] Commit 2: 12 library modules → pipeline/
-- [x] Commit 3: 7 CLI scripts → scripts/
-- [x] Commit 4: collections JSON + gitignore
-- [x] Commit 5: git rm 18 old root files
-- [x] Post-refactor verify (all scripts pass, 43 collections, privacy clean)
-- [x] Commit 6: docs scrub, privacy clean, README updated
-
+### Cluster 2 — Claude Code enrichment — COMPLETE (9fda9c3)
+### Repo Restructure + Privacy Scrub — COMPLETE (31423f7)
 ### Split Enrichment — Cluster 1 COMPLETE
-Plan: `/home/ag-95/.claude/plans/2026-06-05-split-enrichment-local-claude.md`
-- [x] Ollama setup (qwen2.5:7b, GPU verified, ~2.5GB VRAM)
-- [x] config.py + requirements.txt (ollama fields)
-- [x] pipeline/enrich_local.py (Ollama tool_use, two-stage normalization, _normalize_externals)
-- [x] pipeline/notion.py (write_local_enrichment, status Enriched; write_enrichment status Summarised)
-- [x] scripts/run_enrichment_local.py (per-item, skip logic, dry-run, force)
-- [x] Verified: dry-run + live write + skip logic + format check
-- [x] Committed (faa4703 pre-restructure, 0584f8c enrichment improvements)
-- [x] Restructured to pipeline/enrich_local.py + scripts/run_enrichment_local.py
-
 ### Batch Ingest + Phase 3 Infra — COMPLETE
-- [x] A1: pipeline/collections.py — 43 collections loaded from JSON
-- [x] A2: pipeline/ingest.py + scripts/ingest_batch.py
-- [x] A3: [Operational] All 43 collections ingested
-- [x] B1: scripts/queue_pilot.py + notion.py additions
-- [x] B2: [Operational] 155 items Expanded
-- [x] C1-C5: Enrichment infra built (API-based structure remains in pipeline/enrich_claude.py)
+
+## Operational runs (pending, after ingest layer)
+- [ ] O1: local enrichment full run (interrupt-safe, `-a` to append log)
+- [ ] O2: enrichment_order set ✅ (15 collections)
+- [ ] O3: Claude pass per priority collection
+- [ ] O4: spot-check 5 Notion pages

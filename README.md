@@ -189,45 +189,62 @@ source .venv/bin/activate
 
 ---
 
-### Phase 1 — Ingest
+### Phase 1 — Ingest (collection sync)
 
-#### All collections (batch)
+Ingest is a **fail-safe sync**, not a one-way import. Each run:
+
+1. **Discovers** collections from the `/saved/` index (additive — new collections are added to `collections.json`; missing ones are flagged, never deleted).
+2. **Crawls** each collection, recording whether the crawl was *complete* (reached the bottom and stopped finding new posts).
+3. **Loads** all Notion pages once (bulk dedup — no per-post queries).
+4. **Reconciles** crawled membership against Notion: creates new posts, and updates collection tags for posts that moved.
+
+**Safety principle — presence is reliable, absence is not:**
+- A post is **tagged** with a collection whenever it's found there (always safe).
+- A tag is **removed** only when that collection's crawl *completed* — so a transient Instagram render glitch can never strip valid tags. Removing a whole collection's tags requires explicit `--confirm-removed`.
+
+The terminal shows live progress bars; full detail goes to `logs/ingest_<timestamp>.log`.
+
+#### Full sync (all collections)
 
 ```bash
-python scripts/ingest_batch.py
+python scripts/ingest_batch.py                 # discover + crawl + reconcile + apply
+python scripts/ingest_batch.py --dry-run        # compute the plan, write nothing
+python scripts/ingest_batch.py --discover-only  # just refresh collections.json
+python scripts/ingest_batch.py --headed         # visible browser (first login)
 ```
 
-Processes all collections in group priority order. Re-runnable — skips already-ingested posts.
-
+Tuning and recovery:
 ```bash
-# Start from a specific group (skips earlier groups)
-python scripts/ingest_batch.py --start-from-group "<GROUP>"
+# Reuse complete snapshots younger than N minutes (default 360) — fast crash-resume
+python scripts/ingest_batch.py --max-snapshot-age 60
 
-# Preview order without crawling
-python scripts/ingest_batch.py --dry-run
+# Ignore snapshots, re-crawl everything fresh
+python scripts/ingest_batch.py --fresh
 
-# Headed browser (needed for first login)
-python scripts/ingest_batch.py --headed
+# Allow stripping a collection you deleted on Instagram (repeatable)
+python scripts/ingest_batch.py --confirm-removed "Old Collection"
 ```
+
+Snapshots live in `tmp/ingest/snapshots/` (gitignored). A crash loses at most the in-flight crawl; re-running reuses fresh snapshots and converges (all writes are idempotent).
 
 #### Single collection
 
 ```bash
 # Set TARGET_COLLECTION in .env, then:
 python scripts/ingest.py
-
-# Headed browser
+python scripts/ingest.py --dry-run
 python scripts/ingest.py --headed
 ```
 
-Typical output:
-```
-13:42:06 INFO session: status=valid
-13:42:25 INFO crawler: found 36 posts in '<YOUR_COLLECTION>'
-13:46:54 INFO ingest: done — created=36 skipped=0 failed=0
-```
+Single-collection mode skips discovery and reconciles only that collection. Tags for a post's *other* collections are left untouched (their crawls weren't run, so their absence isn't trusted) — these show as "unsafe removals skipped" in the summary, which is expected.
 
-Re-runs skip existing posts: `created=0 skipped=36 failed=0`
+#### Dry-run summary
+
+```
+collections=43 · creates=14 · retags=1 · unchanged=236 · skipped_unsafe=0
+```
+- **creates** — new posts to add · **retags** — posts whose collection tags change
+- **unchanged** — already correct · **skipped_unsafe** — removals withheld (incomplete crawl)
 
 ---
 
