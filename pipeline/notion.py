@@ -85,6 +85,9 @@ def _rich_text_chunked(text: str) -> dict:
         chunk = _notion_truncate(remaining, limit=2000)
         chunks.append({"text": {"content": chunk}})
         remaining = remaining[len(chunk):]
+    if remaining:
+        log.warning("notion: text exceeded 100 chunks (~200k units) — %d chars dropped",
+                    len(remaining))
     return {"rich_text": chunks}
 
 
@@ -293,10 +296,15 @@ def bulk_load_state(config: Config) -> dict:
     """
     Load the entire database once into an in-memory map for the ingest sync:
 
-        { source_id: { "page_id": str, "collections": set[str] } }
+        { source_id: { "page_id": str, "collections": set[str], "needs_metadata": bool } }
 
     Replaces per-post dedup queries — one paginated pass instead of 2 API calls
     per post. Pages without a source_id are skipped (they can't be reconciled).
+
+    needs_metadata is True when author OR posted_date is missing — both are always
+    present on a cleanly-extracted post, so their absence reliably marks a failed/
+    blank extraction. Caption is deliberately NOT a trigger: it is genuinely optional,
+    and triggering on it would re-refresh caption-less posts forever (never converging).
     """
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
@@ -319,13 +327,56 @@ def bulk_load_state(config: Config) -> dict:
                 item["name"]
                 for item in props.get("collection", {}).get("multi_select", [])
             }
-            state[source_id] = {"page_id": page["id"], "collections": collections}
+            author_blocks = props.get("author", {}).get("rich_text", [])
+            has_author = bool(author_blocks and author_blocks[0]["text"]["content"].strip())
+            has_date = bool(props.get("posted_date", {}).get("date"))
+            needs_metadata = (not has_author) or (not has_date)
+            state[source_id] = {
+                "page_id": page["id"],
+                "collections": collections,
+                "needs_metadata": needs_metadata,
+            }
         if not response.get("has_more"):
             break
         cursor = response.get("next_cursor")
 
-    log.info("notion: bulk-loaded %d pages with source_id", len(state))
+    incomplete = sum(1 for v in state.values() if v["needs_metadata"])
+    log.info("notion: bulk-loaded %d pages (%d need metadata)", len(state), incomplete)
     return state
+
+
+def update_metadata(config: Config, page_id: str, metadata: dict) -> None:
+    """
+    Backfill Phase 1 metadata on an existing page: title, author, type, caption,
+    posted_date. Only writes fields present in metadata. Never touches collection,
+    pipeline_status, or enrichment fields.
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+
+    author = metadata.get("author")
+    source_id = metadata.get("source_id")
+    props: dict = {}
+
+    if author:
+        props["author"] = _rich_text(author)
+        # Phase 1 title convention: "{author} — {shortcode}"
+        props["title"] = _title(f"{author} — {source_id}" if source_id else author)
+    if metadata.get("type"):
+        props["type"] = _select(metadata["type"])
+    if metadata.get("caption"):
+        props["caption"] = _rich_text_chunked(metadata["caption"])
+    if metadata.get("posted_date"):
+        props["posted_date"] = _date(metadata["posted_date"])
+
+    if not props:
+        return  # nothing to write
+
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: backfilled metadata for %s (author=%r)", page_id, author)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to update metadata for {page_id}: {e}") from e
 
 
 def set_collections(config: Config, page_id: str, collections: set) -> None:
