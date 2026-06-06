@@ -289,6 +289,66 @@ def query_by_collection_and_status(
     return results
 
 
+def bulk_load_state(config: Config) -> dict:
+    """
+    Load the entire database once into an in-memory map for the ingest sync:
+
+        { source_id: { "page_id": str, "collections": set[str] } }
+
+    Replaces per-post dedup queries — one paginated pass instead of 2 API calls
+    per post. Pages without a source_id are skipped (they can't be reconciled).
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    ds_id = _get_data_source_id(client, config.notion_database_id)
+
+    state: dict = {}
+    cursor = None
+    while True:
+        kwargs = {}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = client.data_sources.query(ds_id, **kwargs)
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            source_id_blocks = props.get("source_id", {}).get("rich_text", [])
+            source_id = source_id_blocks[0]["text"]["content"] if source_id_blocks else None
+            if not source_id:
+                continue
+            collections = {
+                item["name"]
+                for item in props.get("collection", {}).get("multi_select", [])
+            }
+            state[source_id] = {"page_id": page["id"], "collections": collections}
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
+    log.info("notion: bulk-loaded %d pages with source_id", len(state))
+    return state
+
+
+def set_collections(config: Config, page_id: str, collections: set) -> None:
+    """
+    Overwrite a page's collection multi-select with the given set.
+
+    Absolute set, not a delta — makes the operation idempotent: re-applying the
+    same desired set is a no-op, so interrupted syncs converge on re-run.
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    try:
+        client.pages.update(
+            page_id=page_id,
+            properties={"collection": _multi_select(sorted(collections))},
+        )
+        log.info("notion: set collections on %s → %s", page_id, sorted(collections))
+    except APIResponseError as e:
+        raise RuntimeError(
+            f"notion: failed to set collections on {page_id}: {e}"
+        ) from e
+
+
 def write_extraction(config: Config, page_id: str, results: dict) -> None:
     """
     Writes Stage 2 extraction results back to an existing Notion page.
