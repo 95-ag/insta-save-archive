@@ -54,6 +54,20 @@ def _resolve_collection_url(page, config: Config) -> str:
     page.goto(saved_index, wait_until="domcontentloaded", timeout=20_000)
     time.sleep(4)
 
+    # Scroll until no new collection links appear — Instagram lazy-loads them.
+    seen_count = 0
+    unchanged = 0
+    while unchanged < MAX_UNCHANGED_SCROLLS:
+        current = len(page.locator(COLLECTION_LINK_SELECTOR).all())
+        if current > seen_count:
+            seen_count = current
+            unchanged = 0
+        else:
+            unchanged += 1
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(SCROLL_PAUSE)
+    log.info("crawler: found %d collection links on saved index", seen_count)
+
     links = page.locator(COLLECTION_LINK_SELECTOR).all()
     target = config.target_collection.lower()
 
