@@ -70,8 +70,8 @@ def main() -> None:
                     )
                     progress.log_line(
                         f"collections={summary['collections']} · creates={summary['creates']} · "
-                        f"retags={summary['retags']} · unchanged={summary['unchanged']} · "
-                        f"skipped_unsafe={summary['skipped_unsafe']}"
+                        f"retags={summary['retags']} · refresh={summary['refresh']} · "
+                        f"unchanged={summary['unchanged']} · skipped_unsafe={summary['skipped_unsafe']}"
                     )
         finally:
             browser.close()

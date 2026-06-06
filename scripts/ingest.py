@@ -48,7 +48,7 @@ def main() -> None:
                 )
                 progress.log_line(
                     f"creates={summary['creates']} · retags={summary['retags']} · "
-                    f"unchanged={summary['unchanged']}"
+                    f"refresh={summary['refresh']} · unchanged={summary['unchanged']}"
                 )
         finally:
             browser.close()

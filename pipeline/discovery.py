@@ -19,6 +19,7 @@ decide whether 'missing' collections are trustworthy enough to act on.
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,10 +74,13 @@ def _merge_additive(discovered: dict) -> list:
     return new_names
 
 
-def discover_collections(context: BrowserContext, config: Config) -> DiscoveryResult:
+def discover_collections(
+    context: BrowserContext, config: Config, persist: bool = True
+) -> DiscoveryResult:
     """
-    Crawl the /saved/ index, merge findings into collections.json, and report
-    discovered / new / missing collections plus a completeness flag.
+    Crawl the /saved/ index, report discovered / new / missing collections plus a
+    completeness flag. When persist=True, additively merges findings into
+    collections.json; when False (dry-run), computes results without writing.
     """
     known_before = set(_load_collections().keys())
 
@@ -85,6 +89,7 @@ def discover_collections(context: BrowserContext, config: Config) -> DiscoveryRe
     try:
         log.info("discovery: navigating to saved index %s", saved_index)
         page.goto(saved_index, wait_until="domcontentloaded", timeout=20_000)
+        time.sleep(4)  # saved index needs ~4s to render collection links (see lessons.md)
 
         if "accounts/login" in page.url:
             log.warning("discovery: redirected to login — session expired; INCOMPLETE")
@@ -111,7 +116,10 @@ def discover_collections(context: BrowserContext, config: Config) -> DiscoveryRe
     discovered = {v["name"]: {"slug": v["slug"], "numeric_id": v["numeric_id"]}
                   for v in items.values()}
 
-    new_names = _merge_additive(discovered)
+    if persist:
+        new_names = _merge_additive(discovered)
+    else:
+        new_names = [n for n in discovered if n not in known_before]
     discovered_names = set(discovered.keys())
     missing_names = sorted(known_before - discovered_names)
 

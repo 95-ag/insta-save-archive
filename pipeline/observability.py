@@ -26,7 +26,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -36,6 +37,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.text import Text
 
 _LOGS_DIR = Path(__file__).parent.parent / "logs"
 
@@ -74,22 +76,58 @@ def setup_logging(stage_name: str, level: int = logging.DEBUG) -> Path:
         root.removeHandler(handler)
     root.addHandler(file_handler)
 
-    # Keep noisy libraries in the file, never on screen.
+    # Keep noisy libraries in the file, never on screen. Some libs (notably
+    # notion_client, via make_console_logger) attach their OWN StreamHandler-to-stderr
+    # on client init — and the ingest creates a fresh Client per call, so that handler
+    # gets re-added repeatedly and its retry warnings print straight to the terminal,
+    # bypassing the rich display. Pre-seeding a NullHandler makes those libs skip
+    # adding a stderr handler (they only add one when no handler exists), while
+    # propagate=True keeps their records flowing to the file handler above.
     for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.INFO)
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        lg.addHandler(logging.NullHandler())
+        lg.propagate = True
+        lg.setLevel(logging.INFO)
 
     return log_path
 
 
+class _RetryWatcher(logging.Handler):
+    """
+    Logging handler that counts library retry/timeout WARNINGs (notion_client/httpx)
+    and reports them to a callback — so retries show as a quiet in-place indicator
+    instead of leaking warning spam to the terminal. Writes nothing itself.
+    """
+
+    _MATCH = ("fail", "timed out", "timeout", "retry")
+
+    def __init__(self, on_retry):
+        super().__init__(level=logging.WARNING)
+        self._on_retry = on_retry
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not record.name.startswith(("notion_client", "httpx", "httpcore")):
+            return
+        msg = record.getMessage().lower()
+        if any(token in msg for token in self._MATCH):
+            try:
+                self._on_retry()
+            except Exception:
+                pass
+
+
 class StageProgress:
     """
-    A reusable live terminal display built on rich.Progress.
+    A reusable live terminal display built on rich.Progress + a live status line.
 
-    Generic across stages — create one or more named bars, track arbitrary
-    counters, and show the current item. ETA and elapsed time are automatic.
+    Generic across stages — create one or more named bars, track arbitrary counters,
+    and show the current item live. ETA and elapsed are automatic. A retry watcher
+    surfaces Notion/httpx retries as a quiet in-place counter (full detail still goes
+    to the log file via setup_logging) instead of leaking warning spam to the terminal.
 
-    Not a logger: detail goes to the log file via setup_logging(). This class
-    owns the terminal exclusively while active.
+    Not a logger: it owns the terminal exclusively while active.
     """
 
     def __init__(self, title: str):
@@ -97,7 +135,10 @@ class StageProgress:
         self._console = Console()
         self._counters: dict[str, int] = {}
         self._current: str = ""
+        self._retries: int = 0
         self._started = time.time()
+        self._live: Live | None = None
+        self._retry_handler: _RetryWatcher | None = None
 
         self._progress = Progress(
             SpinnerColumn(),
@@ -109,18 +150,44 @@ class StageProgress:
             TextColumn("•  ETA"),
             TimeRemainingColumn(),
             console=self._console,
-            transient=False,
         )
+
+    # -- live rendering -----------------------------------------------------
+
+    def _status_line(self) -> Text:
+        parts = []
+        if self._current:
+            parts.append(self._current)
+        if self._retries:
+            parts.append(f"↻ retries: {self._retries}")
+        return Text("  " + "   ".join(parts), style="dim") if parts else Text("")
+
+    def _renderable(self) -> Group:
+        return Group(self._progress, self._status_line())
+
+    def _refresh(self) -> None:
+        if self._live is not None:
+            self._live.update(self._renderable())
+
+    def _on_retry(self) -> None:
+        self._retries += 1
+        self._refresh()
 
     # -- lifecycle ----------------------------------------------------------
 
     def __enter__(self) -> "StageProgress":
         self._console.rule(f"[bold]{self._title}")
-        self._progress.start()
+        self._live = Live(self._renderable(), console=self._console, refresh_per_second=8)
+        self._live.start()
+        self._retry_handler = _RetryWatcher(self._on_retry)
+        logging.getLogger().addHandler(self._retry_handler)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._progress.stop()
+        if self._retry_handler is not None:
+            logging.getLogger().removeHandler(self._retry_handler)
+        if self._live is not None:
+            self._live.stop()
         self._print_summary(failed=exc_type is not None)
 
     # -- bars ---------------------------------------------------------------
@@ -150,11 +217,12 @@ class StageProgress:
         self._counters[name] = self._counters.get(name, 0) + by
 
     def set_current(self, stage: str, item: str) -> None:
-        """Record the current stage + item (shown in the summary; logged in detail)."""
+        """Show the current stage + item live on the status line under the bars."""
         self._current = f"{stage} · {item}"
+        self._refresh()
 
     def log_line(self, message: str) -> None:
-        """Print a one-off narrator line above the bars without disturbing them."""
+        """Print a one-off narrator line above the live display."""
         self._console.print(message)
 
     # -- summary ------------------------------------------------------------
@@ -164,7 +232,10 @@ class StageProgress:
         h, rem = divmod(elapsed, 3600)
         m, s = divmod(rem, 60)
 
-        line = "  ".join(f"{k}={v}" for k, v in self._counters.items())
+        counters = dict(self._counters)
+        if self._retries:
+            counters["notion_retries"] = self._retries
+        line = "  ".join(f"{k}={v}" for k, v in counters.items())
         status = "[red]INTERRUPTED[/red]" if failed else "[green]DONE[/green]"
         self._console.rule(f"{status} · {self._title}")
         if line:
