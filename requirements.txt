@@ -21,4 +21,7 @@ rapidocr-onnxruntime==1.4.4
 anthropic>=0.50.0
 ollama>=0.3.0
 
+# Tests
+pytest>=8.0
+
 # System dep (not pip): ffmpeg — install with: sudo apt install ffmpeg
