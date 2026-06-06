@@ -12,12 +12,16 @@ Usage:
     python crawler.py          # prints all URLs for TARGET_COLLECTION
 """
 
+import json
 import logging
 import time
+from pathlib import Path
 
 from playwright.sync_api import BrowserContext
 
 from pipeline.config import Config
+
+_COLLECTIONS_FILE = Path(__file__).parent.parent / "config" / "collections.json"
 
 INSTAGRAM_BASE = "https://www.instagram.com"
 
@@ -49,6 +53,22 @@ def _resolve_collection_url(page, config: Config) -> str:
         log.info("crawler: target is 'all-posts' (catch-all view, not a named collection)")
         return f"{INSTAGRAM_BASE}/{config.ig_username}/saved/all-posts/"
 
+    # Fast path: construct URL directly from collections.json (slug + numeric_id).
+    # Avoids navigating to the saved index, which Instagram partially lazy-loads.
+    if _COLLECTIONS_FILE.exists():
+        try:
+            data = json.loads(_COLLECTIONS_FILE.read_text(encoding="utf-8"))
+            meta = data.get(config.target_collection, {})
+            slug = meta.get("slug")
+            numeric_id = meta.get("numeric_id")
+            if slug and numeric_id:
+                url = f"{INSTAGRAM_BASE}/{config.ig_username}/saved/{slug}/{numeric_id}/"
+                log.info("crawler: resolved '%s' from collections.json → %s", config.target_collection, url)
+                return url
+        except Exception as exc:
+            log.warning("crawler: collections.json lookup failed — %s", exc)
+
+    # Fallback: scrape the saved index (used if collection not in collections.json).
     saved_index = f"{INSTAGRAM_BASE}/{config.ig_username}/saved/"
     log.info("crawler: navigating to saved index to find collection '%s'", config.target_collection)
     page.goto(saved_index, wait_until="domcontentloaded", timeout=20_000)
