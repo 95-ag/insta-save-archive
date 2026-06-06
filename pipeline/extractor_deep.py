@@ -140,7 +140,7 @@ def extract_transcript(
         return {"transcript": transcript if available else None, "transcript_available": available}
 
     finally:
-        for path in [audio_path]:
+        for path in [audio_path, cookies_txt]:
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -265,7 +265,7 @@ def extract_ocr_frames(
         return "\n".join(all_text)
 
     finally:
-        for path in [video_path]:
+        for path in [video_path, cookies_txt]:
             try:
                 os.unlink(path)
             except FileNotFoundError:

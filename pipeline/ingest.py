@@ -14,6 +14,7 @@ a crash loses at most the in-flight crawl, and re-running converges.
 import dataclasses
 import json
 import logging
+import os
 import random
 import time
 from collections import defaultdict
@@ -251,7 +252,13 @@ def sync(
     if not dry_run and (plan.creates or refresh_targets):
         _netscape_cookies("session_cookies.json", cookies_txt)
 
-    _apply_plan(context, config, plan, refresh_targets, cookies_txt, progress, dry_run)
+    try:
+        _apply_plan(context, config, plan, refresh_targets, cookies_txt, progress, dry_run)
+    finally:
+        try:
+            os.unlink(cookies_txt)
+        except FileNotFoundError:
+            pass
 
     return {
         "collections": len(cols),
