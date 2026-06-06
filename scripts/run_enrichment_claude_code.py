@@ -22,12 +22,12 @@ Usage:
 import json
 import logging
 import sys
-import time
 from pathlib import Path
 
 from pipeline.collections import pilot_collections_by_enrichment_priority
 from pipeline.config import load_config
 from pipeline.notion import get_page_content, query_by_collection_and_status, write_enrichment
+from pipeline.observability import StageProgress, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -60,11 +60,8 @@ def prepare(collection_name: str) -> None:
 
     priority_names = [c.name for c in pilot_collections_by_enrichment_priority()]
     if collection_name not in priority_names:
-        log.error(
-            "prepare: %r not in priority list. "
-            "Add enrichment_order to its entry in config/collections.json.",
-            collection_name,
-        )
+        print(f"ERROR: {collection_name!r} not in priority list — "
+              "add enrichment_order to its entry in config/collections.json.")
         sys.exit(1)
 
     log.info("prepare: querying Enriched items for %r", collection_name)
@@ -74,27 +71,22 @@ def prepare(collection_name: str) -> None:
         print("Run the local pass first: python scripts/run_enrichment_local.py")
         return
 
-    log.info("prepare: fetching content for %d items", len(stubs))
     items = []
-    t_fetch = time.time()
-    for i, stub in enumerate(stubs, 1):
-        page_id = stub["page_id"]
-        sid = stub.get("source_id", page_id)
-        if i > 1:
-            avg = (time.time() - t_fetch) / (i - 1)
-            eta_secs = int(avg * (len(stubs) - i + 1))
-            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
-        else:
-            eta_str = ""
-        log.info("prepare: [%d/%d] %s%s", i, len(stubs), sid, eta_str)
-        try:
-            content = get_page_content(config, page_id)
-            items.append(content)
-        except Exception as exc:
-            log.error("prepare: could not fetch %s — %s", sid, exc)
+    with StageProgress(f"Prepare · {collection_name}") as progress:
+        bar = progress.add_bar("Fetch", total=len(stubs))
+        for stub in stubs:
+            sid = stub.get("source_id", stub["page_id"])
+            progress.set_current("fetch", sid)
+            try:
+                items.append(get_page_content(config, stub["page_id"]))
+                progress.bump("fetched")
+            except Exception as exc:
+                log.error("could not fetch %s — %s", sid, exc)
+                progress.bump("failed")
+            progress.advance(bar)
 
     if not items:
-        log.error("prepare: no items could be fetched — aborting")
+        print("ERROR: no items could be fetched — aborting")
         sys.exit(1)
 
     _TMP.mkdir(exist_ok=True)
@@ -165,83 +157,65 @@ def upload() -> None:
     Cleans up tmp files on full success.
     """
     if not _RESULTS_FILE.exists():
-        log.error(
-            "upload: %s not found. "
-            "Run Claude first: 'Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json'",
-            _RESULTS_FILE,
-        )
+        print(f"ERROR: {_RESULTS_FILE} not found. In Claude Code say: "
+              "'Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json'")
         sys.exit(1)
 
     try:
         results = json.loads(_RESULTS_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        log.error("upload: could not parse %s — %s", _RESULTS_FILE, exc)
+        print(f"ERROR: could not parse {_RESULTS_FILE} — {exc}")
         sys.exit(1)
 
     if not isinstance(results, list):
-        log.error("upload: expected a JSON array in %s, got %s", _RESULTS_FILE, type(results).__name__)
+        print(f"ERROR: expected a JSON array in {_RESULTS_FILE}, got {type(results).__name__}")
         sys.exit(1)
 
     config = load_config()
     written = failed = 0
-    t_start = time.time()
 
-    for i, item in enumerate(results, 1):
-        page_id = item.get("page_id")
-        sid = item.get("source_id", page_id)
-        if i > 1:
-            avg = (time.time() - t_start) / (i - 1)
-            eta_secs = int(avg * (len(results) - i + 1))
-            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
-        else:
-            eta_str = ""
-        log.info("upload: [%d/%d] %s%s", i, len(results), sid, eta_str)
+    with StageProgress("Upload enrichment") as progress:
+        bar = progress.add_bar("Items", total=len(results))
+        for item in results:
+            page_id = item.get("page_id")
+            sid = item.get("source_id", page_id)
+            progress.set_current("upload", sid or "?")
 
-        if not page_id:
-            log.error("upload: item missing page_id — %s", item)
-            failed += 1
-            continue
-
-        if not item.get("expanded_summary"):
-            log.warning("upload: %s has no expanded_summary — skipping", sid)
-            failed += 1
-            continue
-
-        enrichment = {
-            "expanded_summary": item["expanded_summary"],
-            "key_insights": item.get("key_insights") or [],
-        }
-
-        try:
-            write_enrichment(config, page_id, enrichment, config.enrichment_version)
-            log.info("upload: wrote enrichment for %s", sid)
-            written += 1
-        except Exception as exc:
-            log.error("upload: failed for %s — %s", sid, exc)
-            failed += 1
-
-    elapsed = int(time.time() - t_start)
-    print(flush=True)
-    print("=" * 50, flush=True)
-    print(f"  DONE — written={written}  failed={failed}", flush=True)
-    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
-    print("=" * 50, flush=True)
+            if not page_id:
+                log.error("item missing page_id — %s", item)
+                progress.bump("failed")
+                failed += 1
+            elif not item.get("expanded_summary"):
+                log.warning("%s has no expanded_summary — skipping", sid)
+                progress.bump("failed")
+                failed += 1
+            else:
+                enrichment = {
+                    "expanded_summary": item["expanded_summary"],
+                    "key_insights": item.get("key_insights") or [],
+                }
+                try:
+                    write_enrichment(config, page_id, enrichment, config.enrichment_version)
+                    log.info("wrote enrichment for %s", sid)
+                    progress.bump("written")
+                    written += 1
+                except Exception as exc:
+                    log.error("failed for %s — %s", sid, exc)
+                    progress.bump("failed")
+                    failed += 1
+            progress.advance(bar)
 
     if failed == 0 and written > 0:
         for path in [_BATCH_FILE, _PROMPT_FILE, _RESULTS_FILE]:
             if path.exists():
                 path.unlink()
-        log.info("upload: cleaned up tmp files")
+        print("Cleaned up tmp files.")
 
 
 if __name__ == "__main__":
     import argparse
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging("enrichment-claude")
     parser = argparse.ArgumentParser(
         description="Claude Code enrichment — prepare batches and upload results for priority collections."
     )

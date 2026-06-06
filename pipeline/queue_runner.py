@@ -125,13 +125,15 @@ def run_item(config: Config, context: BrowserContext, item: dict) -> None:
 def run_queue(
     config: Config,
     context: BrowserContext,
+    progress,
     limit: int | None = None,
     source_id: str | None = None,
 ) -> dict:
     """
-    Process Queued items from Notion.
+    Process Queued items from Notion, driving the given StageProgress display.
 
     Args:
+        progress:  StageProgress to report into (bar + counters)
         limit:     maximum number of items to process (None = all)
         source_id: if set, process only the item with this source_id
 
@@ -150,20 +152,15 @@ def run_queue(
         items = items[:limit]
 
     expanded = failed = skipped = 0
-    t_start = time.time()
+    bar = progress.add_bar("Extract", total=len(items))
 
-    for i, item in enumerate(items, 1):
+    for item in items:
         sid = item["source_id"]
-        if i > 1:
-            avg = (time.time() - t_start) / (i - 1)
-            eta_secs = int(avg * (len(items) - i + 1))
-            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
-        else:
-            eta_str = ""
-        log.info("queue: [%d/%d] %s%s", i, len(items), sid, eta_str)
+        progress.set_current("extract", sid)
         try:
             run_item(config, context, item)
             expanded += 1
+            progress.bump("expanded")
             log.info("queue: expanded %s", sid)
         except Exception as exc:
             log.error("queue: failed %s — %s", sid, exc)
@@ -172,11 +169,7 @@ def run_queue(
             except Exception as mark_exc:
                 log.error("queue: could not mark %s as Failed — %s", sid, mark_exc)
             failed += 1
+            progress.bump("failed")
+        progress.advance(bar)
 
-    elapsed = int(time.time() - t_start)
-    print(flush=True)
-    print("=" * 50, flush=True)
-    print(f"  DONE — expanded={expanded}  failed={failed}  skipped={skipped}", flush=True)
-    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
-    print("=" * 50, flush=True)
     return {"expanded": expanded, "failed": failed, "skipped": skipped}

@@ -22,7 +22,6 @@ Usage:
 
 import logging
 import sys
-import time
 
 from pipeline.collections import pilot_collections_by_enrichment_priority
 from pipeline.config import load_config
@@ -34,6 +33,7 @@ from pipeline.notion import (
     query_by_status,
     write_enrichment,
 )
+from pipeline.observability import StageProgress, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -78,73 +78,54 @@ def run(
             items = items[:limit]
 
     log.info("run_enrichment: %d items to process", len(items))
-    enriched = skipped = failed = 0
-    t_start = time.time()
 
-    for i, item_stub in enumerate(items, 1):
-        page_id = item_stub["page_id"]
-        sid = item_stub.get("source_id", page_id)
-        if i > 1:
-            avg = (time.time() - t_start) / (i - 1)
-            eta_secs = int(avg * (len(items) - i + 1))
-            eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
-        else:
-            eta_str = ""
-        log.info("run_enrichment: [%d/%d] %s%s", i, len(items), sid, eta_str)
+    title = "Claude enrichment (dry-run)" if dry_run else "Claude enrichment"
+    with StageProgress(title) as progress:
+        bar = progress.add_bar("Items", total=len(items))
+        for item_stub in items:
+            page_id = item_stub["page_id"]
+            sid = item_stub.get("source_id", page_id)
+            progress.set_current("enrich", sid)
+            progress.bump(_enrich_one(config, page_id, sid, dry_run, force, progress))
+            progress.advance(bar)
 
-        try:
-            content = get_page_content(config, page_id)
-        except Exception as exc:
-            log.error("run_enrichment: could not fetch content for %s — %s", sid, exc)
-            failed += 1
-            continue
 
-        if not force and content.get("expanded_summary"):
-            log.info(
-                "run_enrichment: %s already has summary — skipping (use --force to overwrite)", sid
-            )
-            skipped += 1
-            continue
+def _enrich_one(config, page_id, sid, dry_run, force, progress) -> str:
+    """Process one item. Returns a counter name for the summary."""
+    try:
+        content = get_page_content(config, page_id)
+    except Exception as exc:
+        log.error("could not fetch content for %s — %s", sid, exc)
+        return "failed"
 
-        try:
-            result = enrich_item(config, content)
-        except Exception as exc:
-            log.error("run_enrichment: enrichment call failed for %s — %s", sid, exc)
-            failed += 1
-            continue
+    if not force and content.get("expanded_summary"):
+        log.info("%s already has summary — skipping (use --force)", sid)
+        return "skipped"
 
-        if dry_run:
-            print(f"\n--- {sid} ---")
-            print(f"Summary:   {(result.get('expanded_summary') or '')[:300]}...")
-            print(f"Insights:  {result.get('key_insights')}")
-            enriched += 1
-            continue
+    try:
+        result = enrich_item(config, content)
+    except Exception as exc:
+        log.error("enrichment call failed for %s — %s", sid, exc)
+        return "failed"
 
-        try:
-            write_enrichment(config, page_id, result, config.enrichment_version)
-            log.info("run_enrichment: wrote enrichment for %s", sid)
-            enriched += 1
-        except Exception as exc:
-            log.error("run_enrichment: failed to write enrichment for %s — %s", sid, exc)
-            failed += 1
+    if dry_run:
+        log.info("dry-run %s: summary=%r insights=%r",
+                 sid, (result.get("expanded_summary") or "")[:300], result.get("key_insights"))
+        progress.log_line(f"[{sid}] {(result.get('expanded_summary') or '')[:80]}…")
+        return "would_enrich"
 
-    elapsed = int(time.time() - t_start)
-    action = "dry-run enriched" if dry_run else "enriched"
-    print(flush=True)
-    print("=" * 50, flush=True)
-    print(f"  DONE — {action}={enriched}  skipped={skipped}  failed={failed}", flush=True)
-    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
-    print("=" * 50, flush=True)
+    try:
+        write_enrichment(config, page_id, result, config.enrichment_version)
+        log.info("wrote enrichment for %s", sid)
+        return "enriched"
+    except Exception as exc:
+        log.error("failed to write enrichment for %s — %s", sid, exc)
+        return "failed"
 
 
 if __name__ == "__main__":
     import argparse
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
     parser = argparse.ArgumentParser(
         description="Run Phase 3 AI enrichment (Anthropic API) on Enriched items."
     )
@@ -154,6 +135,8 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Print enrichment output without writing.")
     parser.add_argument("--force", action="store_true", help="Overwrite existing enrichment fields.")
     args = parser.parse_args()
+
+    log_path = setup_logging("enrichment")
     run(
         limit=args.limit,
         source_id=args.source_id,
@@ -161,3 +144,4 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         force=args.force,
     )
+    print(f"\nlog: {log_path}")

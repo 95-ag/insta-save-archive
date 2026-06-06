@@ -9,12 +9,12 @@ Usage:
 """
 
 import argparse
-import logging
 import sys
 
 from playwright.sync_api import sync_playwright
 
 from pipeline.config import load_config, validate_notion_config
+from pipeline.observability import StageProgress, setup_logging
 from pipeline.queue_runner import run_queue
 from pipeline.session import ensure_authenticated
 
@@ -40,31 +40,28 @@ def main() -> None:
     parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-        stream=sys.stdout,
-    )
-
+    log_path = setup_logging("extraction")
     config = load_config()
     validate_notion_config(config)
 
     with sync_playwright() as pw:
         browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
-            result = run_queue(
-                config=config,
-                context=context,
-                limit=args.limit,
-                source_id=args.source_id,
-            )
+            with StageProgress("Extraction") as progress:
+                result = run_queue(
+                    config=config,
+                    context=context,
+                    progress=progress,
+                    limit=args.limit,
+                    source_id=args.source_id,
+                )
         finally:
             browser.close()
             if args.headed:
                 from pipeline.display import close_display
                 close_display()
 
+    print(f"\nlog: {log_path}")
     sys.exit(0 if result["failed"] == 0 else 1)
 
 
