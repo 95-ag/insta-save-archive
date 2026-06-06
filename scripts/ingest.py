@@ -1,59 +1,63 @@
 """
-Ingestion orchestrator — end-to-end pipeline for one collection.
+Single-collection ingest — sync one collection (TARGET_COLLECTION) into Notion.
 
-Flow:
-  1. Authenticate (cookie persistence / headful re-auth)
-  2. Crawl the target collection for post URLs
-  3. For each URL: extract metadata, dedup against Notion, write if new
+Reuses the same fail-safe sync as the batch run, restricted to one collection and
+skipping discovery (the collection must already exist in collections.json). Useful
+for re-syncing or testing a single collection.
 
-Safe to interrupt and restart — deduplication ensures no duplicates on re-run.
+Usage:
+    # set TARGET_COLLECTION in .env, then:
+    python scripts/ingest.py
+    python scripts/ingest.py --dry-run
+    python scripts/ingest.py --headed
 """
 
-import logging
-import sys
-import time
+import argparse
 
-from playwright.sync_api import sync_playwright, BrowserContext
+from playwright.sync_api import sync_playwright
 
-from pipeline.config import Config, load_config, validate_notion_config
-from pipeline.crawler import crawl_collection
-from pipeline.extractor import extract_post
-from pipeline.notion import create_page, query_by_source_id
+from pipeline.config import load_config, validate_notion_config
+from pipeline.ingest import sync
+from pipeline.observability import StageProgress, setup_logging
 from pipeline.session import ensure_authenticated
 
-log = logging.getLogger(__name__)
 
-from pipeline.ingest import ingest_with_context
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ingest a single Instagram collection into Notion.")
+    parser.add_argument("--headed", action="store_true", help="Visible browser window.")
+    parser.add_argument("--dry-run", action="store_true", help="Compute the plan; write nothing.")
+    parser.add_argument("--fresh", action="store_true", help="Ignore snapshot; re-crawl.")
+    args = parser.parse_args()
 
-def run(headless: bool = True) -> None:
+    log_path = setup_logging("ingest")
     config = load_config()
     validate_notion_config(config)
-    log.info("ingest: starting — collection=%r", config.target_collection)
 
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw, headless=headless)
+        browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
-            stats = ingest_with_context(context, config)
+            title = "Ingest (dry-run)" if args.dry_run else "Ingest"
+            with StageProgress(f"{title} · {config.target_collection}") as progress:
+                summary = sync(
+                    context, config,
+                    progress=progress,
+                    collection_names=[config.target_collection],
+                    fresh=args.fresh,
+                    dry_run=args.dry_run,
+                    discover=False,
+                )
+                progress.log_line(
+                    f"creates={summary['creates']} · retags={summary['retags']} · "
+                    f"unchanged={summary['unchanged']}"
+                )
         finally:
             browser.close()
-            if not headless:
+            if args.headed:
                 from pipeline.display import close_display
                 close_display()
 
-    log.info(
-        "ingest: done — created=%d skipped=%d failed=%d",
-        stats["created"], stats["skipped"], stats["failed"],
-    )
+    print(f"\nlog: {log_path}")
 
 
 if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    parser = argparse.ArgumentParser(description="Ingest Instagram collection into Notion.")
-    parser.add_argument("--headed", action="store_true", help="Run with visible browser window.")
-    args = parser.parse_args()
-    run(headless=not args.headed)
+    main()

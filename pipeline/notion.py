@@ -104,9 +104,9 @@ def _build_properties(metadata: dict) -> dict:
     props["source_id"] = _rich_text(source_id)
     props["pipeline_status"] = _select("Imported")
 
-    collection = metadata.get("collection")
-    if collection:
-        props["collection"] = _multi_select([collection])
+    collections = metadata.get("collections")
+    if collections:
+        props["collection"] = _multi_select(list(collections))
 
     for key, builder in [
         ("ig_link",     lambda v: _url(v)),
@@ -464,37 +464,6 @@ def get_page_content(config: Config, page_id: str) -> dict:
         "ocr_text": _text("ocr_text"),
         "expanded_summary": _text("expanded_summary"),  # None = not yet enriched
     }
-
-
-def add_collection_if_missing(config: Config, page_id: str, collection_name: str) -> bool:
-    """
-    Add collection_name to the page's collection multi-select if not already present.
-    Returns True if the collection was added, False if it was already there.
-    Does not touch any other field.
-    """
-    validate_notion_config(config)
-    client = Client(auth=config.notion_token)
-
-    page = client.pages.retrieve(page_id=page_id)
-    current = [
-        item["name"]
-        for item in page.get("properties", {}).get("collection", {}).get("multi_select", [])
-    ]
-
-    if collection_name in current:
-        return False
-
-    try:
-        client.pages.update(
-            page_id=page_id,
-            properties={"collection": _multi_select(current + [collection_name])},
-        )
-        log.info("notion: added collection %r to page %s", collection_name, page_id)
-        return True
-    except APIResponseError as e:
-        raise RuntimeError(
-            f"notion: failed to add collection {collection_name!r} to {page_id}: {e}"
-        ) from e
 
 
 def write_enrichment(config: Config, page_id: str, enrichment: dict, version: str) -> None:

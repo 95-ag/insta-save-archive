@@ -136,12 +136,15 @@ def _extract_date(page) -> str | None:
     return dt or None
 
 
-def extract_post(context: BrowserContext, url: str, collection: str) -> dict:
+def extract_post(context: BrowserContext, url: str) -> dict:
     """
     Navigate to a post URL and return structured metadata.
 
     Always returns a dict with all Stage 1 fields. Nullable fields are None
     when extraction fails — never empty strings.
+
+    Collection membership is NOT set here — it is decided by reconciliation and
+    written via the `collections` list the caller adds before create_page.
     """
     source_id = _parse_shortcode(url)
     ig_link = _canonical_url(url)
@@ -153,7 +156,6 @@ def extract_post(context: BrowserContext, url: str, collection: str) -> dict:
         "type": "Unknown",
         "caption": None,
         "posted_date": None,
-        "collection": collection,
     }
 
     page = context.new_page()

@@ -1,112 +1,86 @@
 """
-Batch ingestion — processes all 43 collections in group priority order.
+Ingest sync — discover collections, crawl them, and reconcile membership into Notion.
 
-Reuses a single authenticated Playwright session across all collections to
-avoid repeated login overhead. Deduplication in ingest_with_context ensures
-already-imported items are silently skipped.
+Default run discovers collections, crawls all, and syncs (create new posts; add/remove
+collection tags for posts that moved). Safe by design: a tag is only removed when its
+collection's crawl completed; whole-collection removal needs --confirm-removed.
 
 Usage:
-    python ingest_batch.py                             # all collections, headless
-    python ingest_batch.py --headed                    # visible browser
-    python ingest_batch.py --start-from-group "Biz"   # skip groups before Biz
-    python ingest_batch.py --dry-run                   # print order, don't ingest
+    python scripts/ingest_batch.py                         # full sync (discover + crawl + apply)
+    python scripts/ingest_batch.py --dry-run               # compute plan, no Notion writes
+    python scripts/ingest_batch.py --discover-only         # just refresh collections.json
+    python scripts/ingest_batch.py --fresh                 # ignore snapshots, re-crawl all
+    python scripts/ingest_batch.py --max-snapshot-age 60   # reuse snapshots younger than 60 min
+    python scripts/ingest_batch.py --confirm-removed "Old Collection"   # allow stripping its tag
+    python scripts/ingest_batch.py --headed                # visible browser (first login)
 """
 
-import dataclasses
-import logging
-import sys
-import time
+import argparse
 
 from playwright.sync_api import sync_playwright
 
-from pipeline.collections import ordered_for_ingestion, GROUP_PRIORITY
 from pipeline.config import load_config, validate_notion_config
-from pipeline.ingest import ingest_with_context
+from pipeline.discovery import discover_collections
+from pipeline.ingest import sync
+from pipeline.observability import StageProgress, setup_logging
 from pipeline.session import ensure_authenticated
 
-log = logging.getLogger(__name__)
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ingest sync — collection-aware Instagram → Notion.")
+    parser.add_argument("--headed", action="store_true", help="Visible browser (needed for first login).")
+    parser.add_argument("--dry-run", action="store_true", help="Compute the plan; write nothing to Notion.")
+    parser.add_argument("--discover-only", action="store_true", help="Refresh collections.json and exit.")
+    parser.add_argument("--fresh", action="store_true", help="Ignore existing snapshots; re-crawl every collection.")
+    parser.add_argument("--max-snapshot-age", type=int, default=360, metavar="MIN",
+                        help="Reuse complete snapshots younger than this many minutes (default 360).")
+    parser.add_argument("--confirm-removed", action="append", default=[], metavar="NAME",
+                        help="Collection safe to strip from posts even without a complete crawl (repeatable).")
+    args = parser.parse_args()
 
-def run(headless: bool = True, start_from_group: str | None = None, dry_run: bool = False) -> None:
+    log_path = setup_logging("ingest")
     config = load_config()
     validate_notion_config(config)
 
-    collections = ordered_for_ingestion()
-
-    if start_from_group:
-        if start_from_group not in GROUP_PRIORITY:
-            raise RuntimeError(
-                f"Unknown group {start_from_group!r}. "
-                f"Available: {', '.join(GROUP_PRIORITY)}"
-            )
-        collections = [
-            e for e in collections
-            if GROUP_PRIORITY.index(e.group) >= GROUP_PRIORITY.index(start_from_group)
-        ]
-        log.info("batch: resuming from group %r (%d collections)", start_from_group, len(collections))
-
-    log.info("batch: %d collections to process", len(collections))
-
-    if dry_run:
-        print(f"\nDry-run — ingestion order ({len(collections)} collections):\n")
-        for i, entry in enumerate(collections, 1):
-            marker = "[EXTRACT]" if entry.extract else "         "
-            print(f"  {i:2}. {marker} [{entry.group}] {entry.name}")
-        return
-
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw, headless=headless)
+        browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
-            total_created = total_skipped = total_failed = 0
-            t_start = time.time()
-            for i, entry in enumerate(collections, 1):
-                if i > 1:
-                    avg = (time.time() - t_start) / (i - 1)
-                    eta_secs = int(avg * (len(collections) - i + 1))
-                    eta_str = f" — ETA {eta_secs // 3600}h {(eta_secs % 3600) // 60}m {eta_secs % 60}s"
-                else:
-                    eta_str = ""
-                log.info(
-                    "batch: [%d/%d] %s (%s)%s",
-                    i, len(collections), entry.name, entry.group, eta_str,
-                )
-                col_config = dataclasses.replace(config, target_collection=entry.name)
-                stats = ingest_with_context(context, col_config)
-                log.info(
-                    "batch: %s — created=%d skipped=%d failed=%d",
-                    entry.name, stats["created"], stats["skipped"], stats["failed"],
-                )
-                total_created += stats["created"]
-                total_skipped += stats["skipped"]
-                total_failed += stats["failed"]
+            if args.discover_only:
+                with StageProgress("Discover") as progress:
+                    result = discover_collections(context, config)
+                    progress.log_line(
+                        f"discovered {len(result.discovered)} "
+                        f"({len(result.new_names)} new, {len(result.missing_names)} missing) "
+                        f"· complete={result.complete}"
+                    )
+                    for n in result.new_names:
+                        progress.bump("new")
+                    progress.bump("discovered", len(result.discovered))
+            else:
+                title = "Ingest (dry-run)" if args.dry_run else "Ingest"
+                with StageProgress(title) as progress:
+                    summary = sync(
+                        context, config,
+                        progress=progress,
+                        confirmed_removed=set(args.confirm_removed),
+                        max_snapshot_age=args.max_snapshot_age,
+                        fresh=args.fresh,
+                        dry_run=args.dry_run,
+                        discover=True,
+                    )
+                    progress.log_line(
+                        f"collections={summary['collections']} · creates={summary['creates']} · "
+                        f"retags={summary['retags']} · unchanged={summary['unchanged']} · "
+                        f"skipped_unsafe={summary['skipped_unsafe']}"
+                    )
         finally:
             browser.close()
-            if not headless:
+            if args.headed:
                 from pipeline.display import close_display
                 close_display()
 
-    elapsed = int(time.time() - t_start)
-    print(flush=True)
-    print("=" * 50, flush=True)
-    print(f"  DONE — created={total_created}  skipped={total_skipped}  failed={total_failed}", flush=True)
-    print(f"  elapsed: {elapsed // 3600}h {(elapsed % 3600) // 60}m {elapsed % 60}s", flush=True)
-    print("=" * 50, flush=True)
+    print(f"\nlog: {log_path}")
 
 
 if __name__ == "__main__":
-    import argparse
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    parser = argparse.ArgumentParser(description="Ingest all Instagram collections in priority order.")
-    parser.add_argument("--headed", action="store_true", help="Run with visible browser.")
-    parser.add_argument(
-        "--start-from-group",
-        metavar="GROUP",
-        help=f"Skip groups before this one. Options: {', '.join(GROUP_PRIORITY)}",
-    )
-    parser.add_argument("--dry-run", action="store_true", help="Print ingestion order without running.")
-    args = parser.parse_args()
-    run(headless=not args.headed, start_from_group=args.start_from_group, dry_run=args.dry_run)
+    main()
