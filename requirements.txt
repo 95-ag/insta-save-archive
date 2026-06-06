@@ -7,6 +7,9 @@ notion-client==3.1.0
 # Config
 python-dotenv==1.2.2
 
+# Terminal UI — reusable progress display across all pipeline stages
+rich>=13.0
+
 # Phase 2 — transcript extraction
 yt-dlp==2026.3.17
 faster-whisper==1.2.1

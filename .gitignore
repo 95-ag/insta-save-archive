@@ -6,8 +6,11 @@ node_modules/
 .env
 session_cookies.json
 
-# temp media (transcription audio, OCR frames, slide images)
+# temp media (transcription audio, OCR frames, slide images) + ingest snapshots (tmp/ingest/)
 tmp/
+
+# debug logs (clean terminal = rich progress; full detail goes here)
+logs/
 
 # private collection data — generate with: python scripts/list_collections.py --update
 config/collections.json
