@@ -1,19 +1,25 @@
 """
 Instagram collection crawler.
 
-Enumerates all saved post URLs in a named collection.
-Returns canonical post URLs — extractor.py navigates to each one for metadata.
+Enumerates the posts in a named collection and reports whether the crawl was
+COMPLETE — i.e. it reached the bottom and stopped finding new posts on its own,
+rather than giving up at a scroll cap or hitting a login redirect.
 
-'all-posts' is Instagram's built-in catch-all view — not a user-created collection.
-It contains every saved post regardless of collection membership. Use it only after
-all named collections have been ingested, to capture posts not in any collection.
+Completeness matters for the sync layer: a post's *absence* from a collection is
+only trustworthy evidence for tag removal if the crawl that produced it was complete.
 
-Usage:
-    python crawler.py          # prints all URLs for TARGET_COLLECTION
+Collection URLs are built directly from config/collections.json (slug + numeric_id),
+never scraped from the /saved/ index — that index lazy-loads unreliably. Discovering
+new collections is the job of pipeline/discovery.py.
+
+'all-posts' is Instagram's built-in catch-all view — excluded from sync reconciliation.
 """
 
+import json
 import logging
+import re
 import time
+from pathlib import Path
 
 from playwright.sync_api import BrowserContext
 
@@ -21,127 +27,158 @@ from pipeline.config import Config
 
 INSTAGRAM_BASE = "https://www.instagram.com"
 
-# Selector for post links visible on a collection page
+# Post links on a collection page
 POST_LINK_SELECTOR = "a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']"
 
-# Selector for named collection links on the /saved/ index page
-COLLECTION_LINK_SELECTOR = "a[href*='/saved/']"
+# Shortcode from a post href: /p/<code>/, /reel/<code>/, /tv/<code>/
+_SHORTCODE_RE = re.compile(r"/(p|reel|tv)/([A-Za-z0-9_-]+)")
 
-SCROLL_PAUSE = 2.0      # seconds to wait after each scroll
-MAX_UNCHANGED_SCROLLS = 3  # stop after this many scrolls with no new links
+SCROLL_PAUSE = 2.0           # seconds after each scroll step
+MAX_UNCHANGED_SCROLLS = 3    # consecutive (at-bottom + no-new) steps → complete
+MAX_SCROLLS = 80             # hard cap; hitting it means crawl is INCOMPLETE
+
+# JS: true when the viewport has reached the bottom of the scrollable page.
+_AT_BOTTOM_JS = (
+    "(window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 50)"
+)
 
 log = logging.getLogger(__name__)
 
-
 ALL_POSTS_SLUG = "all-posts"  # Instagram's built-in catch-all — not a user collection
 
+_COLLECTIONS_FILE = Path(__file__).parent.parent / "config" / "collections.json"
 
-def _resolve_collection_url(page, config: Config) -> str:
+
+def _shortcode(href: str) -> str | None:
+    m = _SHORTCODE_RE.search(href)
+    return m.group(2) if m else None
+
+
+def _canonical_url(href: str) -> str:
+    m = _SHORTCODE_RE.search(href)
+    if not m:
+        return INSTAGRAM_BASE + href if href.startswith("/") else href
+    return f"{INSTAGRAM_BASE}/{m.group(1)}/{m.group(2)}/"
+
+
+def scroll_harvest(page, selector: str, extract) -> tuple[dict, bool]:
     """
-    Returns the full URL for the target collection.
+    Scroll a lazy-loaded list to the bottom, accumulating items the whole way.
 
-    Named collections: navigates to /saved/ index and finds the matching link.
-    'all-posts': constructs the URL directly. Should only be used after all
-    named collections are processed — it contains every saved post, including
-    duplicates of posts that already belong to named collections.
+    Accumulating on EVERY step (not just at the end) is essential: Instagram
+    virtualizes long lists, unmounting items that scroll out of view. A single
+    harvest at the end would miss everything that scrolled past.
+
+    extract(link_locator) -> (key, value) | None    — called per matched element.
+    Items are de-duplicated by key.
+
+    Returns (items_by_key, complete). complete is True only if we stopped because
+    the list ended (reached bottom + no new items for MAX_UNCHANGED_SCROLLS steps),
+    False if we hit MAX_SCROLLS first.
+    """
+    items: dict = {}
+
+    def harvest() -> None:
+        for link in page.locator(selector).all():
+            try:
+                kv = extract(link)
+            except Exception:
+                kv = None
+            if kv is not None:
+                items[kv[0]] = kv[1]
+
+    stable = 0
+    complete = False
+    for _ in range(MAX_SCROLLS):
+        harvest()
+        before = len(items)
+        at_bottom = bool(page.evaluate(_AT_BOTTOM_JS))
+
+        page.evaluate("window.scrollBy(0, window.innerHeight)")
+        time.sleep(SCROLL_PAUSE)
+
+        harvest()  # catch items rendered by the scroll we just did
+        added = len(items) - before
+
+        if at_bottom and added == 0:
+            stable += 1
+            if stable >= MAX_UNCHANGED_SCROLLS:
+                complete = True
+                break
+        else:
+            stable = 0
+
+    if not complete:
+        log.warning(
+            "crawler: scroll_harvest hit MAX_SCROLLS (%d) without reaching a stable "
+            "bottom — result is INCOMPLETE (%d items)", MAX_SCROLLS, len(items)
+        )
+    return items, complete
+
+
+def resolve_collection_url(config: Config) -> str:
+    """
+    Build the collection URL from config/collections.json (slug + numeric_id).
+
+    No browser, no /saved/ index scrape — the index lazy-loads unreliably.
+    Raises if the collection isn't in collections.json (run discovery first).
     """
     if config.target_collection.lower() == ALL_POSTS_SLUG:
-        log.info("crawler: target is 'all-posts' (catch-all view, not a named collection)")
         return f"{INSTAGRAM_BASE}/{config.ig_username}/saved/all-posts/"
 
-    saved_index = f"{INSTAGRAM_BASE}/{config.ig_username}/saved/"
-    log.info("crawler: navigating to saved index to find collection '%s'", config.target_collection)
-    page.goto(saved_index, wait_until="domcontentloaded", timeout=20_000)
-    time.sleep(4)
-
-    # Scroll until no new collection links appear — Instagram lazy-loads them.
-    seen_count = 0
-    unchanged = 0
-    while unchanged < MAX_UNCHANGED_SCROLLS:
-        current = len(page.locator(COLLECTION_LINK_SELECTOR).all())
-        if current > seen_count:
-            seen_count = current
-            unchanged = 0
-        else:
-            unchanged += 1
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(SCROLL_PAUSE)
-    log.info("crawler: found %d collection links on saved index", seen_count)
-
-    links = page.locator(COLLECTION_LINK_SELECTOR).all()
-    target = config.target_collection.lower()
-
-    for link in links:
-        text = (link.inner_text() or "").strip().lower()
-        href = link.get_attribute("href") or ""
-        if text == target or target in href.lower():
-            url = INSTAGRAM_BASE + href if href.startswith("/") else href
-            log.info("crawler: found collection '%s' at %s", config.target_collection, url)
-            return url
-
-    raise RuntimeError(
-        f"crawler: collection '{config.target_collection}' not found on {saved_index}\n"
-        f"Available collections: "
-        + ", ".join(
-            (link.inner_text() or "").strip()
-            for link in page.locator(COLLECTION_LINK_SELECTOR).all()
-            if (link.inner_text() or "").strip()
+    if not _COLLECTIONS_FILE.exists():
+        raise RuntimeError(
+            f"crawler: {_COLLECTIONS_FILE} not found. "
+            "Run discovery first: python scripts/ingest_batch.py --discover-only"
         )
-    )
+
+    data = json.loads(_COLLECTIONS_FILE.read_text(encoding="utf-8"))
+    meta = data.get(config.target_collection, {})
+    slug = meta.get("slug")
+    numeric_id = meta.get("numeric_id")
+    if not slug or not numeric_id:
+        raise RuntimeError(
+            f"crawler: collection {config.target_collection!r} missing slug/numeric_id "
+            "in collections.json. Run: python scripts/ingest_batch.py --discover-only"
+        )
+    return f"{INSTAGRAM_BASE}/{config.ig_username}/saved/{slug}/{numeric_id}/"
 
 
-def _collect_post_urls(page) -> list[str]:
+def crawl_collection(context: BrowserContext, config: Config) -> tuple[list[dict], bool]:
     """
-    Scrolls the current collection page until no new post links appear.
-    Returns deduplicated canonical post URLs.
+    Crawl one collection. Returns (posts, complete).
+
+    posts    : list of {"shortcode": str, "url": canonical_url}
+    complete : True if the crawl reached a stable bottom; False if capped/interrupted.
+
+    Order is not guaranteed.
     """
-    seen: set[str] = set()
-    unchanged = 0
-
-    while unchanged < MAX_UNCHANGED_SCROLLS:
-        links = page.locator(POST_LINK_SELECTOR).all()
-        hrefs = {
-            link.get_attribute("href")
-            for link in links
-            if link.get_attribute("href")
-        }
-        new_hrefs = hrefs - seen
-
-        if new_hrefs:
-            seen.update(new_hrefs)
-            unchanged = 0
-            log.debug("crawler: found %d new links (total %d)", len(new_hrefs), len(seen))
-        else:
-            unchanged += 1
-
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(SCROLL_PAUSE)
-
-    urls = sorted(
-        INSTAGRAM_BASE + href if href.startswith("/") else href
-        for href in seen
-    )
-    return urls
-
-
-def crawl_collection(context: BrowserContext, config: Config) -> list[str]:
-    """
-    Returns a list of canonical post URLs for the configured collection.
-    Order is not guaranteed — caller should not assume feed order.
-    """
+    collection_url = resolve_collection_url(config)
     page = context.new_page()
     try:
-        collection_url = _resolve_collection_url(page, config)
-
-        log.info("crawler: navigating to collection %s", collection_url)
+        log.info("crawler: navigating to %s", collection_url)
         page.goto(collection_url, wait_until="domcontentloaded", timeout=20_000)
         time.sleep(2)
 
         if "accounts/login" in page.url:
-            raise RuntimeError("crawler: redirected to login — session may have expired")
+            log.warning("crawler: redirected to login — session expired; crawl INCOMPLETE")
+            return [], False
 
-        urls = _collect_post_urls(page)
-        log.info("crawler: found %d posts in '%s'", len(urls), config.target_collection)
-        return urls
+        def extract(link):
+            href = link.get_attribute("href")
+            if not href:
+                return None
+            code = _shortcode(href)
+            if not code:
+                return None
+            return (code, _canonical_url(href))
+
+        items, complete = scroll_harvest(page, POST_LINK_SELECTOR, extract)
+        posts = [{"shortcode": code, "url": url} for code, url in items.items()]
+        log.info(
+            "crawler: '%s' → %d posts (complete=%s)",
+            config.target_collection, len(posts), complete,
+        )
+        return posts, complete
     finally:
         page.close()
