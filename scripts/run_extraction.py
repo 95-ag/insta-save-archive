@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 
 from pipeline.config import load_config, validate_notion_config
 from pipeline.observability import StageProgress, setup_logging
-from pipeline.queue_runner import run_queue
+from pipeline.extract_runner import run_extract_stage
 from pipeline.session import ensure_authenticated
 
 
@@ -48,7 +48,7 @@ def main() -> None:
         browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
             with StageProgress("Extraction") as progress:
-                result = run_queue(
+                result = run_extract_stage(
                     config=config,
                     context=context,
                     progress=progress,

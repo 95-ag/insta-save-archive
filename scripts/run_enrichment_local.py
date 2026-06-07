@@ -21,7 +21,7 @@ import logging
 import re
 
 from pipeline.config import load_config
-from pipeline.enrich_local import enrich_local, validate_local_enrichment_config
+from pipeline.titler import generate_title, validate_title_config
 from pipeline.notion import get_page_content, write_title
 from pipeline.observability import StageProgress, setup_logging
 from pipeline.runner import run_priority_stage
@@ -54,7 +54,7 @@ def _enrich_one(config, stub, dry_run, force, progress) -> str:
         return "skipped"
 
     try:
-        result = enrich_local(config, content)
+        result = generate_title(config, content)
     except Exception as exc:
         log.error("Ollama failed for %s — %s", sid, exc)
         return "failed"
@@ -75,7 +75,7 @@ def _enrich_one(config, stub, dry_run, force, progress) -> str:
 
 def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
     config = load_config()
-    validate_local_enrichment_config(config)
+    validate_title_config(config)
 
     title = "Local enrichment (dry-run)" if dry_run else "Local enrichment"
     with StageProgress(title) as progress:

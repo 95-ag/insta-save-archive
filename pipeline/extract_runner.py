@@ -1,8 +1,8 @@
 """
-Phase 2 queue runner.
+Extraction stage runner.
 
 Queries Notion for Queued items, runs deep extraction on each, and writes
-results back. One item at a time; fails loud and moves on.
+results back (status → Extracted). One item at a time; fails loud and moves on.
 
 Flow per item:
   1. Read type from the Notion stub (set by ingest via yt-dlp metadata)
@@ -34,7 +34,7 @@ def _shortcode_from_link(ig_link: str) -> str | None:
     return m.group(2) if m else None
 
 
-def run_item(config: Config, context: BrowserContext, item: dict) -> bool:
+def run_extract_item(config: Config, context: BrowserContext, item: dict) -> bool:
     """
     Run deep extraction for a single Queued item and write results to Notion.
     Returns True if any content was extracted (transcript / ocr_text / carousel_slides).
@@ -102,7 +102,7 @@ def run_item(config: Config, context: BrowserContext, item: dict) -> bool:
     return bool(results.get("transcript") or results.get("ocr_text") or results.get("carousel_slides"))
 
 
-def run_queue(
+def run_extract_stage(
     config: Config,
     context: BrowserContext,
     progress,
@@ -119,11 +119,11 @@ def run_queue(
         source_id: if set, process only the Queued item with this source_id
 
     Returns:
-        counter dict including at least {"expanded": int, "failed": int}
+        counter dict including at least {"extracted": int, "failed": int}
     """
     def _process(config: Config, item: dict, ctx: BrowserContext) -> str:
-        had_data = run_item(config, ctx, item)
-        return "expanded" if had_data else "no_data"
+        had_data = run_extract_item(config, ctx, item)
+        return "extracted" if had_data else "no_data"
 
     def _on_error(config: Config, item: dict, exc: Exception) -> None:
         mark_failed(config, item["page_id"], str(exc))
