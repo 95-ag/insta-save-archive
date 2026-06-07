@@ -2,7 +2,7 @@
 Phase 3 enrichment CLI (Anthropic API).
 
 Queries Enriched items from Notion (post-local Ollama pass), calls Claude via API
-to generate expanded_summary and key_insights, writes them back.
+to generate expanded_summary, writes it back.
 
 Title and extracted_externals are NOT touched — written by the local Ollama pass.
 By default skips items that already have expanded_summary populated (idempotent).
@@ -109,8 +109,7 @@ def _enrich_one(config, page_id, sid, dry_run, force, progress) -> str:
         return "failed"
 
     if dry_run:
-        log.info("dry-run %s: summary=%r insights=%r",
-                 sid, (result.get("expanded_summary") or "")[:300], result.get("key_insights"))
+        log.info("dry-run %s: summary=%r", sid, (result.get("expanded_summary") or "")[:300])
         progress.log_line(f"[{sid}] {(result.get('expanded_summary') or '')[:80]}…")
         return "would_enrich"
 

@@ -53,7 +53,7 @@ No intermediate persistence layer. Results go directly to Notion. Interruption r
 | `collection` | Multi-select. Collection name(s). |
 | `caption` | Raw caption text. Null if unavailable. |
 | `posted_date` | From IG metadata. Null if unavailable. |
-| `pipeline_status` | Set to `Imported` on creation. Never overwritten by ingestion. |
+| `status` | Set to `Imported` on creation. Never overwritten by ingestion. |
 
 ### Deduplication Logic
 
@@ -124,26 +124,26 @@ For items manually promoted to `Queued` status in Notion, perform deep extractio
 
 ### Deliverables
 
-- `queue_runner.py` — Query Notion for `Queued` items, run extraction per item, update status to `Expanded` or `Failed`
+- `extract_runner.py` — Query Notion for `Queued` items, run extraction per item, update status to `Extracted` or `Failed`
 - `extractor_deep.py` — Per-item deep extraction: transcript (from video), OCR (from frames), carousel text (slide-by-slide)
 - `extractor_deep.py` is modular: each extraction type (transcript / OCR / carousel) is a separate callable function, not a monolith
 - Carousel extraction may use OCR, vision models, or a hybrid approach depending on content structure — many carousel slides are layouts and structured graphics rather than simple OCR targets; the approach should be chosen per-item type during Phase 2 implementation
-- Updated `notion_client.py` — Support for writing Stage 2 fields, including `raw_extraction` (JSON string), `last_processed_at`, `processing_version`
-- `run_extraction.py` — CLI: accepts `--limit N` and `--source_id X` flags for targeted runs
+- Updated `notion.py` — Support for writing Stage 2 fields, including `raw_extraction` (JSON string), `last_processed_at`, `processing_version`
+- `extract.py` — CLI: accepts `--limit N` and `--source_id X` flags for targeted runs
 
 **No AI calls in Phase 2.** Transcript = spoken word captured from video audio. OCR = text detected in frames. Neither requires Claude at this stage. AI enrichment is Phase 3.
 
 ### Data Flow
 
 ```
-run_extraction.py
-  → notion_client.py   (query Queued items, paginate)
+extract.py
+  → notion.py          (query Queued items, paginate)
   → session.py         (reuse Phase 1 session management)
   → extractor_deep.py  (navigate to ig_link, extract media)
     → transcript()
     → ocr_frames()
     → carousel_text()
-  → notion_client.py   (write fields, set status)
+  → notion.py          (write fields, set status → Extracted)
 ```
 
 ### Fields Populated in Phase 2
@@ -153,10 +153,11 @@ run_extraction.py
 | `transcript` | Extracted from video audio |
 | `ocr_text` | Text detected from video frames / image overlays |
 | `raw_extraction` | Full JSON: all extraction outputs, timestamps, method used. Never overwritten on reprocess — append with version key. |
-| `transcript_available` | Checkbox. True only if transcript produced usable output (non-empty, non-junk). |
 | `last_processed_at` | Timestamp of this extraction run |
 | `processing_version` | e.g., `v1.0-base`. Increment minor for prompt/method changes. |
-| `pipeline_status` | `Expanded` on success. `Failed` + `failure_notes` on any error. |
+| `status` | `Extracted` on success. `Failed` + `failure_notes` on any error. |
+
+**Dropped:** `transcript_available` — always equals `transcript is not None`; removed from schema and code.
 
 ### Non-Goals for Phase 2
 
@@ -172,9 +173,8 @@ run_extraction.py
 - Transcript extraction quality is sufficient to support summarization for a meaningful subset of Reel content (audio quality, spoken content density, and language vary significantly across saves — evaluate empirically against the first real batch)
 - OCR extraction captures visible on-screen text for at least one carousel item end-to-end
 - `raw_extraction` is populated as valid JSON for every processed item, regardless of output quality
-- `transcript_available` is false for items where extraction returned empty or junk output
-- Failed items have `pipeline_status = Failed` and a human-readable message in `failure_notes`
-- Re-running extraction on an already-`Expanded` item does not overwrite `raw_extraction` (appends under new version key)
+- Failed items have `status = Failed` and a human-readable message in `failure_notes`
+- Re-running extraction on an already-`Extracted` item does not overwrite `raw_extraction` (appends under new version key)
 - `processing_version` is updated on every run
 
 ### Risks
@@ -195,7 +195,7 @@ Phase 2 is complete and Phase 3 may begin when:
 - At least one Reel with audible speech has a usable transcript
 - At least one Carousel has structured slide text extracted
 - Re-running extraction on processed items preserves existing `raw_extraction` data
-- Human review of 5+ `Expanded` items confirms extraction quality is sufficient to support summarization
+- Human review of 5+ `Extracted` items confirms extraction quality is sufficient to support summarization
 
 ---
 
@@ -203,58 +203,61 @@ Phase 2 is complete and Phase 3 may begin when:
 
 ### Goal
 
-Run Claude-powered summarization and insight extraction over `Expanded` items using `raw_extraction` as the primary input. Populate `expanded_summary`, `key_insights`, and `extracted_externals`. Support iterative reprocessing as prompts improve.
+Run title generation (Ollama, automated) and Claude-powered summarization over `Extracted` items. Populate `title`, `summary`, and `externals`. Support iterative reprocessing as prompts improve.
 
 ### Deliverables
 
-- `enrichment.py` — Query `Expanded` items, call Claude API with extraction payload, write enrichment fields
-- `prompts/` — Directory of versioned prompt templates. One file per enrichment type.
-- Updated `notion_client.py` — Write enrichment fields without touching `raw_extraction`
-- `run_enrichment.py` — CLI with `--limit`, `--source_id`, `--dry-run` flags
+- `titler.py` — Ollama title generation. Reads Queued + Extracted items; writes `title` only; no status change.
+- `summarize.py` — `--prepare` (fetch Extracted batch → write prompt) + `--upload` (write Claude results to Notion).
+- `prompts/` — Versioned prompt templates. One file per extraction type.
+- Updated `notion.py` — `write_title` (title only, no status), `write_summary` (summary + externals → status: `Summarized`).
 
-**Use Claude-based enrichment.** The implementation mechanism is intentionally undecided and should be selected when Phase 3 begins based on cost, workflow, and operational simplicity. Claude Max, Claude Code, or the API are all viable options. No LangChain, no agent frameworks, no orchestration regardless of mechanism.
+**Title pass is decoupled from the status machine.** `scripts/title.py` reads both `Queued` and `Extracted` items and writes only the title field — no status change. Title generation does not gate Claude summarization.
+
+**Claude Code mechanism (locked).** `scripts/summarize.py` operates as a two-step CLI: `--prepare` writes a prompt file; the user runs a Claude Code session to fill it; `--upload` writes the results. No API key required — Claude Max only. No LangChain, no agent frameworks, no orchestration.
 
 ### Fields Populated in Phase 3
 
-| Field | Source |
-|---|---|
-| `expanded_summary` | AI-generated. Full content summary from `raw_extraction`. |
-| `key_insights` | AI-generated. Distilled, transferable knowledge. |
-| `extracted_externals` | AI-extracted tools, links, products, people, locations. Structured text. |
-| `processing_version` | Updated to reflect enrichment prompt version |
-| `last_processed_at` | Updated on each enrichment run |
+| Field | Engine | Notes |
+|---|---|---|
+| `title` | Ollama local (automated) | Runs on Queued + Extracted items. Caption is primary input. Does NOT change status. |
+| `summary` | Claude Code session | Full content extraction as clean prose — filler stripped, all information preserved. Paragraph-separated sections. |
+| `externals` | Claude Code session | Same session as summary. Grouped by category: Tools, Brands, Creators, Links, Techniques, Locations. |
+| `processing_version` | Code | Updated on each enrichment run. |
+| `last_processed_at` | Code | Updated on each enrichment run. |
+
+**Dropped fields:** `key_insights` removed — key takeaways are embedded in `summary`. `detected_entities` removed — merged into `externals`. `transcript_available` removed — redundant with `transcript is not None`.
 
 ### Non-Goals for Phase 3
 
-- Semantic tagging (Stage 3 in PROJECT.md — defer unless needed)
-- `route_target`, `suggested_next_step`, `duplicate_confidence` (Stage 3)
+- Semantic tagging (Phase 4 — embedding cluster batch job; defer)
+- `route_target` (Phase 5 — deterministic from collection config; defer)
 - Downstream database writes
 - Cross-item operations (dedup clustering, similarity)
 
 ### Success Criteria
 
-- `expanded_summary` is sufficient to understand the content without watching/reading the original
-- `key_insights` contains extractable, actionable knowledge for at least 80% of test items
-- Reprocessing an already-enriched item with an updated prompt overwrites enrichment fields but not `raw_extraction`
-- Dry-run mode prints the Claude prompt and expected output without writing to Notion
+- `summary` is sufficient to understand the content without watching/reading the original
+- `externals` captures tools, links, brands, creators visible in the content — links in caption are not missed
+- Reprocessing an already-summarized item with an updated prompt overwrites `summary` + `externals` but not `raw_extraction`
 - Cost per item is known and acceptable before running on full backlog
 
 ### Risks
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Claude Max usage limits hit during bulk enrichment | Medium | Tune `--limit` flag. Run in small batches. Schedule non-peak. |
+| Claude Max usage limits hit during bulk summarization | Medium | Tune `_CONTENT_BUDGET` in summarize.py. Run in small batches. Schedule non-peak. |
 | Prompt quality poor on first pass | Expected | `raw_extraction` preserved. Reprocess is free. Treat first pass as calibration. |
-| Enrichment fields overwritten on accidental re-run | Low | Add `--force` flag requirement to overwrite existing enrichment. Default: skip already-enriched items. |
+| Summary fields overwritten on accidental re-run | Low | `--upload` skips items if `summary` already set unless `--force` is passed. |
 
 ### Exit Criteria
 
 Phase 3 is complete when:
 
-- A batch of 20+ items has `expanded_summary` and `key_insights` populated
-- Human review (status: `Reviewed`) confirms extraction quality meets the bar of replacing the original source as reference
+- All priority items have `title`, `summary`, and `externals` populated
+- Human review confirms `summary` replaces watching/reading the original, and `externals` captures links/tools visible in content
 - Reprocessing with an updated prompt has been tested at least once without data loss
-- The cost and operational overhead of the chosen enrichment mechanism is understood before running on the full backlog
+- The cost and operational overhead of the Claude Code session mechanism is understood
 
 ---
 
@@ -280,7 +283,7 @@ Begin after Phase 3 enrichment is complete and spot-checked. Do not reorganise d
 
 - Collection renames must be reflected on all Notion pages before `collections.json` is updated — otherwise query filters by collection name break mid-pipeline.
 - New collections added to Instagram after Phase 3 should be discovered via `list_collections.py --update` (smart merge).
-- Any collection that already has `Summarised` items must not be renamed without updating those pages first.
+- Any collection that already has `Summarized` items must not be renamed without updating those pages first.
 
 ### Deliverables
 
@@ -294,7 +297,20 @@ Begin after Phase 3 enrichment is complete and spot-checked. Do not reorganise d
 
 Deferred. Do not design or implement until Phase 3 is validated and the save-to-downstream relationship (one-to-one vs. one-to-many, schema transformation approach) is resolved.
 
-Trigger for Phase 5 planning: at least 50 items have reached `Reviewed` status and downstream routing targets are confirmed.
+Trigger for Phase 5 planning: at least 50 items have reached `Summarized` status and downstream routing targets are confirmed.
+
+### Architectural Direction (decided Phase 3)
+
+**`route_target` is deterministic from collection — not AI-generated.** Collection membership maps to destination via config:
+- Recipe collections → Recipe Notion DB (fields: name, ingredients, steps, time, difficulty)
+- Coding / Web / Job Hunt → Learning Notion page (fields: concept, steps, tools, resources)
+- Biz / Clothing → Market research Notion DB (fields: brand, observation, opportunity, target demo)
+
+**Collection-typed Claude prompts.** The Claude summarize pass selects an extraction template based on collection → route_target. Different destinations get different structured output — a recipe gets recipe-shaped extraction, market research gets brand/opportunity extraction. The generic `summary` serves as fallback for uncategorised collections.
+
+**`suggested_next_step` not needed.** The route_target IS the next step. Knowing the destination encodes the action.
+
+**`tags` via embedding clusters.** Not per-item LLM. Run once across all `summary` values after bulk summarization — cluster by semantic similarity, name clusters. Batch job, not pipeline stage.
 
 ---
 
@@ -358,24 +374,37 @@ When implementation conflicts with planning assumptions, update the plan based o
 ## File Layout
 
 ```
-/
-├── .env                        # Secrets and config (gitignored)
-├── .env.example
-├── config.py                   # Loads env vars, exposes typed config
+pipeline/                       # Importable library (pip install -e .)
+├── config.py                   # Config dataclass, load_config()
+├── notion.py                   # All Notion API calls
+├── collections.py              # Loads config/collections.json
 ├── session.py                  # Login, cookie persistence, health check
-├── crawler.py                  # Collection traversal
-├── extractor.py                # Metadata parsing (Phase 1)
+├── crawler.py                  # Collection traversal (scroll_harvest)
+├── extractor.py                # Single-post metadata extraction
 ├── extractor_deep.py           # Transcript, OCR, carousel (Phase 2)
-├── notion_client.py            # Notion API wrapper
-├── ingest.py                   # Phase 1 orchestration entry point
-├── queue_runner.py             # Phase 2 orchestration entry point
-├── enrichment.py               # Phase 3 Claude enrichment
-├── run_extraction.py           # Phase 2 CLI
-├── run_enrichment.py           # Phase 3 CLI
-├── prompts/                    # Versioned prompt templates
-│   └── enrichment_v1.txt
-├── session_cookies.json        # Persisted session (gitignored)
-└── README.md
-```
+├── ingest.py                   # Ingest orchestration (no CLI)
+├── runner.py                   # run_priority_stage() — shared bucketed loop
+├── extract_runner.py           # run_extract_stage(), run_extract_item()
+├── titler.py                   # generate_title() — Ollama local
+├── observability.py            # StageProgress, setup_logging()
+└── display.py                  # VcXsrv / X11 management
 
-Phases 2 and 3 files are not created until their phase begins.
+scripts/                        # CLI entry points
+├── ingest.py                   # Single-collection ingest
+├── ingest_batch.py             # All collections in priority order
+├── list_collections.py         # Discover → config/collections.json
+├── promote.py                  # Promote Imported → Queued
+├── extract.py                  # Phase 2 deep extraction
+├── title.py                    # Ollama title generation (Queued + Extracted)
+└── summarize.py                # Claude Code summary + externals (--prepare / --upload)
+
+config/
+├── collections.json            # Gitignored — real data (43 entries)
+└── collections.example.json    # Committed — 2-entry placeholder
+
+prompts/
+└── enrichment_v1.0-enrich.txt
+
+.env                            # Secrets (gitignored)
+session_cookies.json            # Persisted session (gitignored)
+```

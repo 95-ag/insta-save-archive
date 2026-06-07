@@ -1,13 +1,16 @@
 """
-Notion API client — Stage 1 ingestion and Stage 2 extraction operations.
+Notion API client for all pipeline stages.
 
 Exposes:
-  query_by_source_id  — deduplication check before any write
-  create_page         — write one Stage 1 row
-  mark_failed         — set pipeline_status=Failed and write failure_notes
-  query_by_status     — return all pages matching a pipeline_status value
-  write_extraction    — write Stage 2 results; appends raw_extraction under
-                        a version key, never overwrites prior versions
+  query_by_source_id       — deduplication check before any write
+  create_page              — write one Imported row
+  mark_failed              — set status=Failed and write failure_notes
+  query_by_status          — return all pages matching a status value
+  query_by_status_and_priority — paginated query with priority bucket filter
+  write_extraction         — write Extracted-stage results; appends raw_extraction
+                             under a version key, never overwrites prior versions
+  write_title              — write generated title (does not change status)
+  write_summary            — write summary + externals; sets status=Summarized
 
 Validates Notion credentials on first use via validate_notion_config().
 All writes respect config.notion_write_delay to stay within API rate limits.
@@ -105,7 +108,7 @@ def _build_properties(metadata: dict) -> dict:
     props: dict = {}
     props["title"] = _title(title_text)
     props["source_id"] = _rich_text(source_id)
-    props["pipeline_status"] = _select("Imported")
+    props["status"] = _select("Imported")
 
     collections = metadata.get("collections")
     if collections:
@@ -183,7 +186,7 @@ def create_page(config: Config, metadata: dict) -> str:
 
 def mark_failed(config: Config, page_id: str, notes: str) -> None:
     """
-    Sets pipeline_status=Failed and writes failure_notes on an existing page.
+    Sets status=Failed and writes failure_notes on an existing page.
     Used when a pipeline stage fails after the row has already been created.
     """
     validate_notion_config(config)
@@ -193,7 +196,7 @@ def mark_failed(config: Config, page_id: str, notes: str) -> None:
         client.pages.update(
             page_id=page_id,
             properties={
-                "pipeline_status": _select("Failed"),
+                "status": _select("Failed"),
                 "failure_notes": _rich_text(notes[:2000]),
             },
         )
@@ -204,8 +207,8 @@ def mark_failed(config: Config, page_id: str, notes: str) -> None:
 
 def query_by_status(config: Config, status: str) -> list[dict]:
     """
-    Returns all pages whose pipeline_status matches the given value.
-    Each item: {"page_id": str, "source_id": str, "ig_link": str}.
+    Returns all pages whose status matches the given value.
+    Each item: {"page_id": str, "source_id": str, "ig_link": str, "type": str | None}.
     Paginates automatically.
     """
     validate_notion_config(config)
@@ -216,7 +219,7 @@ def query_by_status(config: Config, status: str) -> list[dict]:
     cursor = None
     while True:
         kwargs = {
-            "filter": {"property": "pipeline_status", "select": {"equals": status}},
+            "filter": {"property": "status", "select": {"equals": status}},
         }
         if cursor:
             kwargs["start_cursor"] = cursor
@@ -225,10 +228,64 @@ def query_by_status(config: Config, status: str) -> list[dict]:
             props = page.get("properties", {})
             source_id_blocks = props.get("source_id", {}).get("rich_text", [])
             ig_link = props.get("ig_link", {}).get("url")
+            type_select = props.get("type", {}).get("select") or {}
             results.append({
                 "page_id": page["id"],
                 "source_id": source_id_blocks[0]["text"]["content"] if source_id_blocks else None,
                 "ig_link": ig_link,
+                "type": type_select.get("name"),
+            })
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
+    return results
+
+
+def query_by_status_and_priority(
+    config: Config, status: str, priority: str | None
+) -> list[dict]:
+    """
+    Returns pages where status equals status AND priority
+    matches the given bucket.
+
+    priority is one of "High"/"Medium"/"Low" (exact select option), or None to
+    match items with no priority set (the unprioritised bucket).
+    Each item: {"page_id": str, "source_id": str, "ig_link": str, "type": str | None}. Paginates.
+    """
+    validate_notion_config(config)
+    client = Client(auth=config.notion_token)
+    ds_id = _get_data_source_id(client, config.notion_database_id)
+
+    if priority is None:
+        priority_filter = {"property": "priority", "select": {"is_empty": True}}
+    else:
+        priority_filter = {"property": "priority", "select": {"equals": priority}}
+
+    results = []
+    cursor = None
+    while True:
+        kwargs = {
+            "filter": {
+                "and": [
+                    {"property": "status", "select": {"equals": status}},
+                    priority_filter,
+                ]
+            }
+        }
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = client.data_sources.query(ds_id, **kwargs)
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            source_id_blocks = props.get("source_id", {}).get("rich_text", [])
+            ig_link = props.get("ig_link", {}).get("url")
+            type_select = props.get("type", {}).get("select") or {}
+            results.append({
+                "page_id": page["id"],
+                "source_id": source_id_blocks[0]["text"]["content"] if source_id_blocks else None,
+                "ig_link": ig_link,
+                "type": type_select.get("name"),
             })
         if not response.get("has_more"):
             break
@@ -238,13 +295,13 @@ def query_by_status(config: Config, status: str) -> list[dict]:
 
 
 def mark_queued(config: Config, page_id: str) -> None:
-    """Set pipeline_status to Queued on an existing page."""
+    """Set status to Queued on an existing page."""
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
     try:
         client.pages.update(
             page_id=page_id,
-            properties={"pipeline_status": _select("Queued")},
+            properties={"status": _select("Queued")},
         )
         log.info("notion: marked %s as Queued", page_id)
     except APIResponseError as e:
@@ -256,7 +313,7 @@ def query_by_collection_and_status(
 ) -> list[dict]:
     """
     Returns pages where collection contains collection_name AND
-    pipeline_status equals status.
+    status equals status.
     Each item: {"page_id": str, "source_id": str}.
     Paginates automatically.
     """
@@ -270,7 +327,7 @@ def query_by_collection_and_status(
         kwargs = {
             "filter": {
                 "and": [
-                    {"property": "pipeline_status", "select": {"equals": status}},
+                    {"property": "status", "select": {"equals": status}},
                     {"property": "collection", "multi_select": {"contains": collection_name}},
                 ]
             }
@@ -349,7 +406,7 @@ def update_metadata(config: Config, page_id: str, metadata: dict) -> None:
     """
     Backfill Phase 1 metadata on an existing page: title, author, type, caption,
     posted_date. Only writes fields present in metadata. Never touches collection,
-    pipeline_status, or enrichment fields.
+    status, or enrichment fields.
     """
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
@@ -406,7 +463,6 @@ def write_extraction(config: Config, page_id: str, results: dict) -> None:
 
     results keys (all optional except processing_version):
       transcript        str — full spoken transcript (chunked if >2000 chars)
-      transcript_available  bool
       ocr_text          str — merged OCR text (chunked if >2000 chars)
       carousel_slides   list[dict] — [{slide: N, text: str}, ...]
       processing_version  str — e.g. "v1.0-base"
@@ -434,23 +490,19 @@ def write_extraction(config: Config, page_id: str, results: dict) -> None:
 
     raw[processing_version] = {
         "transcript": results.get("transcript"),
-        "transcript_available": results.get("transcript_available", False),
         "ocr_text": results.get("ocr_text"),
         "carousel_slides": results.get("carousel_slides"),
         "last_processed_at": results.get("last_processed_at"),
     }
 
     props: dict = {
-        "pipeline_status": _select("Expanded"),
+        "status": _select("Extracted"),
         "processing_version": _rich_text(processing_version),
         "raw_extraction": _rich_text_chunked(json.dumps(raw, ensure_ascii=False)),
     }
 
     if results.get("last_processed_at"):
         props["last_processed_at"] = _date(results["last_processed_at"])
-
-    transcript_available = results.get("transcript_available", False)
-    props["transcript_available"] = {"checkbox": transcript_available}
 
     if results.get("transcript") is not None:
         props["transcript"] = _rich_text_chunked(results["transcript"])
@@ -480,7 +532,7 @@ def get_page_content(config: Config, page_id: str) -> dict:
 
     Returns dict with keys:
       page_id, source_id, title, author, type, collection (list[str]),
-      caption, transcript, ocr_text, expanded_summary (None = not yet enriched).
+      caption, transcript, ocr_text, summary (None = not yet summarized).
     """
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
@@ -513,57 +565,51 @@ def get_page_content(config: Config, page_id: str) -> dict:
         "caption": _text("caption"),
         "transcript": _text("transcript"),
         "ocr_text": _text("ocr_text"),
-        "expanded_summary": _text("expanded_summary"),  # None = not yet enriched
+        "summary": _text("summary"),  # None = not yet summarized
     }
 
 
-def write_enrichment(config: Config, page_id: str, enrichment: dict, version: str) -> None:
+def write_summary(config: Config, page_id: str, enrichment: dict, version: str) -> None:
     """
-    Write Phase 3 Claude enrichment fields to a Notion page.
+    Write Claude summary and externals fields to a Notion page.
 
-    enrichment keys: expanded_summary (str), key_insights (list[str]).
+    enrichment keys: summary (str), externals (str, optional).
 
-    Sets pipeline_status to Summarised. Does NOT touch title, extracted_externals,
-    or raw_extraction — those are written by the local Ollama pass.
-    Updates expanded_summary, key_insights, processing_version, last_processed_at.
+    Sets status to Summarized. Does NOT touch title or raw_extraction.
+    Updates summary, externals (if present), processing_version, last_processed_at.
     """
     import datetime
 
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
 
-    key_insights_text = "\n".join(
-        f"• {insight}" for insight in (enrichment.get("key_insights") or [])
-    )
-
     props: dict = {
-        "pipeline_status": _select("Summarised"),
+        "status": _select("Summarized"),
         "processing_version": _rich_text(version),
         "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
     }
 
-    if enrichment.get("expanded_summary"):
-        props["expanded_summary"] = _rich_text_chunked(enrichment["expanded_summary"])
-
-    if key_insights_text:
-        props["key_insights"] = _rich_text_chunked(key_insights_text)
+    if enrichment.get("summary"):
+        props["summary"] = _rich_text_chunked(enrichment["summary"])
+    if enrichment.get("externals"):
+        props["externals"] = _rich_text_chunked(enrichment["externals"])
 
     try:
         client.pages.update(page_id=page_id, properties=props)
-        log.info("notion: wrote enrichment %s for page %s", version, page_id)
+        log.info("notion: wrote summary %s for page %s", version, page_id)
     except APIResponseError as e:
         raise RuntimeError(
-            f"notion: failed to write enrichment for {page_id}: {e}"
+            f"notion: failed to write summary for {page_id}: {e}"
         ) from e
 
 
-def write_local_enrichment(
-    config: Config, page_id: str, title: str, extracted_externals: str
-) -> None:
+def write_title(config: Config, page_id: str, title: str) -> None:
     """
-    Write local enrichment fields to a Notion page.
-    Only writes title and extracted_externals.
-    Does NOT touch expanded_summary, key_insights, pipeline_status, or raw_extraction.
+    Write a generated title to a Notion page. Does NOT change status.
+
+    Title generation is decoupled from the pipeline status machine — items can
+    be titled at Queued or Extracted status. The summarize pass reads Extracted
+    regardless of whether the item has been titled.
     """
     import datetime
 
@@ -571,18 +617,15 @@ def write_local_enrichment(
     client = Client(auth=config.notion_token)
 
     props: dict = {
-        "pipeline_status": _select("Enriched"),
         "last_processed_at": _date(datetime.datetime.utcnow().date().isoformat()),
     }
     if title:
         props["title"] = _title(title)
-    if extracted_externals:
-        props["extracted_externals"] = _rich_text_chunked(extracted_externals)
 
     try:
         client.pages.update(page_id=page_id, properties=props)
-        log.info("notion: wrote local enrichment for page %s", page_id)
+        log.info("notion: wrote title for page %s", page_id)
     except APIResponseError as e:
         raise RuntimeError(
-            f"notion: failed to write local enrichment for {page_id}: {e}"
+            f"notion: failed to write title for {page_id}: {e}"
         ) from e

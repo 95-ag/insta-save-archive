@@ -281,6 +281,53 @@ def extract_ocr_frames(
             pass
 
 
+def extract_post(
+    context: BrowserContext,
+    ig_link: str,
+    shortcode: str,
+    tmp_dir: str,
+    cookies_json: str = "session_cookies.json",
+) -> list[dict]:
+    """
+    Download and OCR the single image of a Post.
+
+    Uses scope="img" (not "ul img") because Post images are not wrapped in a <ul>.
+    Returns [{"slide": 1, "text": "..."}] — same format as extract_carousel so
+    results write to the carousel_slides field without any schema change.
+    Returns [] if no content image is found on the page.
+    """
+    tmp = Path(tmp_dir)
+    tmp.mkdir(exist_ok=True)
+    cookie_header = _load_session_cookies(cookies_json)
+
+    downloaded: list[str] = []
+    page = context.new_page()
+    try:
+        page.goto(ig_link, wait_until="domcontentloaded", timeout=20_000)
+        import time as _time
+        _time.sleep(2.5)
+
+        urls = _content_image_urls(page, scope="img")
+        if not urls:
+            log.warning("extractor_deep: post %s — no content image found", shortcode)
+            return []
+
+        dest = str(tmp / f"{shortcode}_post.jpg")
+        _download_image(urls[0], dest, cookie_header)
+        downloaded.append(dest)
+        text = ocr_image(dest)
+        log.info("extractor_deep: post %s — %d chars OCR", shortcode, len(text))
+        return [{"slide": 1, "text": text or None}]
+
+    finally:
+        page.close()
+        for path in downloaded:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+
 def extract_carousel(
     context: BrowserContext,
     ig_link: str,

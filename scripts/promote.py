@@ -1,14 +1,14 @@
 """
-Promote Imported items in one or all pilot collections to Queued status.
+Queue CLI — promote Imported items to Queued status.
 
-Queued items are picked up by run_extraction.py for deep extraction.
-Safe to re-run — already-Queued or Expanded items are skipped (only
+Queued items are picked up by scripts/extract.py for deep extraction.
+Safe to re-run — already-Queued or Extracted items are skipped (only
 Imported items are targeted).
 
 Usage:
-    python scripts/queue_pilot.py --collection "<YOUR_COLLECTION>"   # one collection
-    python queue_pilot.py --all-pilot                  # all 15 pilot collections
-    python queue_pilot.py --all-pilot --dry-run        # preview only
+    python scripts/promote.py --collection "<YOUR_COLLECTION>"   # one collection
+    python scripts/promote.py --all-pilot                        # all pilot collections
+    python scripts/promote.py --all-pilot --dry-run              # preview only
 """
 
 import logging
@@ -27,13 +27,13 @@ def queue_collection(config, collection_name: str, dry_run: bool = False) -> int
     Returns count of items promoted.
     """
     items = query_by_collection_and_status(config, collection_name, "Imported")
-    log.info("queue_pilot: %s — %d Imported items found", collection_name, len(items))
+    log.info("queue: %s — %d Imported items found", collection_name, len(items))
     if dry_run:
-        log.info("queue_pilot: dry-run — would promote %d items", len(items))
+        log.info("queue: dry-run — would promote %d items", len(items))
         return len(items)
     for item in items:
         mark_queued(config, item["page_id"])
-    log.info("queue_pilot: %s — promoted %d items to Queued", collection_name, len(items))
+    log.info("queue: %s — promoted %d items to Queued", collection_name, len(items))
     return len(items)
 
 
@@ -63,4 +63,4 @@ if __name__ == "__main__":
             total += queue_collection(config, entry.name, dry_run=args.dry_run)
 
     action = "Would promote" if args.dry_run else "Promoted"
-    log.info("queue_pilot: done — %s %d items total", action, total)
+    log.info("queue: done — %s %d items total", action, total)

@@ -67,9 +67,8 @@ def _canonical_url(url: str) -> str:
     return f"{INSTAGRAM_BASE}/{m.group(1)}/{m.group(2)}/"
 
 
-# Video indicators on the post page
+# Video indicator on the post page
 VIDEO_SEL = "video"
-AUDIO_BTN_SEL = "button[aria-label='Toggle audio']"
 
 
 def _detect_type(url: str, page) -> str:
@@ -81,9 +80,10 @@ def _detect_type(url: str, page) -> str:
     if "/p/" in url:
         if page.locator(CAROUSEL_NEXT_SEL).count() > 0:
             return "Carousel"
-        # Reels cross-posted to feed appear as /p/ URLs but have a video element
-        # and an audio toggle button — same signal as an explicit /reel/ URL
-        if page.locator(VIDEO_SEL).count() > 0 and page.locator(AUDIO_BTN_SEL).count() > 0:
+        # Reels cross-posted to feed appear as /p/ URLs but carry a video element.
+        # Carousel is checked first, so a /p/ page with video but no carousel = Reel.
+        # Audio toggle button is hover-only and absent in headless — not used as signal.
+        if page.locator(VIDEO_SEL).count() > 0:
             return "Reel"
         return "Post"
     return "Unknown"

@@ -1,11 +1,14 @@
 """
-Phase 2 extraction CLI.
+Extraction CLI — Playwright browser pass.
+
+Processes Queued items: downloads transcript (yt-dlp + whisper) and OCR text
+(carousel slides or video frames), writes to Notion, sets status → Extracted.
 
 Usage:
-    python run_extraction.py                    # process all Queued items
-    python run_extraction.py --limit 10         # process up to 10 items
-    python run_extraction.py --source_id XXXXX  # process one specific item
-    python run_extraction.py --headed           # show browser window (auto-launches VcXsrv)
+    python scripts/extract.py                    # process all Queued items
+    python scripts/extract.py --limit 10
+    python scripts/extract.py --source_id XXXXX  # one specific item
+    python scripts/extract.py --headed           # show browser window (auto-launches VcXsrv)
 """
 
 import argparse
@@ -15,13 +18,13 @@ from playwright.sync_api import sync_playwright
 
 from pipeline.config import load_config, validate_notion_config
 from pipeline.observability import StageProgress, setup_logging
-from pipeline.queue_runner import run_queue
+from pipeline.extract_runner import run_extract_stage
 from pipeline.session import ensure_authenticated
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Phase 2 deep extraction on Queued Notion items."
+        description="Extraction: transcript + OCR for Queued items → status Extracted."
     )
     parser.add_argument(
         "--limit",
@@ -48,7 +51,7 @@ def main() -> None:
         browser, context = ensure_authenticated(pw, headless=not args.headed)
         try:
             with StageProgress("Extraction") as progress:
-                result = run_queue(
+                result = run_extract_stage(
                     config=config,
                     context=context,
                     progress=progress,
