@@ -248,7 +248,7 @@ scripts/
   ingest.py            Single-collection ingest
   ingest_batch.py      All collections in priority order
   list_collections.py  Discover + --update → config/collections.json
-  queue.py             Promote Imported → Queued
+  promote.py           Promote Imported → Queued
   extract.py           Phase 2 deep extraction
   title.py             Ollama title generation (Queued + Extracted items)
   summarize.py         Claude Code summary + externals (--prepare / --upload)

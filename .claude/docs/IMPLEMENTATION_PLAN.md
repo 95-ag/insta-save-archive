@@ -393,7 +393,7 @@ scripts/                        # CLI entry points
 ├── ingest.py                   # Single-collection ingest
 ├── ingest_batch.py             # All collections in priority order
 ├── list_collections.py         # Discover → config/collections.json
-├── queue.py                    # Promote Imported → Queued
+├── promote.py                  # Promote Imported → Queued
 ├── extract.py                  # Phase 2 deep extraction
 ├── title.py                    # Ollama title generation (Queued + Extracted)
 └── summarize.py                # Claude Code summary + externals (--prepare / --upload)

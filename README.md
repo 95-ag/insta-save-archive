@@ -12,16 +12,17 @@ Phase 1 — Ingestion          scripts/ingest_batch.py / scripts/ingest.py
   Crawls each collection; writes author, type, caption, URL to Notion.
   Status: Imported
         │
-        ▼ (manual: set Queued + priority in Notion)
+        ▼ (manual: mark items Queued + set priority in Notion)
         ▼
-Phase 2 — Extraction         scripts/queue.py → scripts/extract.py
-  Queues items; extracts transcripts (Reels/IGTV) and OCR text (Carousels/Posts).
+Phase 2 — Extraction         scripts/extract.py
+  Extracts transcripts (Reels/IGTV) and OCR text (Carousels/Posts) for Queued items.
   Status: Queued → Extracted
         │
+        ▼ (run once all Queued items are extracted)
         ▼
 Phase 3 — Title pass         scripts/title.py   [automated, Ollama, no status change]
-  Ollama (qwen2.5:7b) generates a human-readable title from caption.
-  Runs on Queued, Extracted, and Imported items — status unchanged.
+  Generates a human-readable title from caption for Extracted and Imported items.
+  Status: unchanged
         │
         ▼
 Phase 3 — Summarize pass     scripts/summarize.py   [manual Claude Code session]
@@ -34,7 +35,7 @@ Phase 3 — Summarize pass     scripts/summarize.py   [manual Claude Code sessio
 | Status | Set by | Meaning |
 |---|---|---|
 | `Imported` | ingest scripts | Metadata written, awaiting extraction |
-| `Queued` | `queue.py` | Marked for deep extraction |
+| `Queued` | `promote.py` | Marked for deep extraction |
 | `Extracted` | `extract.py` | Transcript + OCR extracted |
 | `Summarized` | `summarize.py --upload` | Summary + externals written by Claude |
 | `Failed` | any stage | Stage failed; see `failure_notes` |
@@ -256,13 +257,13 @@ Set items to `Queued` status in Notion (and optionally set `priority`: High / Me
 
 ```bash
 # Queue all pilot collections (extract=True in collections.json)
-python scripts/queue.py --all-pilot
+python scripts/promote.py --all-pilot
 
 # Queue a single collection
-python scripts/queue.py --collection "<YOUR_COLLECTION>"
+python scripts/promote.py --collection "<YOUR_COLLECTION>"
 
 # Preview without writing
-python scripts/queue.py --all-pilot --dry-run
+python scripts/promote.py --all-pilot --dry-run
 ```
 
 Sets `status` from `Imported` → `Queued` for matched items.
@@ -296,7 +297,7 @@ Inter-item delay (default 3–7s) is applied between each extraction to avoid HT
 
 ### Phase 3 — Title pass (Ollama, automated)
 
-Generates a human-readable `title` from caption for items that still have a placeholder title. Runs on **Queued**, **Extracted**, and **Imported** items. Does **not** change status.
+Generates a human-readable `title` from caption for items that still have a placeholder title. Runs on **Extracted** and **Imported** items — run after extraction, once no Queued items remain. Does **not** change status.
 
 Safe to run anytime, repeatedly — only items with a placeholder title are processed.
 
@@ -309,7 +310,7 @@ ollama serve &
 
 ```bash
 # Full run — all Queued + Extracted items (Imported items at lower priority)
-python scripts/title.py 2>&1 | tee /tmp/title.log
+python scripts/title.py
 
 # Limit to N items
 python scripts/title.py --limit 10
