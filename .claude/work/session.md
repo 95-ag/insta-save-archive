@@ -3,17 +3,55 @@
 ## Current State
 
 **Branch:** `feature-batch-ingest-phase3-enrich`
-**Last commit:** `8020ef1` — feat: rebuild ingest as fail-safe collection sync with move handling
+**Last commit:** `437e411` — fix: delete cookies.txt after each yt-dlp session to reduce credential exposure
 
 Phase 1 + 2 COMPLETE. Repo restructure, Cluster 1 (Ollama), Cluster 2 (Claude Code) COMPLETE.
-**Ingest Sync Layer COMPLETE (Clusters A–E)** — fail-safe collection sync with move handling,
-hardened discovery (43/43, was 12), reconciliation safety gate, rich UI + file logging.
+**Ingest Sync Layer COMPLETE — all clusters A–H committed and verified.**
+Fail-safe collection sync with move handling, hardened discovery (43/43, was 12),
+reconciliation safety gate, rich UI + file logging across ALL stages.
 Plan: `/home/ag-95/.claude/plans/2026-06-06-ingest-sync-layer.md`
 
-**Next:**
-1. Full 43-collection live ingest run (user-driven, real writes): `python scripts/ingest_batch.py`
-2. Cluster F docs (this commit) + optional Cluster G (migrate Phase 2/3 to shared display)
-3. Then O1 local enrichment run (162 Expanded items)
+### Full dry-run verified (2026-06-06)
+`python scripts/ingest_batch.py --dry-run` → 16m47s, zero writes:
+- discovered 43, 0 new, 0 missing, **complete=True**
+- **creates=1363 · retags=11 · unchanged=226 · skipped_unsafe=0**
+- 1363 creates expected: old ingest never completed all collections (only ~12 reached
+  via the broken index-scrape). Hardened crawler now reaches all 43.
+- skipped_unsafe=0 confirms the gate: full run = every collection complete = nothing withheld.
+
+### Cluster H — yt-dlp metadata + self-healing backfill ✅ COMMITTED (2026-06-06)
+Browser metadata extraction rate-limited at ~250/session (live run: 1363 created, 1104 blank
++ mistyped "Post"). Switched metadata engine to `yt-dlp --dump-json` (spike: 91%→~100% with
+--ignore-no-formats-error, no wall at 300). Ingest now self-heals: refresh phase re-extracts
+metadata for pages flagged `needs_metadata`, throttled (2-4s) + wall-stop (5 consec fails).
+Code-reviewed (no blockers); fixes applied (N4/M3/N7/N5/inv-8/M1).
+
+- `needs_metadata` trigger = **author missing OR posted_date missing**
+- **Browser fallback** for ~1% of image posts yt-dlp refuses ("There is no video in this post")
+- notion_client/httpx warnings → log file only; StageProgress shows current item + `↻ retries: N`
+
+**Live backfill runs (2026-06-06):**
+- Run 1 (~15:38): creates=0, retags=1, unchanged=1599 → **1345 metadata backfills** → yt-dlp wall hit (5 consec image-only fails), deferred tail to next run
+- Run 2 (~18:37): **9 more backfills** → manually interrupted
+- Verified: sample Notion pages show correct author, posted_date, type ✅
+
+**Next:** O1 local enrichment → O3 Claude pass → O4 spot-check.
+NOTE: run ingest and O1 SEQUENTIALLY (both write Notion).
+
+### Commit log this session (newest first)
+| Commit | Cluster | |
+|---|---|---|
+| 437e411 | H | fix: delete cookies.txt after each yt-dlp session |
+| b6b461a | H | use yt-dlp for ingest metadata with throttle, self-healing, browser fallback |
+| f27a55f | H | add yt-dlp metadata extractor with browser fallback and Notion metadata update |
+| 5eef58c | G | migrate extraction+enrichment to shared StageProgress (−65 lines) |
+| b53799a | F | docs: ingest sync layer + flags |
+| 8020ef1 | E | rebuild ingest as fail-safe sync; dead code removed |
+| 895b6b7 | D | pure reconcile + 9 invariant tests |
+| be08922 | C | snapshots + bulk_load_state/set_collections |
+| 85c9a3b | B | hardened crawler scroll_harvest + discovery |
+| 37ab80d | A | reusable rich progress + file-only logging |
+| (earlier) | — | crawler/notion fixes, ETA, Cluster 2, collections.json |
 
 ### Ingest Sync Layer — architecture (NEW)
 Stages: discover → crawl → bulk-load-Notion → reconcile → apply.
