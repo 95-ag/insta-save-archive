@@ -10,7 +10,6 @@ Exposes:
 """
 
 import logging
-import re
 
 import ollama
 
@@ -18,16 +17,15 @@ from pipeline.config import Config
 
 log = logging.getLogger(__name__)
 
-# Valid types for extracted_externals lines.
-_KNOWN_TYPES = frozenset(
-    {"tool", "app", "brand", "creator", "website", "link", "location", "technique", "ref"}
-)
-
-# Matches lines already in correct format: "[type] ..."
-_BRACKET_RE = re.compile(r"^\[([a-zA-Z]+)\]\s*\S")
-
-# Matches "type name" or "type: name" where type is a known word
-_PREFIX_RE = re.compile(r"^([a-zA-Z]+)[:\s]\s*(.+)$")
+# Output categories in display order. Each maps to a tool field name and section header.
+_CATEGORIES = [
+    ("tools",      "Tools"),
+    ("brands",     "Brands"),
+    ("creators",   "Creators"),
+    ("links",      "Links"),
+    ("techniques", "Techniques"),
+    ("locations",  "Locations"),
+]
 
 _LOCAL_TOOL = {
     "type": "function",
@@ -44,23 +42,56 @@ _LOCAL_TOOL = {
                         "E.g. '5 Canva tricks for faster graphics' not 'Canva tips'."
                     ),
                 },
-                "extracted_externals": {
+                "tools": {
                     "type": "string",
                     "description": (
-                        "Every tool, app, brand, creator, website, link, or location explicitly mentioned. "
-                        "REQUIRED FORMAT — one entry per line, exactly: [type] name — context\n"
-                        "Valid types: tool, app, brand, creator, website, link, location, technique\n"
-                        "Examples:\n"
-                        "[tool] Figma — UI design tool used\n"
-                        "[brand] Dropbox — subject of the post\n"
-                        "[creator] @millmotion — animator referenced\n"
-                        "[website] brand.dropbox.com — brand guidelines\n"
-                        "[technique] grid layout — design method shown\n"
-                        "If nothing is mentioned, return an empty string."
+                        "Software, apps, or platforms explicitly mentioned. "
+                        "One per line: name — what it does or how it is used. "
+                        "Empty string if none.\n"
+                        "Example:\nFigma — UI design tool\nCanva — quick graphics"
+                    ),
+                },
+                "brands": {
+                    "type": "string",
+                    "description": (
+                        "Companies, products, or services explicitly mentioned. "
+                        "One per line: name — context. Empty string if none.\n"
+                        "Example:\nDropbox — subject of the post\nAdobe — mentioned in comparison"
+                    ),
+                },
+                "creators": {
+                    "type": "string",
+                    "description": (
+                        "People or accounts referenced. "
+                        "One per line: @handle or name — context. Empty string if none.\n"
+                        "Example:\n@millmotion — animation style referenced"
+                    ),
+                },
+                "links": {
+                    "type": "string",
+                    "description": (
+                        "Websites or URLs mentioned. "
+                        "One per line: url or site name — what it is. Empty string if none.\n"
+                        "Example:\nbrand.dropbox.com — brand guidelines page"
+                    ),
+                },
+                "techniques": {
+                    "type": "string",
+                    "description": (
+                        "Methods, approaches, or frameworks explicitly shown or taught. "
+                        "One per line: name — how it is used. Empty string if none.\n"
+                        "Example:\ngrid overlay — used for layout alignment"
+                    ),
+                },
+                "locations": {
+                    "type": "string",
+                    "description": (
+                        "Physical places explicitly mentioned. "
+                        "One per line: name — context. Empty string if none."
                     ),
                 },
             },
-            "required": ["title", "extracted_externals"],
+            "required": ["title", "tools", "brands", "creators", "links", "techniques", "locations"],
         },
     },
 }
@@ -77,67 +108,38 @@ OCR/Slides: {ocr_text}
 
 Call save_local_enrichment with:
 1. title — concise and specific (not the caption), max 80 chars
-2. extracted_externals — every tool, app, brand, creator, website, link, or location explicitly mentioned.
-   Each entry MUST follow this exact format (one per line):
-   [type] name — context
-   Valid types: tool, app, brand, creator, website, link, location, technique
-   Example:
-   [tool] Figma — UI design tool used in tutorial
-   [brand] Dropbox — subject of the post
-   [creator] @millmotion — animator referenced
+2. tools — software, apps, or platforms explicitly mentioned. One per line: name — how used
+3. brands — companies, products, or services mentioned. One per line: name — context
+4. creators — people or accounts referenced. One per line: @handle or name — context
+5. links — websites or URLs mentioned. One per line: url — what it is
+6. techniques — methods or approaches shown. One per line: name — how used
+7. locations — physical places mentioned. One per line: name — context
+Leave any field as empty string if nothing in that category is mentioned.
 """
 
 
-def _format_externals_line(line: str) -> str:
+def _assemble_externals(args: dict) -> str:
     """
-    Normalise one extracted_externals line to [type] name — context format.
+    Build the grouped display string from per-category tool arguments.
 
-    Passes through lines already in correct format.
-    Converts "type name" or "type: name" patterns where type is a known word.
-    Tags unrecognised lines as [ref] so they are still stored and parseable.
+    Format:
+        [Category]
+          name — context
+          name — context
+        [Category]
+          name — context
     """
-    line = line.strip(" ,;-•*")
-    if not line:
-        return ""
-
-    # Already correct: starts with [type] followed by non-whitespace
-    if _BRACKET_RE.match(line):
-        return line
-
-    # "type name" or "type: name" where first word is a known type
-    m = _PREFIX_RE.match(line)
-    if m and m.group(1).lower() in _KNOWN_TYPES:
-        type_word = m.group(1).lower()
-        rest = m.group(2).strip()
-        return f"[{type_word}] {rest}"
-
-    # Unrecognised format — preserve content, tag as [ref] for downstream parsing
-    return f"[ref] {line}"
-
-
-def _normalize_externals(value) -> str:
-    """
-    Two-stage normalisation for extracted_externals:
-    1. Type coercion — convert dict/list model outputs to a list of strings.
-    2. Line format — ensure every non-empty line is in [type] name — context format.
-    """
-    if value is None:
-        return ""
-
-    # Stage 1: coerce to list of raw lines
-    if isinstance(value, str):
-        raw_lines = value.splitlines()
-    elif isinstance(value, list):
-        raw_lines = [str(item) for item in value if item]
-    elif isinstance(value, dict):
-        # e.g. {"Figma": "tool"} → already produces correct format
-        raw_lines = [f"[{str(v).lower()}] {k}" for k, v in value.items()]
-    else:
-        raw_lines = str(value).splitlines()
-
-    # Stage 2: normalise each line
-    formatted = [_format_externals_line(line) for line in raw_lines]
-    return "\n".join(line for line in formatted if line)
+    sections = []
+    for field, label in _CATEGORIES:
+        value = (args.get(field) or "").strip()
+        if not value:
+            continue
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        if not lines:
+            continue
+        sections.append(f"[{label}]")
+        sections.extend(f"  {line}" for line in lines)
+    return "\n".join(sections)
 
 
 def validate_local_enrichment_config(config: Config) -> None:
@@ -180,7 +182,7 @@ def enrich_local(config: Config, item: dict) -> dict:
             log.debug("enrichment_local: tool call ok for %s", item.get("source_id"))
             return {
                 "title": str(args.get("title") or "").strip(),
-                "extracted_externals": _normalize_externals(args.get("extracted_externals")),
+                "extracted_externals": _assemble_externals(args),
             }
 
     raise RuntimeError(
