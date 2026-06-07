@@ -2,61 +2,68 @@
 
 ## Active Plan
 
-`/home/ag-95/.claude/plans/2026-06-07-priority-stage-runner.md`
+`/home/ag-95/.claude/plans/2026-06-07-rename-pipeline.md`
 Branch: `feature-phase3-enrichment-runs`
 
 ---
 
-## Per-item priority pipeline + shared stage runner — DONE (pending user sign-off)
+## Pipeline naming refactor — IN PROGRESS
 
-### Cluster 1 — shared foundation ✅ 1775259
-- [x] `pipeline/notion.py`: `query_by_status_and_priority(config, status, priority)` (None → select.is_empty)
-- [x] `pipeline/runner.py` (new): `PRIORITY_BUCKETS` + `run_priority_stage(...)`
-- [x] Verify: `import pipeline.runner` ok; pytest reconcile 9 passed
-- [x] Commit: `feat: add priority-bucketed stage runner and status+priority query`
+### Cluster A — notion.py: field names, status strings, function renames ✅ cde96c7
+Files: `pipeline/notion.py`
+Message: `refactor: rename pipeline fields, statuses, and notion write functions`
 
-### Cluster 2 — expand on runner ✅ de2a2ed
-- [x] `pipeline/queue_runner.py`: `run_queue` delegates to `run_priority_stage` (signature preserved)
-- [x] `scripts/run_extraction.py` unchanged (confirmed)
-- [x] Verify: `run_extraction.py --help` ok; import clean
-- [x] Commit: `refactor: drive extraction through the priority-bucketed runner`
+### Cluster B — pipeline module renames ✅ 461ec71
+Files: `pipeline/titler.py` (was enrich_local.py), `pipeline/extract_runner.py` (was queue_runner.py)
+Message: `refactor: rename pipeline modules to titler.py and extract_runner.py`
 
-### Cluster 3 — enrich-local on runner ✅ f212810
-- [x] `scripts/run_enrichment_local.py`: `run` delegates to runner; placeholder-skip/`--force` in process_fn
-- [x] Verify: `--help` ok; live read-only bucket probe (distribution below)
-- [x] Commit: `refactor: drive local enrichment through the priority-bucketed runner`
+### Cluster C — script renames + title pass decoupling ✅ 89721f1
+Files: `scripts/title.py`, `scripts/summarize.py`, `scripts/extract.py`, `scripts/queue.py`
+Message: `refactor: rename enrichment/extraction scripts; title pass reads Queued and Extracted`
 
-### Cluster 4 — summarize by priority bucket ✅ 981fc2c
-- [x] `scripts/run_enrichment_claude_code.py`: `prepare` picks next non-empty Enriched bucket (High first); dropped `--collection`/`--list-priority` + grouping import
-- [x] Verify: `--help` shows only `--prepare`/`--upload`; grep clean of `pilot_collections`
-- [x] Commit: `refactor: prepare summarize batches by priority bucket and drop collection grouping`
+### Cluster D — summary line break fix ✅ 83f14e3
+Files: `scripts/summarize.py`
+Message: `fix: instruct summary prompt to use paragraph breaks for readable Notion output`
 
-### Cluster 5 — docs + backlog ⏳ (this commit)
-- [x] `.claude/work/{session,tasks,lessons}.md`: state + deferred tasks
-- [ ] Commit: `docs: record priority-stage runner model and deferred refactor tasks`
+### Cluster E — docs ✅ (uncommitted)
+Files: `.claude/docs/PROJECT.md`, `.claude/docs/IMPLEMENTATION_PLAN.md`
+Message: `docs: update project docs with renamed pipeline and flow diagram`
+
+### Cluster F — work docs ⏳
+Files: `.claude/work/session.md`, `.claude/work/tasks.md`, `.claude/work/lessons.md`
+Message: `chore: record naming refactor and update session state`
+
+### Notion manual steps (user, after code is deployed) ⏳
+1. Rename: `pipeline_status` → `status`
+2. Rename: `processing_priority` → `priority`
+3. Rename: `expanded_summary` → `summary`
+4. Rename: `extracted_externals` → `externals`
+5. Rename status option: `Expanded` → `Extracted`
+6. Rename status option: `Summarised` → `Summarized`
+7. Bulk-change: filter `status = Enriched` → select all → change to `Extracted` (~49 items)
+8. Delete the `Enriched` status option
+9. Delete the `transcript_available` property
 
 ---
 
-## Verification (end-to-end)
-- [x] `processing_priority` confirmed: options exactly High/Medium/Low (no Notion 400)
-- [x] imports resolve; three scripts `--help`
-- [x] `pytest tests/test_reconcile.py -v` → 9 passed
-- [x] grep: no grouping import in `run_enrichment_claude_code.py`
-- [x] live read-only bucket probe: Queued H22/M50/L7 · Expanded H105/M9 · Enriched H14/M15/L20 · blank=0
-- [ ] dry-run bucket ordering on a live processing run (user-driven, with Ollama up)
-- [ ] summarize `--prepare` selects High bucket on a real run
+## Move extracted_externals from local → Claude — DONE ✅
+
+### Cluster A — simplify local pass to title only ✅ 61735f7
+### Cluster B — add externals to Claude pass ✅ 474fdf5
+
+---
+
+## JSON schema format + system prompt — DONE ✅ bb6a04b
+## O1 validation run — DONE ✅
+## Claude pass redesign — DONE ✅ 8ae2f4e
+## Bugfix: Phase 2 type detection + no_data counter — DONE ✅ 30e2be0
+## Per-item priority pipeline + shared stage runner — DONE ✅
 
 ---
 
 ## Backlog (future work — not in this change)
-- [ ] T-refactor (end of Phase 3): remove dead grouping code (collections.py/queue_pilot.py/run_enrichment.py); restructure flat pipeline/ folder into stage-separated + helper layout
-- [ ] T-orchestrator: single full-pipeline run file (ingest → expand → enrich → summarize) for incremental adds/removals
-- [ ] O-runs: expand (79 queued) → enrich-local (114 expanded) → summarize (49 enriched), highest priority first · then spot-check 5 pages
-
----
-
-## Completed (prior work)
-- Ingest Sync Layer (Clusters A–H) — COMPLETE, verified
-- Cluster 2 Claude Code enrichment — COMPLETE (9fda9c3)
-- Repo restructure + privacy scrub — COMPLETE (31423f7)
-- Split enrichment Cluster 1 — COMPLETE
+- [ ] O-runs: after Notion steps — run title.py (title Queued+Extracted) → then cycle summarize.py --prepare/upload for Extracted items, highest priority first → spot-check 5 pages
+- [ ] T-refactor (end of Phase 3): remove dead code (old `enrich_claude.py`, `run_enrichment.py`; dead grouping in `collections.py`); restructure flat `pipeline/` into stage-separated layout; remove any remaining old-name references
+- [ ] T-orchestrator: single full-pipeline run file for incremental add/remove cycles
+- [ ] Tagging stage: embedding clusters for Summarized items; generic/collection tag for others
+- [ ] Routing stage: config-driven route_target assignment from collection name

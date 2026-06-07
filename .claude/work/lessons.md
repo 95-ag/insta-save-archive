@@ -48,4 +48,14 @@ One entry per lesson. Lead with the rule. Keep it to 2–3 lines max. Add/remove
 
 **Clean terminal = progress only; logs = file only.** Route all `logging` to a file handler (`setup_logging`), pin httpx/notion_client to file, and let `rich` own the terminal (`StageProgress`). Never mix — a stray log line breaks the live display. The module is stage-agnostic and reusable across ingest/extraction/enrichment.
 
+**route_target is deterministic, not AI-generated.** Collection membership encodes destination — no model needed to decide where a post goes. Config mapping (collection → destination) is cleaner, faster, and 100% reliable. AI's job is to extract content in the right FORMAT for the destination, not to decide the destination itself.
+
+**Local LLM scope should be title only.** Anything requiring semantic extraction (externals, summary, tags) is better done by Claude — higher quality, no compliance failures, done in the same session that reads the content anyway. Local Ollama earns its place for one fast, automated task: title from caption.
+
+**Ollama JSON schema format eliminates compliance failures and speeds up inference.** `tool_use` on 7B models has ~40% failure rate — model returns prose instead of calling the function. Pass `format=<JSON schema dict>` to `client.chat()` instead: constrained decoding makes non-matching output physically impossible. Side effect: ~37x faster on long-transcript items because the model skips preamble generation entirely.
+
+**Status name collisions cause compounding friction across sessions.** When a status value shares a name with a field (e.g. `Expanded` status + `expanded_summary` field) or when removed concepts leave ghost statuses (e.g. `Enriched` after title pass was decoupled), confusion reappears in every session. Fix names early — a rename refactor is cheaper than three sessions of wasted orientation. Prefer unambiguous, action-past-tense status names: Imported → Queued → Extracted → Summarized.
+
+**Title pass decoupled from status gate.** `write_title` must NOT write any status field. Title generation from caption doesn't need extraction to have run — tying it to `Extracted` creates an artificial gate. Two sequential `run_priority_stage` calls (Queued, then Extracted) let title run on both without special-casing.
+
 **Priority lives on the item, not the collection.** Pipeline ordering is a per-item Notion `processing_priority` select (High/Med/Low; blank = processed last), set manually. One shared `run_priority_stage` (`pipeline/runner.py`) reads buckets High→Med→Low→blank and is reused by extraction + local enrichment; summarize reuses the bucketed query. Share the loop, not the resources — browser (expand) and Ollama (enrich) stay separate stages with their own status gates. Filter with `query_by_status_and_priority`; `priority=None` → Notion `select.is_empty`.
