@@ -1,14 +1,14 @@
 """
-Promote Imported items in one or all pilot collections to Queued status.
+Queue CLI — promote Imported items to Queued status.
 
-Queued items are picked up by run_extraction.py for deep extraction.
-Safe to re-run — already-Queued or Expanded items are skipped (only
+Queued items are picked up by scripts/extract.py for deep extraction.
+Safe to re-run — already-Queued or Extracted items are skipped (only
 Imported items are targeted).
 
 Usage:
-    python scripts/queue_pilot.py --collection "<YOUR_COLLECTION>"   # one collection
-    python queue_pilot.py --all-pilot                  # all 15 pilot collections
-    python queue_pilot.py --all-pilot --dry-run        # preview only
+    python scripts/queue.py --collection "<YOUR_COLLECTION>"   # one collection
+    python scripts/queue.py --all-pilot                        # all pilot collections
+    python scripts/queue.py --all-pilot --dry-run              # preview only
 """
 
 import logging

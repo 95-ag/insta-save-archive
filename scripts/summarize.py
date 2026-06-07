@@ -1,26 +1,25 @@
 """
-Phase 3b — Claude Code enrichment CLI.
+Summarize CLI — Claude Code pass.
 
-Generates summary for Extracted items: all actual content from transcript,
+Generates summary + externals for Extracted items: all content from transcript,
 OCR, and caption rendered as clean prose — filler stripped, information preserved.
-Highest priority first (High → Medium → Low → unprioritised). Title and
-externals are NOT touched — written by the local Ollama pass.
+Highest priority first (High → Medium → Low → unprioritised).
 
 --prepare fetches the highest-priority non-empty Extracted bucket up to a content
 budget (total chars of transcript + OCR + caption across the batch). Batch size
 adapts automatically — many short items or fewer long ones per session.
 
 Workflow (repeat until no Extracted items remain):
-  1. python scripts/run_enrichment_claude_code.py --prepare
+  1. python scripts/summarize.py --prepare
   2. In Claude Code: "Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json"
-  3. python scripts/run_enrichment_claude_code.py --upload
+  3. python scripts/summarize.py --upload
 
 Each --prepare advances to the next bucket as items become Summarized.
 tmp/ is gitignored — all intermediate files are local only.
 
 Usage:
-    python scripts/run_enrichment_claude_code.py --prepare
-    python scripts/run_enrichment_claude_code.py --upload
+    python scripts/summarize.py --prepare
+    python scripts/summarize.py --upload
 """
 
 import json
