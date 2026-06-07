@@ -18,12 +18,12 @@ Usage:
 
 import logging
 import re
-import sys
 
 from pipeline.config import load_config
 from pipeline.enrich_local import enrich_local, validate_local_enrichment_config
-from pipeline.notion import get_page_content, query_by_source_id, query_by_status, write_local_enrichment
+from pipeline.notion import get_page_content, write_local_enrichment
 from pipeline.observability import StageProgress, setup_logging
+from pipeline.runner import run_priority_stage
 
 log = logging.getLogger(__name__)
 
@@ -81,26 +81,21 @@ def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
     config = load_config()
     validate_local_enrichment_config(config)
 
-    if source_id:
-        page_id = query_by_source_id(config, source_id)
-        if not page_id:
-            log.error("source_id %r not found", source_id)
-            sys.exit(1)
-        items = [{"page_id": page_id, "source_id": source_id}]
-    else:
-        items = query_by_status(config, "Expanded")
-        if limit:
-            items = items[:limit]
-
-    log.info("run_enrichment_local: %d items to process", len(items))
-
     title = "Local enrichment (dry-run)" if dry_run else "Local enrichment"
     with StageProgress(title) as progress:
-        bar = progress.add_bar("Items", total=len(items))
-        for stub in items:
-            progress.set_current("enrich", stub.get("source_id", stub["page_id"]))
-            progress.bump(_enrich_one(config, stub, dry_run, force, progress))
-            progress.advance(bar)
+        def _process(config, item, ctx):
+            return _enrich_one(config, item, dry_run, force, progress)
+
+        run_priority_stage(
+            config,
+            "Expanded",
+            _process,
+            progress,
+            limit=limit,
+            source_id=source_id,
+            stage_key="enrich",
+            bar_label="Items",
+        )
 
 
 if __name__ == "__main__":
