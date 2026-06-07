@@ -9,9 +9,14 @@ Returns null for any field that cannot be extracted. Never returns empty
 strings or placeholder text for nullable fields.
 """
 
+import datetime
+import json
 import logging
 import re
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 from playwright.sync_api import BrowserContext
 
@@ -136,12 +141,15 @@ def _extract_date(page) -> str | None:
     return dt or None
 
 
-def extract_post(context: BrowserContext, url: str, collection: str) -> dict:
+def extract_post(context: BrowserContext, url: str) -> dict:
     """
     Navigate to a post URL and return structured metadata.
 
     Always returns a dict with all Stage 1 fields. Nullable fields are None
     when extraction fails — never empty strings.
+
+    Collection membership is NOT set here — it is decided by reconciliation and
+    written via the `collections` list the caller adds before create_page.
     """
     source_id = _parse_shortcode(url)
     ig_link = _canonical_url(url)
@@ -153,7 +161,6 @@ def extract_post(context: BrowserContext, url: str, collection: str) -> dict:
         "type": "Unknown",
         "caption": None,
         "posted_date": None,
-        "collection": collection,
     }
 
     page = context.new_page()
@@ -188,32 +195,90 @@ def extract_post(context: BrowserContext, url: str, collection: str) -> dict:
         page.close()
 
 
-if __name__ == "__main__":
-    import sys
-    import json
-    from playwright.sync_api import sync_playwright
-    from session import ensure_authenticated
-    from config import load_config
+def _type_from_url(url: str, n_entries: int) -> str:
+    if "/reel/" in url:
+        return "Reel"
+    if "/tv/" in url:
+        return "IGTV"
+    return "Carousel" if n_entries > 1 else "Post"
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
-    load_config()  # fail fast on missing env vars
+def _iso_date(meta: dict) -> str | None:
+    """yt-dlp timestamp (epoch) or upload_date (YYYYMMDD) → ISO 8601, or None."""
+    ts = meta.get("timestamp")
+    if isinstance(ts, (int, float)):
+        return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+    ud = meta.get("upload_date")
+    if ud and len(str(ud)) == 8:
+        ud = str(ud)  # yt-dlp usually returns str, but guard against int YYYYMMDD
+        return f"{ud[0:4]}-{ud[4:6]}-{ud[6:8]}"
+    return None
 
-    TEST_URLS = [
-        "https://www.instagram.com/p/C--xP58PhNv/",
-        "https://www.instagram.com/p/C27-6SoumUZ/",
-    ]
 
-    with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw)
-        try:
-            for url in TEST_URLS:
-                result = extract_post(context, url, collection="test")
-                print(json.dumps(result, indent=2))
-                print()
-        finally:
-            browser.close()
+def minimal_metadata(url: str) -> dict:
+    """Metadata derivable from the URL alone (no network) — used when yt-dlp is skipped."""
+    return {
+        "source_id": _parse_shortcode(url),
+        "ig_link": _canonical_url(url),
+        "author": None,
+        "type": _type_from_url(url, 1),
+        "caption": None,
+        "posted_date": None,
+    }
+
+
+def extract_metadata_ytdlp(url: str, cookies_txt: str) -> dict:
+    """
+    Extract post metadata via `yt-dlp --dump-json` — no browser render.
+
+    Far more rate-limit resilient than loading the post page in Chromium, and works
+    for image posts (--ignore-no-formats-error makes yt-dlp emit metadata even when
+    there's no downloadable video).
+
+    Returns the same shape as extract_post (minus collection). author is None on
+    failure; the caller decides whether to defer.
+    """
+    base = minimal_metadata(url)
+    source_id = base["source_id"]
+
+    yt_dlp = str(Path(sys.executable).parent / "yt-dlp")
+    try:
+        result = subprocess.run(
+            [yt_dlp, "-j", "--no-warnings", "--ignore-no-formats-error",
+             "--cookies", cookies_txt, url],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("ytdlp: timeout for %s", source_id)
+        return base
+
+    if result.returncode != 0:
+        log.warning("ytdlp: %s failed — %s", source_id,
+                    (result.stderr.strip().splitlines() or ["?"])[-1][:160])
+        return base
+
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return base
+    try:
+        meta = json.loads(lines[0])
+    except json.JSONDecodeError:
+        log.warning("ytdlp: %s returned non-JSON", source_id)
+        return base
+
+    base["author"] = meta.get("uploader") or meta.get("channel") or meta.get("uploader_id")
+    base["caption"] = meta.get("description") or None
+    base["posted_date"] = _iso_date(meta)
+    base["type"] = _type_from_url(url, len(lines))
+    # Refine: a single /p/ entry that carries video is a reel cross-posted to feed.
+    if base["type"] == "Post" and (
+        meta.get("vcodec") not in (None, "none") or meta.get("duration")
+    ):
+        base["type"] = "Reel"
+
+    log.debug("ytdlp: %s → author=%r type=%s date=%s caption_len=%s",
+              source_id, base["author"], base["type"], base["posted_date"],
+              len(base["caption"]) if base["caption"] else None)
+    return base

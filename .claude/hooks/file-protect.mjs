@@ -11,10 +11,10 @@ rl.on("close", () => {
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const rel = path.relative(projectRoot, path.resolve(projectRoot, filePath));
 
-  const HARD_BLOCK = [/^\.git(\/|$)/, /^\.env(\.|$)/];
+  const HARD_BLOCK = [/^\.git(\/|$)/, /^\.env$/, /^\.env\.(?!example$).+$/];
 
   const ASK = [
-    /^\.claude(\/|$)/,
+    /^\.claude\/(?!work\/)/,
     /^CLAUDE\.md$/,
     /^AGENTS\.md$/,
     /^\.gitignore$/,

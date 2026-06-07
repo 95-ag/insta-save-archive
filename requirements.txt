@@ -1,0 +1,27 @@
+# Browser automation
+playwright==1.60.0
+
+# Notion API
+notion-client==3.1.0
+
+# Config
+python-dotenv==1.2.2
+
+# Terminal UI — reusable progress display across all pipeline stages
+rich>=13.0
+
+# Phase 2 — transcript extraction
+yt-dlp==2026.3.17
+faster-whisper==1.2.1
+
+# Phase 2 — OCR
+rapidocr-onnxruntime==1.4.4
+
+# Phase 3 — AI enrichment
+anthropic>=0.50.0
+ollama>=0.3.0
+
+# Tests
+pytest>=8.0
+
+# System dep (not pip): ffmpeg — install with: sudo apt install ffmpeg

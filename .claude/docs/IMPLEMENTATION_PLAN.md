@@ -258,11 +258,43 @@ Phase 3 is complete when:
 
 ---
 
-## Phase 4 — Distribution *(Future)*
+## Phase 4 — Collection Reorganisation *(After Phase 3)*
+
+### Goal
+
+Audit and restructure the saved collection taxonomy. Some collections are too narrow (near-duplicates), some too broad (catch-all), and some candidates for retirement. Produce a cleaner, more useful set of collections before any downstream routing or distribution work.
+
+### Trigger
+
+Begin after Phase 3 enrichment is complete and spot-checked. Do not reorganise during active enrichment — collection names are live tags on Notion rows.
+
+### Scope
+
+- **Audit:** review all 43 collections against actual content (now that items are enriched and titled). Identify: duplicates, near-duplicates, overly broad, overly narrow, empty/retired.
+- **Decide:** produce a target collection list — merges, renames, retirements, new collections.
+- **Migrate Notion:** bulk-update `collection` multi-select on affected pages (rename old → new, merge tags, remove retired).
+- **Update config:** update `config/collections.json` — group assignments, extract flags, enrichment_order.
+- **Retire:** mark retired Instagram collections as archived in `collections.json` (extract=false, group="Retired"). Do not delete Notion pages.
+
+### Constraints
+
+- Collection renames must be reflected on all Notion pages before `collections.json` is updated — otherwise query filters by collection name break mid-pipeline.
+- New collections added to Instagram after Phase 3 should be discovered via `list_collections.py --update` (smart merge).
+- Any collection that already has `Summarised` items must not be renamed without updating those pages first.
+
+### Deliverables
+
+- Updated `config/collections.json` with revised groups, extract flags, enrichment_order
+- Bulk migration script (one-off, not committed) to rename/merge collection tags in Notion
+- Updated `README.md` collection section if group structure changes significantly
+
+---
+
+## Phase 5 — Distribution *(Future)*
 
 Deferred. Do not design or implement until Phase 3 is validated and the save-to-downstream relationship (one-to-one vs. one-to-many, schema transformation approach) is resolved.
 
-Trigger for Phase 4 planning: at least 50 items have reached `Reviewed` status and downstream routing targets are confirmed.
+Trigger for Phase 5 planning: at least 50 items have reached `Reviewed` status and downstream routing targets are confirmed.
 
 ---
 
