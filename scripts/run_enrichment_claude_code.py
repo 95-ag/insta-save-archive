@@ -1,21 +1,21 @@
 """
 Phase 3b — Claude Code enrichment CLI.
 
-Generates expanded_summary for Enriched items: all actual content from transcript,
+Generates summary for Extracted items: all actual content from transcript,
 OCR, and caption rendered as clean prose — filler stripped, information preserved.
 Highest priority first (High → Medium → Low → unprioritised). Title and
-extracted_externals are NOT touched — written by the local Ollama pass.
+externals are NOT touched — written by the local Ollama pass.
 
---prepare fetches the highest-priority non-empty Enriched bucket up to a content
+--prepare fetches the highest-priority non-empty Extracted bucket up to a content
 budget (total chars of transcript + OCR + caption across the batch). Batch size
 adapts automatically — many short items or fewer long ones per session.
 
-Workflow (repeat until no Enriched items remain):
+Workflow (repeat until no Extracted items remain):
   1. python scripts/run_enrichment_claude_code.py --prepare
   2. In Claude Code: "Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json"
   3. python scripts/run_enrichment_claude_code.py --upload
 
-Each --prepare advances to the next bucket as items become Summarised.
+Each --prepare advances to the next bucket as items become Summarized.
 tmp/ is gitignored — all intermediate files are local only.
 
 Usage:
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 from pipeline.config import load_config
-from pipeline.notion import get_page_content, query_by_status_and_priority, write_enrichment
+from pipeline.notion import get_page_content, query_by_status_and_priority, write_summary
 from pipeline.observability import StageProgress, setup_logging
 from pipeline.runner import PRIORITY_BUCKETS
 
@@ -47,11 +47,11 @@ _CONTENT_BUDGET = 80_000
 
 def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
     """
-    Return (bucket_label, stubs) for the highest-priority Enriched bucket that has
+    Return (bucket_label, stubs) for the highest-priority Extracted bucket that has
     items: High → Medium → Low → unprioritised. Returns (None, []) if none remain.
     """
     for bucket in PRIORITY_BUCKETS:
-        stubs = query_by_status_and_priority(config, "Enriched", bucket)
+        stubs = query_by_status_and_priority(config, "Extracted", bucket)
         if stubs:
             return bucket, stubs
     return None, []
@@ -59,21 +59,21 @@ def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
 
 def prepare() -> None:
     """
-    Fetch the highest-priority non-empty Enriched bucket (High → Medium → Low →
+    Fetch the highest-priority non-empty Extracted bucket (High → Medium → Low →
     unprioritised) and write enrichment_batch.json + enrichment_prompt.txt for a
     Claude Code session. Each run advances to the next bucket as items become
-    Summarised.
+    Summarized.
     """
     config = load_config()
 
     bucket, stubs = _next_nonempty_bucket(config)
     if not stubs:
-        print("No Enriched items remain — nothing to prepare.")
+        print("No Extracted items remain — nothing to prepare.")
         print("Run the local pass first if expected: python scripts/run_enrichment_local.py")
         return
 
     label = bucket if bucket is not None else "Unprioritised"
-    log.info("prepare: %d Enriched items in the %s bucket", len(stubs), label)
+    log.info("prepare: %d Extracted items in the %s bucket", len(stubs), label)
 
     items = []
     with StageProgress(f"Prepare · {label}") as progress:
@@ -117,7 +117,7 @@ def prepare() -> None:
         len(i.get("caption") or "") + len(i.get("transcript") or "") + len(i.get("ocr_text") or "")
         for i in items
     )
-    print(f"\nPrepared {len(items)} Enriched items from the {label} priority bucket ({total_chars:,} chars of content).")
+    print(f"\nPrepared {len(items)} Extracted items from the {label} priority bucket ({total_chars:,} chars of content).")
     print(f"  Batch:  {_BATCH_FILE}")
     print(f"  Prompt: {_PROMPT_FILE}")
     print(f"\nNext: In a Claude Code session, say:")
@@ -132,7 +132,7 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         "",
         "For each post, produce two fields:",
         "",
-        "expanded_summary — Extract ALL useful information conveyed by this post as clean prose.",
+        "summary — Extract ALL useful information conveyed by this post as clean prose.",
         "  • Include every specific detail: steps, tips, tools, names, numbers, instructions.",
         "  • For carousel/OCR slides: consolidate the slide text into flowing prose.",
         "  • For video/reels: treat the transcript as content; render information, not narration.",
@@ -140,7 +140,7 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         "  • Result should replace watching the video or reading the slides —",
         "    all information value, no medium noise.",
         "",
-        "extracted_externals — Extract every external reference mentioned in the post.",
+        "externals — Extract every external reference mentioned in the post.",
         "  Categories: Tools, Brands, Creators, Links, Techniques, Locations.",
         "  Format each line as:  [Category]  name — one-line context",
         "  Group by category with a header on its own line:",
@@ -158,8 +158,8 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         '  {',
         '    "page_id": "<exact page_id from below>",',
         '    "source_id": "<exact source_id from below>",',
-        '    "expanded_summary": "<full content extraction>",',
-        '    "extracted_externals": "<grouped externals or empty string>"',
+        '    "summary": "<full content extraction>",',
+        '    "externals": "<grouped externals or empty string>"',
         '  }',
         "",
         "Include ALL items below — one result object per item.",
@@ -190,9 +190,9 @@ def _build_prompt(label: str, items: list[dict]) -> str:
 def upload() -> None:
     """
     Read tmp/enrichment_results.json (written by Claude) and write
-    expanded_summary and extracted_externals to Notion for each item.
+    summary and externals to Notion for each item.
 
-    Sets pipeline_status → Summarised. Does NOT touch title.
+    Sets pipeline_status → Summarized. Does NOT touch title.
     Cleans up tmp files on full success.
     """
     if not _RESULTS_FILE.exists():
@@ -224,18 +224,18 @@ def upload() -> None:
                 log.error("item missing page_id — %s", item)
                 progress.bump("failed")
                 failed += 1
-            elif not item.get("expanded_summary"):
-                log.warning("%s has no expanded_summary — skipping", sid)
+            elif not item.get("summary"):
+                log.warning("%s has no summary — skipping", sid)
                 progress.bump("failed")
                 failed += 1
             else:
                 enrichment = {
-                    "expanded_summary": item["expanded_summary"],
+                    "summary": item["summary"],
                 }
-                if item.get("extracted_externals"):
-                    enrichment["extracted_externals"] = item["extracted_externals"]
+                if item.get("externals"):
+                    enrichment["externals"] = item["externals"]
                 try:
-                    write_enrichment(config, page_id, enrichment, config.enrichment_version)
+                    write_summary(config, page_id, enrichment, config.enrichment_version)
                     log.info("wrote enrichment for %s", sid)
                     progress.bump("written")
                     written += 1
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     group.add_argument(
         "--prepare",
         action="store_true",
-        help="Fetch the highest-priority non-empty Enriched bucket and write prompt + batch files.",
+        help="Fetch the highest-priority non-empty Extracted bucket and write prompt + batch files.",
     )
     group.add_argument(
         "--upload",

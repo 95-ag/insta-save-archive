@@ -22,7 +22,7 @@ import re
 
 from pipeline.config import load_config
 from pipeline.enrich_local import enrich_local, validate_local_enrichment_config
-from pipeline.notion import get_page_content, write_local_enrichment
+from pipeline.notion import get_page_content, write_title
 from pipeline.observability import StageProgress, setup_logging
 from pipeline.runner import run_priority_stage
 
@@ -65,7 +65,7 @@ def _enrich_one(config, stub, dry_run, force, progress) -> str:
         return "would_enrich"
 
     try:
-        write_local_enrichment(config, page_id, title=result["title"])
+        write_title(config, page_id, title=result["title"])
         log.info("enriched %s", sid)
         return "enriched"
     except Exception as exc:
@@ -84,7 +84,7 @@ def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
 
         run_priority_stage(
             config,
-            "Expanded",
+            "Extracted",
             _process,
             progress,
             limit=limit,
