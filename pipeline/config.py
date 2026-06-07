@@ -22,6 +22,8 @@ class Config:
     enrichment_version: str
     ollama_model: str
     ollama_base_url: str
+    extract_delay_min: float
+    extract_delay_max: float
 
 
 def load_config() -> Config:
@@ -70,6 +72,8 @@ def load_config() -> Config:
     enrichment_version = os.getenv("ENRICHMENT_VERSION", "v1.0-enrich").strip()
     ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip()
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+    extract_delay_min = float(os.getenv("EXTRACT_DELAY_MIN", "3.0"))
+    extract_delay_max = float(os.getenv("EXTRACT_DELAY_MAX", "7.0"))
 
     if missing:
         raise RuntimeError(
@@ -93,6 +97,8 @@ def load_config() -> Config:
         enrichment_version=enrichment_version,
         ollama_model=ollama_model,
         ollama_base_url=ollama_base_url,
+        extract_delay_min=extract_delay_min,
+        extract_delay_max=extract_delay_max,
     )
 
 

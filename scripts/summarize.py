@@ -41,7 +41,7 @@ _RESULTS_FILE = _TMP / "enrichment_results.json"
 
 # Maximum total chars of content (transcript + OCR + caption) per batch.
 # Controls batch size automatically — many short items or fewer long ones per session.
-_CONTENT_BUDGET = 80_000
+_CONTENT_BUDGET = 200_000
 
 
 def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
@@ -68,7 +68,7 @@ def prepare() -> None:
     bucket, stubs = _next_nonempty_bucket(config)
     if not stubs:
         print("No Extracted items remain — nothing to prepare.")
-        print("Run the local pass first if expected: python scripts/run_enrichment_local.py")
+        print("Run the title pass first if expected: python scripts/title.py")
         return
 
     label = bucket if bucket is not None else "Unprioritised"
@@ -121,7 +121,7 @@ def prepare() -> None:
     print(f"  Prompt: {_PROMPT_FILE}")
     print(f"\nNext: In a Claude Code session, say:")
     print(f'  "Read {_PROMPT_FILE} and write the results JSON to {_RESULTS_FILE}"')
-    print(f"Then run: python scripts/run_enrichment_claude_code.py --upload")
+    print(f"Then run: python scripts/summarize.py --upload")
 
 
 def _build_prompt(label: str, items: list[dict]) -> str:
@@ -193,7 +193,7 @@ def upload() -> None:
     Read tmp/enrichment_results.json (written by Claude) and write
     summary and externals to Notion for each item.
 
-    Sets pipeline_status → Summarized. Does NOT touch title.
+    Sets status → Summarized. Does NOT touch title.
     Cleans up tmp files on full success.
     """
     if not _RESULTS_FILE.exists():

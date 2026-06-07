@@ -56,6 +56,10 @@ def _title_one(config, stub, dry_run, force, progress) -> str:
         log.info("%s already has real title — skipping", sid)
         return "skipped"
 
+    if not content.get("caption") and not content.get("transcript"):
+        log.info("%s has no caption or transcript — skipping", sid)
+        return "skipped"
+
     try:
         result = generate_title(config, content)
     except Exception as exc:
@@ -85,8 +89,8 @@ def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
         def _process(config, item, ctx):
             return _title_one(config, item, dry_run, force, progress)
 
-        # Title runs on both Queued and Extracted — decoupled from status gate.
-        for read_status in ("Queued", "Extracted"):
+        # Run after extraction — Extracted first, Imported last. Never on Queued.
+        for read_status in ("Extracted", "Imported"):
             run_priority_stage(
                 config,
                 read_status,
