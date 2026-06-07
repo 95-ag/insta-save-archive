@@ -1,18 +1,21 @@
 """
 Phase 3b — Claude Code enrichment CLI.
 
-Generates expanded_summary and key_insights for Enriched items, highest priority
-first (High → Medium → Low → unprioritised). Runs as a manual, bucket-by-bucket
-Claude Code session. Title and extracted_externals are NOT touched — written by
-the local Ollama pass.
+Generates expanded_summary for Enriched items: all actual content from transcript,
+OCR, and caption rendered as clean prose — filler stripped, information preserved.
+Highest priority first (High → Medium → Low → unprioritised). Title and
+extracted_externals are NOT touched — written by the local Ollama pass.
+
+--prepare fetches the highest-priority non-empty Enriched bucket up to a content
+budget (total chars of transcript + OCR + caption across the batch). Batch size
+adapts automatically — many short items or fewer long ones per session.
 
 Workflow (repeat until no Enriched items remain):
   1. python scripts/run_enrichment_claude_code.py --prepare
   2. In Claude Code: "Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json"
   3. python scripts/run_enrichment_claude_code.py --upload
 
-Each --prepare fetches the highest-priority non-empty Enriched bucket; once those
-items become Summarised, the next --prepare advances to the next bucket.
+Each --prepare advances to the next bucket as items become Summarised.
 tmp/ is gitignored — all intermediate files are local only.
 
 Usage:
@@ -36,6 +39,10 @@ _TMP = Path("tmp")
 _BATCH_FILE = _TMP / "enrichment_batch.json"
 _PROMPT_FILE = _TMP / "enrichment_prompt.txt"
 _RESULTS_FILE = _TMP / "enrichment_results.json"
+
+# Maximum total chars of content (transcript + OCR + caption) per batch.
+# Controls batch size automatically — many short items or fewer long ones per session.
+_CONTENT_BUDGET = 80_000
 
 
 def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
@@ -71,11 +78,24 @@ def prepare() -> None:
     items = []
     with StageProgress(f"Prepare · {label}") as progress:
         bar = progress.add_bar("Fetch", total=len(stubs))
+        total_content = 0
         for stub in stubs:
             sid = stub.get("source_id", stub["page_id"])
             progress.set_current("fetch", sid)
             try:
-                items.append(get_page_content(config, stub["page_id"]))
+                item = get_page_content(config, stub["page_id"])
+                size = (
+                    len(item.get("caption") or "") +
+                    len(item.get("transcript") or "") +
+                    len(item.get("ocr_text") or "")
+                )
+                if total_content + size > _CONTENT_BUDGET and items:
+                    # Budget reached — leave remaining for the next --prepare run
+                    log.info("prepare: content budget reached at %d items (%d chars)", len(items), total_content)
+                    progress.advance(bar)
+                    break
+                items.append(item)
+                total_content += size
                 progress.bump("fetched")
             except Exception as exc:
                 log.error("could not fetch %s — %s", sid, exc)
@@ -93,7 +113,11 @@ def prepare() -> None:
     _PROMPT_FILE.write_text(_build_prompt(label, items), encoding="utf-8")
     log.info("prepare: wrote prompt to %s", _PROMPT_FILE)
 
-    print(f"\nPrepared {len(items)} Enriched items from the {label} priority bucket.")
+    total_chars = sum(
+        len(i.get("caption") or "") + len(i.get("transcript") or "") + len(i.get("ocr_text") or "")
+        for i in items
+    )
+    print(f"\nPrepared {len(items)} Enriched items from the {label} priority bucket ({total_chars:,} chars of content).")
     print(f"  Batch:  {_BATCH_FILE}")
     print(f"  Prompt: {_PROMPT_FILE}")
     print(f"\nNext: In a Claude Code session, say:")
@@ -104,20 +128,23 @@ def prepare() -> None:
 def _build_prompt(label: str, items: list[dict]) -> str:
     """Build the Claude-ready prompt text from item content."""
     lines = [
-        f"You are enriching {len(items)} Instagram posts (priority bucket: {label}).",
+        f"You are extracting content from {len(items)} Instagram posts (priority bucket: {label}).",
         "",
-        "For each post, write:",
-        "  expanded_summary — 2-4 paragraphs. Enough to replace rewatching.",
-        "    Capture the method, tools used, step-by-step reasoning, and specific details.",
-        "  key_insights — 3-7 transferable, actionable principles.",
-        "    Reusable ideas, not a recap. Each insight must stand alone.",
+        "For each post, write one field: expanded_summary.",
+        "",
+        "expanded_summary — Extract ALL useful information conveyed by this post as clean prose.",
+        "  • Include every specific detail: steps, tips, tools, names, numbers, instructions.",
+        "  • For carousel/OCR slides: consolidate the slide text into flowing prose.",
+        "  • For video/reels: treat the transcript as content; render information, not narration.",
+        "  • Strip filler: greetings, signoffs, 'see you next time', hashtag promos, conversational padding.",
+        "  • Result should replace watching the video or reading the slides —",
+        "    all information value, no medium noise.",
         "",
         "Return a JSON array written to tmp/enrichment_results.json. Each element:",
         '  {',
         '    "page_id": "<exact page_id from below>",',
         '    "source_id": "<exact source_id from below>",',
-        '    "expanded_summary": "<2-4 paragraphs>",',
-        '    "key_insights": ["<insight 1>", "<insight 2>", ...]',
+        '    "expanded_summary": "<full content extraction>"',
         '  }',
         "",
         "Include ALL items below — one result object per item.",
@@ -134,12 +161,12 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         lines.append(f"Title:      {item.get('title') or '[none]'}")
         lines.append(f"Author:     {item.get('author') or '[none]'}")
         lines.append(f"Type:       {item.get('type') or '[none]'}")
-        caption = (item.get("caption") or "[none]")[:600]
-        lines.append(f"Caption:    {caption}")
+        if item.get("caption"):
+            lines.append(f"Caption:    {item['caption']}")
         if item.get("transcript"):
-            lines.append(f"Transcript: {item['transcript'][:3000]}")
+            lines.append(f"Transcript: {item['transcript']}")
         if item.get("ocr_text"):
-            lines.append(f"OCR text:   {item['ocr_text'][:1500]}")
+            lines.append(f"OCR text:   {item['ocr_text']}")
         lines.append("")
 
     return "\n".join(lines)
@@ -148,7 +175,7 @@ def _build_prompt(label: str, items: list[dict]) -> str:
 def upload() -> None:
     """
     Read tmp/enrichment_results.json (written by Claude) and write
-    expanded_summary + key_insights to Notion for each item.
+    expanded_summary to Notion for each item.
 
     Sets pipeline_status → Summarised. Does NOT touch title or extracted_externals.
     Cleans up tmp files on full success.
@@ -189,7 +216,6 @@ def upload() -> None:
             else:
                 enrichment = {
                     "expanded_summary": item["expanded_summary"],
-                    "key_insights": item.get("key_insights") or [],
                 }
                 try:
                     write_enrichment(config, page_id, enrichment, config.enrichment_version)

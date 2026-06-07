@@ -1,11 +1,14 @@
 """
-Phase 3 enrichment — AI-generated summary and insights.
+Phase 3 enrichment — AI-generated summary via Anthropic API.
 
 Uses the Anthropic API with tool_use to enforce structured output.
 Prompt template loaded from prompts/enrichment_{version}.txt.
 
 Title and extracted_externals are written by the local Ollama pass (enrich_local.py).
-This module writes only expanded_summary and key_insights — sets status Summarised.
+This module writes only expanded_summary — sets status Summarised.
+
+NOTE: superseded by the Claude Code session flow (run_enrichment_claude_code.py),
+which does not require an Anthropic API key. Kept for reference.
 
 Exposes:
   validate_enrichment_config  — check ANTHROPIC_API_KEY is set
@@ -25,27 +28,19 @@ log = logging.getLogger(__name__)
 # Title and extracted_externals are handled by the local Ollama pass — not written here.
 _SAVE_ENRICHMENT_TOOL = {
     "name": "save_enrichment",
-    "description": "Write AI-generated summary and insights for a saved Instagram post",
+    "description": "Write AI-generated summary for a saved Instagram post",
     "input_schema": {
         "type": "object",
         "properties": {
             "expanded_summary": {
                 "type": "string",
                 "description": (
-                    "Full content summary. 2-4 paragraphs. "
-                    "Enough to replace rewatching. Capture the method, reasoning, and details."
-                ),
-            },
-            "key_insights": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "3-7 transferable, actionable insights. "
-                    "Reusable principles, not a recap of the content."
+                    "Full content extraction as clean prose. All useful information "
+                    "from transcript, OCR, and caption. Filler stripped."
                 ),
             },
         },
-        "required": ["expanded_summary", "key_insights"],
+        "required": ["expanded_summary"],
     },
 }
 
@@ -73,7 +68,7 @@ def enrich_item(config: Config, item: dict) -> dict:
 
     item keys used: author, type, collection (list), caption, transcript, ocr_text.
 
-    Returns dict with keys: expanded_summary (str), key_insights (list[str]).
+    Returns dict with keys: expanded_summary (str).
     Raises RuntimeError if Claude does not return a valid tool call.
     """
     template = _load_prompt_template(config.enrichment_version)

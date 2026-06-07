@@ -575,20 +575,16 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
     """
     Write Phase 3 Claude enrichment fields to a Notion page.
 
-    enrichment keys: expanded_summary (str), key_insights (list[str]).
+    enrichment keys: expanded_summary (str).
 
     Sets pipeline_status to Summarised. Does NOT touch title, extracted_externals,
     or raw_extraction — those are written by the local Ollama pass.
-    Updates expanded_summary, key_insights, processing_version, last_processed_at.
+    Updates expanded_summary, processing_version, last_processed_at.
     """
     import datetime
 
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
-
-    key_insights_text = "\n".join(
-        f"• {insight}" for insight in (enrichment.get("key_insights") or [])
-    )
 
     props: dict = {
         "pipeline_status": _select("Summarised"),
@@ -598,9 +594,6 @@ def write_enrichment(config: Config, page_id: str, enrichment: dict, version: st
 
     if enrichment.get("expanded_summary"):
         props["expanded_summary"] = _rich_text_chunked(enrichment["expanded_summary"])
-
-    if key_insights_text:
-        props["key_insights"] = _rich_text_chunked(key_insights_text)
 
     try:
         client.pages.update(page_id=page_id, properties=props)
@@ -617,7 +610,7 @@ def write_local_enrichment(
     """
     Write local enrichment fields to a Notion page.
     Only writes title and extracted_externals.
-    Does NOT touch expanded_summary, key_insights, pipeline_status, or raw_extraction.
+    Does NOT touch expanded_summary, pipeline_status, or raw_extraction.
     """
     import datetime
 
