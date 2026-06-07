@@ -3,67 +3,82 @@
 ## Active Plan
 
 `/home/ag-95/.claude/plans/2026-06-07-rename-pipeline.md`
-Branch: `feature-phase3-enrichment-runs`
+Branch: `feature-phase3-enrichment-runs` — closing for PR
 
 ---
 
-## Pipeline naming refactor — IN PROGRESS
+## Branch closure — PENDING COMMITS
 
-### Cluster A — notion.py: field names, status strings, function renames ✅ cde96c7
-Files: `pipeline/notion.py`
-Message: `refactor: rename pipeline fields, statuses, and notion write functions`
+### Cluster J — pipeline code ⏳
+Files: `pipeline/config.py`, `pipeline/extractor_deep.py`, `scripts/title.py`, `scripts/summarize.py`
+Message: `feat: add post OCR extraction, rate limit delay, and title scope fix`
 
-### Cluster B — pipeline module renames ✅ 461ec71
-Files: `pipeline/titler.py` (was enrich_local.py), `pipeline/extract_runner.py` (was queue_runner.py)
-Message: `refactor: rename pipeline modules to titler.py and extract_runner.py`
+### Cluster K — promote.py rename + docs ⏳
+Files: `scripts/promote.py`, `README.md`, `.claude/docs/PROJECT.md`, `.claude/docs/IMPLEMENTATION_PLAN.md`
+Message: `fix: rename queue.py to promote.py to avoid shadowing stdlib queue module`
 
-### Cluster C — script renames + title pass decoupling ✅ 89721f1
-Files: `scripts/title.py`, `scripts/summarize.py`, `scripts/extract.py`, `scripts/queue.py`
-Message: `refactor: rename enrichment/extraction scripts; title pass reads Queued and Extracted`
-
-### Cluster D — summary line break fix ✅ 83f14e3
-Files: `scripts/summarize.py`
-Message: `fix: instruct summary prompt to use paragraph breaks for readable Notion output`
-
-### Cluster E — docs ✅ (uncommitted)
-Files: `.claude/docs/PROJECT.md`, `.claude/docs/IMPLEMENTATION_PLAN.md`
-Message: `docs: update project docs with renamed pipeline and flow diagram`
-
-### Cluster F — work docs ⏳
-Files: `.claude/work/session.md`, `.claude/work/tasks.md`, `.claude/work/lessons.md`
-Message: `chore: record naming refactor and update session state`
-
-### Notion manual steps (user, after code is deployed) ⏳
-1. Rename: `pipeline_status` → `status`
-2. Rename: `processing_priority` → `priority`
-3. Rename: `expanded_summary` → `summary`
-4. Rename: `extracted_externals` → `externals`
-5. Rename status option: `Expanded` → `Extracted`
-6. Rename status option: `Summarised` → `Summarized`
-7. Bulk-change: filter `status = Enriched` → select all → change to `Extracted` (~49 items)
-8. Delete the `Enriched` status option
-9. Delete the `transcript_available` property
+### Cluster L — work docs ⏳
+Files: `.claude/work/session.md`, `.claude/work/tasks.md`
+Message: `chore: finalize work docs for branch closure`
 
 ---
 
-## Move extracted_externals from local → Claude — DONE ✅
+## Phase 3 Enrichment — COMPLETE ✅
 
-### Cluster A — simplify local pass to title only ✅ 61735f7
-### Cluster B — add externals to Claude pass ✅ 474fdf5
+All commits landed on `feature-phase3-enrichment-runs`.
+
+| Commit | Summary |
+|---|---|
+| 1775259 | Priority-bucketed stage runner |
+| de2a2ed | Extraction through shared runner |
+| f212810 | Local enrichment through shared runner |
+| 981fc2c | Summarize by priority bucket |
+| ada84d6 | Docs: runner model |
+| 30e2be0 | Fix type detection + no_data counter |
+| aa4eaec | Externals grouped by category |
+| bb6a04b | Ollama JSON schema format |
+| 8ae2f4e | Drop key_insights; dynamic content batching |
+| 61735f7 | Title only from local pass |
+| 474fdf5 | Claude pass: summary + externals |
+| 89721f1 | Script renames + title pass decoupling |
+| 461ec71 | Module renames |
+| cde96c7 | Field + status renames |
+| 83f14e3 | Summary paragraph breaks |
+| 0081f6d | Docs update |
+| 0556640 | Work docs |
+| c5b9ca1 | Remove transcript_available; README + stale refs |
+| J–L | Pending |
 
 ---
 
-## JSON schema format + system prompt — DONE ✅ bb6a04b
-## O1 validation run — DONE ✅
-## Claude pass redesign — DONE ✅ 8ae2f4e
-## Bugfix: Phase 2 type detection + no_data counter — DONE ✅ 30e2be0
-## Per-item priority pipeline + shared stage runner — DONE ✅
+## O-Runs (ongoing — tracked in session.md)
+
+| Run | Status |
+|---|---|
+| Title — Extracted + Imported | ✅ done |
+| Summarize — set 1 (High/Med/Low) | ✅ done |
+| Extract — set 2 (all Queued, overnight) | 🔄 running |
+| Summarize — set 2 | ⏳ daytime cycles |
+| Spot-check O4 | ⏳ after all Summarized |
 
 ---
 
-## Backlog (future work — not in this change)
-- [ ] O-runs: after Notion steps — run title.py (title Queued+Extracted) → then cycle summarize.py --prepare/upload for Extracted items, highest priority first → spot-check 5 pages
-- [ ] T-refactor (end of Phase 3): remove dead code (old `enrich_claude.py`, `run_enrichment.py`; dead grouping in `collections.py`); restructure flat `pipeline/` into stage-separated layout; remove any remaining old-name references
-- [ ] T-orchestrator: single full-pipeline run file for incremental add/remove cycles
-- [ ] Tagging stage: embedding clusters for Summarized items; generic/collection tag for others
-- [ ] Routing stage: config-driven route_target assignment from collection name
+## Backlog — next branches (post-merge)
+
+### Immediate (clear off before new phases)
+- [ ] T-refactor: delete dead code (`pipeline/enrich_claude.py`, `scripts/run_enrichment.py`)
+- [ ] T-orchestrator: single full-pipeline CLI for incremental add/remove cycles
+
+### Phase 4 — Collection reorganisation
+- [ ] Audit all 43 collections against enriched content (duplicates, near-duplicates, too-broad, too-narrow)
+- [ ] Produce target collection list: merges, renames, retirements
+- [ ] Bulk-migrate Notion `collection` tags on affected pages
+- [ ] Update `config/collections.json` — groups, extract flags
+- [ ] Trigger: Phase 3 complete + spot-checked first
+
+### Phase 5 — Downstream processing
+- [ ] `route_target` assigned from collection config (deterministic, not AI)
+- [ ] Collection-typed Claude prompts: recipe → recipe-shaped extraction, market research → brand/opportunity extraction
+- [ ] Write to downstream Notion DBs per route_target
+- [ ] `tags` via embedding clusters across all `summary` values (batch job, post bulk-summarize)
+- [ ] Trigger: Phase 4 complete + 50+ Summarized items + routing targets confirmed
