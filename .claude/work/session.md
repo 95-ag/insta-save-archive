@@ -2,11 +2,36 @@
 
 ## Current State
 
-**Branch:** `feature-batch-ingest-phase3-enrich`
-**Last commit:** `437e411` — fix: delete cookies.txt after each yt-dlp session to reduce credential exposure
+**Branch:** `feature-phase3-enrichment-runs`
+**Last commit:** `981fc2c` — refactor: prepare summarize batches by priority bucket and drop collection grouping
 
-Phase 1 + 2 COMPLETE. Repo restructure, Cluster 1 (Ollama), Cluster 2 (Claude Code) COMPLETE.
-**Ingest Sync Layer COMPLETE — all clusters A–H committed and verified.**
+### Per-item priority pipeline + shared stage runner ✅ COMMITTED (2026-06-07)
+Priority moved OFF the collection (old `enrichment_order`/groups) and ONTO the item:
+a manually-assigned Notion `processing_priority` select (`High`/`Medium`/`Low`; blank =
+unprioritised, processed last). Every per-item stage now shares ONE bucketed runner.
+Plan: `/home/ag-95/.claude/plans/2026-06-07-priority-stage-runner.md`
+
+- `pipeline/notion.py` — `query_by_status_and_priority(status, priority)` (None → select.is_empty)
+- `pipeline/runner.py` (NEW) — `PRIORITY_BUCKETS = ["High","Medium","Low",None]` +
+  `run_priority_stage(...)`: reads buckets in order, owns progress/counters/error routing;
+  `process_fn(config,item,ctx)` owns work + Notion write + status transition
+- **Expand** (`queue_runner.run_queue`) + **Enrich-local** (`run_enrichment_local`) delegate to the runner
+- **Summarize** (`run_enrichment_claude_code`) — `--prepare` auto-picks the highest non-empty
+  Enriched bucket (High first); dropped `--collection`/`--list-priority` + grouping import.
+  As items become Summarised, the next `--prepare` advances.
+- Live read-only verify (2026-06-07): `processing_priority` confirmed (options exactly
+  High/Med/Low). Bucket distribution: Queued H22/M50/L7, Expanded H105/M9, Enriched H14/M15/L20,
+  all blank=0. reconcile 9/9 still pass.
+- **Behaviour note:** `--source_id` now requires the item to be in the stage's read_status
+  (it scans the status buckets) — slightly stricter than before, more correct.
+- **Deferred:** grouping code in untouched files (`collections.py`, `queue_pilot.py`,
+  `run_enrichment.py`) left for the end-of-Phase-3 refactor.
+
+Commits: 1775259 (runner+query) · de2a2ed (expand) · f212810 (enrich-local) · 981fc2c (summarize).
+
+---
+
+### Prior — Ingest Sync Layer COMPLETE (all clusters A–H committed and verified)
 Fail-safe collection sync with move handling, hardened discovery (43/43, was 12),
 reconciliation safety gate, rich UI + file logging across ALL stages.
 Plan: `/home/ag-95/.claude/plans/2026-06-06-ingest-sync-layer.md`
@@ -83,6 +108,7 @@ pipeline/               ← importable library (pip install -e . already done)
   extractor_deep.py     extract_transcript(), extract_carousel(), extract_ocr_frames()
   ingest.py             ingest_with_context() — no CLI
   queue_runner.py       run_queue(), run_item()
+  runner.py             run_priority_stage() — shared priority-bucketed stage loop
   enrich_claude.py      enrich_item() — Anthropic API, summary+insights only (no title/externals)
   enrich_local.py       enrich_local() — Ollama tool_use, title+extracted_externals
   display.py            ensure_display(), close_display() — VcXsrv / X11
@@ -147,7 +173,10 @@ prompts/
 | `key_insights` | Claude Code | `scripts/run_enrichment_claude_code.py` | ✅ implemented, verified |
 
 ### Pipeline status flow
-`Imported` → (queue_pilot) → `Queued` → (run_extraction) → `Expanded` → (run_enrichment_local) → `Enriched` → (run_enrichment_claude_code, priority only) → `Summarised`
+`Imported` → (set Queued + processing_priority manually in Notion) → `Queued`
+→ (run_extraction) → `Expanded` → (run_enrichment_local) → `Enriched`
+→ (run_enrichment_claude_code) → `Summarised`
+Every per-item stage processes in priority order: High → Medium → Low → unprioritised (blank).
 
 ### Local pass behaviour
 - Queries `Expanded` items from Notion
@@ -157,8 +186,9 @@ prompts/
 - `--force` to overwrite already-enriched items
 
 ### Claude Code pass behaviour
-- `--list-priority`: shows collections with `enrichment_order` set, sorted ascending
-- `--prepare --collection "<NAME>"`: queries `Enriched` items → writes `tmp/enrichment_batch.json` + `tmp/enrichment_prompt.txt`
+- `--prepare`: fetches the highest-priority non-empty `Enriched` bucket (High → Medium → Low →
+  unprioritised) → writes `tmp/enrichment_batch.json` + `tmp/enrichment_prompt.txt`. Advances to
+  the next bucket on each run as items become Summarised.
 - `--upload`: reads `tmp/enrichment_results.json` → writes `expanded_summary + key_insights` → status: `Summarised`
 - Does NOT touch `title` or `extracted_externals`
 - Cleans up tmp files on successful upload
@@ -183,21 +213,18 @@ Coding-AI(1) > Coding-Web(2) > Website Handling(3) > Inspo-Website(4) > Job Hunt
 Branding(6) > Digital Content(7) > Tips-Content(8) > Inspo-Quotes(9) > Hustle Ideas(10) >
 Side Hustle(11) > BoI Biz(12) > Foodie(13) > Fitness(14) > Quotes(15)
 
-### O3 — Claude Code pass (per collection, in order)
+### O3 — Claude Code pass (by priority bucket, highest first)
 ```bash
-# 1. Check order
-python scripts/run_enrichment_claude_code.py --list-priority
+# 1. Prepare the next non-empty Enriched bucket (auto-picks High → Medium → Low → blank)
+python scripts/run_enrichment_claude_code.py --prepare
 
-# 2. Prepare one collection
-python scripts/run_enrichment_claude_code.py --prepare --collection "<NAME>"
-
-# 3. In this Claude Code session, say:
+# 2. In this Claude Code session, say:
 #    "Read tmp/enrichment_prompt.txt and write results JSON to tmp/enrichment_results.json"
 
-# 4. Upload
+# 3. Upload
 python scripts/run_enrichment_claude_code.py --upload
 
-# Repeat steps 2-4 for each priority collection
+# Repeat 1-3 until --prepare reports no Enriched items remain
 ```
 
 ### O4 — Spot-check
@@ -213,13 +240,13 @@ python scripts/run_enrichment_claude_code.py --upload
 | OCR engine | RapidOCR (rapidocr-onnxruntime==1.4.4) |
 | Local enrichment engine | Ollama + qwen2.5:7b (fallback: 3b) |
 | Claude enrichment mechanism | Claude Code session (no API; Claude Max only) |
-| Claude enrichment scope | Priority collections with enrichment_order set in collections.json |
+| Claude enrichment scope | Per-item `processing_priority` select (High/Med/Low); highest non-empty Enriched bucket first |
 | Notion write (local pass) | Per-item sequential (interrupt-safe); status → Enriched |
 | Notion write (Claude pass) | Collection-batch read → one Claude turn → per-item upload; status → Summarised |
 | write_enrichment fields | expanded_summary + key_insights only — no title, no extracted_externals |
 | extracted_externals format | String, one per line: `[type] name — context` |
 | Collection names | Gitignored `config/collections.json` — NEVER hardcode in Python |
-| enrichment priority order | `enrichment_order: int` field in collections.json — no names in code |
+| processing priority | Per-item Notion `processing_priority` select (High/Med/Low), manual. Shared `run_priority_stage` (pipeline/runner.py) processes High→Med→Low→blank for every stage. Old collection `enrichment_order`/groups deprecated (dead code, cleaned end of Phase 3) |
 | detected_entities field | REMOVED — redundant with extracted_externals |
 | Carousel img scope | `ul img` not `img` |
 | CDN domain | instagram.fblr22-*.fna.fbcdn.net |
@@ -238,7 +265,7 @@ python scripts/run_enrichment_claude_code.py --upload
 ## Environment
 
 - WSL2 Ubuntu, Windows host (Taiga), GPU: RTX 3050 Ti 4GB VRAM
-- Branch: `feature-batch-ingest-phase3-enrich`
+- Branch: `feature-phase3-enrichment-runs`
 - Venv: `.venv/` → `source .venv/bin/activate`
 - Editable install: `pip install -e .` already done (pyproject.toml present)
 - Run scripts as: `python scripts/<script>.py` from project root
