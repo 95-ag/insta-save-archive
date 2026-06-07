@@ -24,7 +24,8 @@ from playwright.sync_api import BrowserContext
 from pipeline.config import Config
 from pipeline.extractor import CAROUSEL_NEXT_SEL, VIDEO_SEL, AUDIO_BTN_SEL
 from pipeline.extractor_deep import extract_transcript, extract_carousel, extract_ocr_frames
-from pipeline.notion import mark_failed, query_by_status, write_extraction
+from pipeline.notion import mark_failed, write_extraction
+from pipeline.runner import run_priority_stage
 
 log = logging.getLogger(__name__)
 
@@ -130,46 +131,33 @@ def run_queue(
     source_id: str | None = None,
 ) -> dict:
     """
-    Process Queued items from Notion, driving the given StageProgress display.
+    Process Queued items from Notion in priority order (High → Medium → Low →
+    unprioritised), driving the given StageProgress display.
 
     Args:
         progress:  StageProgress to report into (bar + counters)
         limit:     maximum number of items to process (None = all)
-        source_id: if set, process only the item with this source_id
+        source_id: if set, process only the Queued item with this source_id
 
     Returns:
-        {"expanded": int, "failed": int, "skipped": int}
+        counter dict including at least {"expanded": int, "failed": int}
     """
-    items = query_by_status(config, "Queued")
-    log.info("queue: found %d Queued items", len(items))
+    def _process(config: Config, item: dict, ctx: BrowserContext) -> str:
+        run_item(config, ctx, item)
+        return "expanded"
 
-    if source_id:
-        items = [i for i in items if i["source_id"] == source_id]
-        if not items:
-            log.warning("queue: no Queued item found with source_id=%r", source_id)
+    def _on_error(config: Config, item: dict, exc: Exception) -> None:
+        mark_failed(config, item["page_id"], str(exc))
 
-    if limit is not None:
-        items = items[:limit]
-
-    expanded = failed = skipped = 0
-    bar = progress.add_bar("Extract", total=len(items))
-
-    for item in items:
-        sid = item["source_id"]
-        progress.set_current("extract", sid)
-        try:
-            run_item(config, context, item)
-            expanded += 1
-            progress.bump("expanded")
-            log.info("queue: expanded %s", sid)
-        except Exception as exc:
-            log.error("queue: failed %s — %s", sid, exc)
-            try:
-                mark_failed(config, item["page_id"], str(exc))
-            except Exception as mark_exc:
-                log.error("queue: could not mark %s as Failed — %s", sid, mark_exc)
-            failed += 1
-            progress.bump("failed")
-        progress.advance(bar)
-
-    return {"expanded": expanded, "failed": failed, "skipped": skipped}
+    return run_priority_stage(
+        config,
+        "Queued",
+        _process,
+        progress,
+        ctx=context,
+        on_error=_on_error,
+        limit=limit,
+        source_id=source_id,
+        stage_key="extract",
+        bar_label="Extract",
+    )
