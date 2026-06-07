@@ -205,7 +205,7 @@ def mark_failed(config: Config, page_id: str, notes: str) -> None:
 def query_by_status(config: Config, status: str) -> list[dict]:
     """
     Returns all pages whose pipeline_status matches the given value.
-    Each item: {"page_id": str, "source_id": str, "ig_link": str}.
+    Each item: {"page_id": str, "source_id": str, "ig_link": str, "type": str | None}.
     Paginates automatically.
     """
     validate_notion_config(config)
@@ -225,10 +225,12 @@ def query_by_status(config: Config, status: str) -> list[dict]:
             props = page.get("properties", {})
             source_id_blocks = props.get("source_id", {}).get("rich_text", [])
             ig_link = props.get("ig_link", {}).get("url")
+            type_select = props.get("type", {}).get("select") or {}
             results.append({
                 "page_id": page["id"],
                 "source_id": source_id_blocks[0]["text"]["content"] if source_id_blocks else None,
                 "ig_link": ig_link,
+                "type": type_select.get("name"),
             })
         if not response.get("has_more"):
             break
@@ -246,7 +248,7 @@ def query_by_status_and_priority(
 
     priority is one of "High"/"Medium"/"Low" (exact select option), or None to
     match items with no processing_priority set (the unprioritised bucket).
-    Each item: {"page_id": str, "source_id": str, "ig_link": str}. Paginates.
+    Each item: {"page_id": str, "source_id": str, "ig_link": str, "type": str | None}. Paginates.
     """
     validate_notion_config(config)
     client = Client(auth=config.notion_token)
@@ -275,10 +277,12 @@ def query_by_status_and_priority(
             props = page.get("properties", {})
             source_id_blocks = props.get("source_id", {}).get("rich_text", [])
             ig_link = props.get("ig_link", {}).get("url")
+            type_select = props.get("type", {}).get("select") or {}
             results.append({
                 "page_id": page["id"],
                 "source_id": source_id_blocks[0]["text"]["content"] if source_id_blocks else None,
                 "ig_link": ig_link,
+                "type": type_select.get("name"),
             })
         if not response.get("has_more"):
             break
