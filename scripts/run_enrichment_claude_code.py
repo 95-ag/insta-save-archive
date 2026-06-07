@@ -1,21 +1,22 @@
 """
 Phase 3b — Claude Code enrichment CLI.
 
-Generates expanded_summary and key_insights for priority collections.
-Runs as a manual, collection-by-collection Claude Code session.
-Title and extracted_externals are NOT touched — written by the local Ollama pass.
+Generates expanded_summary and key_insights for Enriched items, highest priority
+first (High → Medium → Low → unprioritised). Runs as a manual, bucket-by-bucket
+Claude Code session. Title and extracted_externals are NOT touched — written by
+the local Ollama pass.
 
-Workflow (repeat for each priority collection):
-  1. python scripts/run_enrichment_claude_code.py --list-priority
-  2. python scripts/run_enrichment_claude_code.py --prepare --collection "<NAME>"
-  3. In Claude Code: "Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json"
-  4. python scripts/run_enrichment_claude_code.py --upload
+Workflow (repeat until no Enriched items remain):
+  1. python scripts/run_enrichment_claude_code.py --prepare
+  2. In Claude Code: "Read tmp/enrichment_prompt.txt and write results to tmp/enrichment_results.json"
+  3. python scripts/run_enrichment_claude_code.py --upload
 
+Each --prepare fetches the highest-priority non-empty Enriched bucket; once those
+items become Summarised, the next --prepare advances to the next bucket.
 tmp/ is gitignored — all intermediate files are local only.
 
 Usage:
-    python scripts/run_enrichment_claude_code.py --list-priority
-    python scripts/run_enrichment_claude_code.py --prepare --collection "<NAME>"
+    python scripts/run_enrichment_claude_code.py --prepare
     python scripts/run_enrichment_claude_code.py --upload
 """
 
@@ -24,10 +25,10 @@ import logging
 import sys
 from pathlib import Path
 
-from pipeline.collections import pilot_collections_by_enrichment_priority
 from pipeline.config import load_config
-from pipeline.notion import get_page_content, query_by_collection_and_status, write_enrichment
+from pipeline.notion import get_page_content, query_by_status_and_priority, write_enrichment
 from pipeline.observability import StageProgress, setup_logging
+from pipeline.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
 
@@ -37,42 +38,38 @@ _PROMPT_FILE = _TMP / "enrichment_prompt.txt"
 _RESULTS_FILE = _TMP / "enrichment_results.json"
 
 
-def list_priority() -> None:
-    """Print priority collections in ascending enrichment_order."""
-    collections = pilot_collections_by_enrichment_priority()
-    if not collections:
-        print("No collections have enrichment_order set in config/collections.json.")
-        print("Add \"enrichment_order\": N (integer, 1 = first) to each priority entry.")
-        return
-    print("Collections in Claude enrichment order:")
-    for i, c in enumerate(collections, 1):
-        print(f"  {i}. {c.name}  (group: {c.group})")
-
-
-def prepare(collection_name: str) -> None:
+def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
     """
-    Query Enriched items for one collection; write enrichment_batch.json and
-    enrichment_prompt.txt ready for a Claude Code session.
+    Return (bucket_label, stubs) for the highest-priority Enriched bucket that has
+    items: High → Medium → Low → unprioritised. Returns (None, []) if none remain.
+    """
+    for bucket in PRIORITY_BUCKETS:
+        stubs = query_by_status_and_priority(config, "Enriched", bucket)
+        if stubs:
+            return bucket, stubs
+    return None, []
 
-    Fails if the collection is not in the priority list or has no Enriched items.
+
+def prepare() -> None:
+    """
+    Fetch the highest-priority non-empty Enriched bucket (High → Medium → Low →
+    unprioritised) and write enrichment_batch.json + enrichment_prompt.txt for a
+    Claude Code session. Each run advances to the next bucket as items become
+    Summarised.
     """
     config = load_config()
 
-    priority_names = [c.name for c in pilot_collections_by_enrichment_priority()]
-    if collection_name not in priority_names:
-        print(f"ERROR: {collection_name!r} not in priority list — "
-              "add enrichment_order to its entry in config/collections.json.")
-        sys.exit(1)
-
-    log.info("prepare: querying Enriched items for %r", collection_name)
-    stubs = query_by_collection_and_status(config, collection_name, "Enriched")
+    bucket, stubs = _next_nonempty_bucket(config)
     if not stubs:
-        print(f"No Enriched items found for {collection_name!r}.")
-        print("Run the local pass first: python scripts/run_enrichment_local.py")
+        print("No Enriched items remain — nothing to prepare.")
+        print("Run the local pass first if expected: python scripts/run_enrichment_local.py")
         return
 
+    label = bucket if bucket is not None else "Unprioritised"
+    log.info("prepare: %d Enriched items in the %s bucket", len(stubs), label)
+
     items = []
-    with StageProgress(f"Prepare · {collection_name}") as progress:
+    with StageProgress(f"Prepare · {label}") as progress:
         bar = progress.add_bar("Fetch", total=len(stubs))
         for stub in stubs:
             sid = stub.get("source_id", stub["page_id"])
@@ -93,10 +90,10 @@ def prepare(collection_name: str) -> None:
     _BATCH_FILE.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
     log.info("prepare: wrote batch to %s", _BATCH_FILE)
 
-    _PROMPT_FILE.write_text(_build_prompt(collection_name, items), encoding="utf-8")
+    _PROMPT_FILE.write_text(_build_prompt(label, items), encoding="utf-8")
     log.info("prepare: wrote prompt to %s", _PROMPT_FILE)
 
-    print(f"\nPrepared {len(items)} Enriched items for {collection_name!r}.")
+    print(f"\nPrepared {len(items)} Enriched items from the {label} priority bucket.")
     print(f"  Batch:  {_BATCH_FILE}")
     print(f"  Prompt: {_PROMPT_FILE}")
     print(f"\nNext: In a Claude Code session, say:")
@@ -104,10 +101,10 @@ def prepare(collection_name: str) -> None:
     print(f"Then run: python scripts/run_enrichment_claude_code.py --upload")
 
 
-def _build_prompt(collection_name: str, items: list[dict]) -> str:
+def _build_prompt(label: str, items: list[dict]) -> str:
     """Build the Claude-ready prompt text from item content."""
     lines = [
-        f"You are enriching {len(items)} Instagram posts from the collection '{collection_name}'.",
+        f"You are enriching {len(items)} Instagram posts (priority bucket: {label}).",
         "",
         "For each post, write:",
         "  expanded_summary — 2-4 paragraphs. Enough to replace rewatching.",
@@ -217,36 +214,22 @@ if __name__ == "__main__":
 
     setup_logging("enrichment-claude")
     parser = argparse.ArgumentParser(
-        description="Claude Code enrichment — prepare batches and upload results for priority collections."
+        description="Claude Code enrichment — prepare the next priority bucket and upload results."
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
-        "--list-priority",
-        action="store_true",
-        help="List collections in enrichment_order.",
-    )
-    group.add_argument(
         "--prepare",
         action="store_true",
-        help="Query Enriched items for --collection and write prompt + batch files.",
+        help="Fetch the highest-priority non-empty Enriched bucket and write prompt + batch files.",
     )
     group.add_argument(
         "--upload",
         action="store_true",
         help="Read tmp/enrichment_results.json and write to Notion.",
     )
-    parser.add_argument(
-        "--collection",
-        metavar="NAME",
-        help="Collection name (required for --prepare).",
-    )
     args = parser.parse_args()
 
-    if args.list_priority:
-        list_priority()
-    elif args.prepare:
-        if not args.collection:
-            parser.error("--prepare requires --collection NAME")
-        prepare(args.collection)
+    if args.prepare:
+        prepare()
     elif args.upload:
         upload()
