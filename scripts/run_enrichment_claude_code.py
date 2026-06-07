@@ -130,7 +130,7 @@ def _build_prompt(label: str, items: list[dict]) -> str:
     lines = [
         f"You are extracting content from {len(items)} Instagram posts (priority bucket: {label}).",
         "",
-        "For each post, write one field: expanded_summary.",
+        "For each post, produce two fields:",
         "",
         "expanded_summary — Extract ALL useful information conveyed by this post as clean prose.",
         "  • Include every specific detail: steps, tips, tools, names, numbers, instructions.",
@@ -140,11 +140,26 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         "  • Result should replace watching the video or reading the slides —",
         "    all information value, no medium noise.",
         "",
+        "extracted_externals — Extract every external reference mentioned in the post.",
+        "  Categories: Tools, Brands, Creators, Links, Techniques, Locations.",
+        "  Format each line as:  [Category]  name — one-line context",
+        "  Group by category with a header on its own line:",
+        "    [Tools]",
+        "      Figma — design tool used for wireframing",
+        "    [Creators]",
+        "      @millmotion — animation reference",
+        "    [Links]",
+        "      https://example.com — landing page mentioned in caption",
+        "  Omit a category entirely if there are no references for it.",
+        "  Include full URLs exactly as they appear — do not paraphrase or shorten links.",
+        "  If nothing qualifies for any category, write an empty string.",
+        "",
         "Return a JSON array written to tmp/enrichment_results.json. Each element:",
         '  {',
         '    "page_id": "<exact page_id from below>",',
         '    "source_id": "<exact source_id from below>",',
-        '    "expanded_summary": "<full content extraction>"',
+        '    "expanded_summary": "<full content extraction>",',
+        '    "extracted_externals": "<grouped externals or empty string>"',
         '  }',
         "",
         "Include ALL items below — one result object per item.",
@@ -175,9 +190,9 @@ def _build_prompt(label: str, items: list[dict]) -> str:
 def upload() -> None:
     """
     Read tmp/enrichment_results.json (written by Claude) and write
-    expanded_summary to Notion for each item.
+    expanded_summary and extracted_externals to Notion for each item.
 
-    Sets pipeline_status → Summarised. Does NOT touch title or extracted_externals.
+    Sets pipeline_status → Summarised. Does NOT touch title.
     Cleans up tmp files on full success.
     """
     if not _RESULTS_FILE.exists():
@@ -217,6 +232,8 @@ def upload() -> None:
                 enrichment = {
                     "expanded_summary": item["expanded_summary"],
                 }
+                if item.get("extracted_externals"):
+                    enrichment["extracted_externals"] = item["extracted_externals"]
                 try:
                     write_enrichment(config, page_id, enrichment, config.enrichment_version)
                     log.info("wrote enrichment for %s", sid)
