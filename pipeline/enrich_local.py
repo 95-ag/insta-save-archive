@@ -1,14 +1,16 @@
 """
 Local enrichment — title and extracted_externals via Ollama.
 
-Uses ollama Python library with tool_use for structured output.
-Prompt is inline — title and entity extraction don't need versioned prompts.
+Uses Ollama JSON schema format for constrained structured output — the model cannot
+return prose or skip fields. Prompt is inline; title and entity extraction don't
+need versioned prompts.
 
 Exposes:
   validate_local_enrichment_config  — check Ollama is reachable
   enrich_local                      — returns {"title": str, "extracted_externals": str}
 """
 
+import json
 import logging
 
 import ollama
@@ -17,7 +19,7 @@ from pipeline.config import Config
 
 log = logging.getLogger(__name__)
 
-# Output categories in display order. Each maps to a tool field name and section header.
+# Output categories in display order. Each maps to a schema field name and section header.
 _CATEGORIES = [
     ("tools",      "Tools"),
     ("brands",     "Brands"),
@@ -27,74 +29,27 @@ _CATEGORIES = [
     ("locations",  "Locations"),
 ]
 
-_LOCAL_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "save_local_enrichment",
-        "description": "Save extracted enrichment fields for an Instagram post",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": (
-                        "Concise, descriptive, specific title. NOT the caption. Max 80 chars. "
-                        "E.g. '5 Canva tricks for faster graphics' not 'Canva tips'."
-                    ),
-                },
-                "tools": {
-                    "type": "string",
-                    "description": (
-                        "Software, apps, or platforms explicitly mentioned. "
-                        "One per line: name — what it does or how it is used. "
-                        "Empty string if none.\n"
-                        "Example:\nFigma — UI design tool\nCanva — quick graphics"
-                    ),
-                },
-                "brands": {
-                    "type": "string",
-                    "description": (
-                        "Companies, products, or services explicitly mentioned. "
-                        "One per line: name — context. Empty string if none.\n"
-                        "Example:\nDropbox — subject of the post\nAdobe — mentioned in comparison"
-                    ),
-                },
-                "creators": {
-                    "type": "string",
-                    "description": (
-                        "People or accounts referenced. "
-                        "One per line: @handle or name — context. Empty string if none.\n"
-                        "Example:\n@millmotion — animation style referenced"
-                    ),
-                },
-                "links": {
-                    "type": "string",
-                    "description": (
-                        "Websites or URLs mentioned. "
-                        "One per line: url or site name — what it is. Empty string if none.\n"
-                        "Example:\nbrand.dropbox.com — brand guidelines page"
-                    ),
-                },
-                "techniques": {
-                    "type": "string",
-                    "description": (
-                        "Methods, approaches, or frameworks explicitly shown or taught. "
-                        "One per line: name — how it is used. Empty string if none.\n"
-                        "Example:\ngrid overlay — used for layout alignment"
-                    ),
-                },
-                "locations": {
-                    "type": "string",
-                    "description": (
-                        "Physical places explicitly mentioned. "
-                        "One per line: name — context. Empty string if none."
-                    ),
-                },
-            },
-            "required": ["title", "tools", "brands", "creators", "links", "techniques", "locations"],
-        },
+# JSON schema passed to Ollama's `format` parameter. Constrained decoding forces the model
+# to emit a JSON object matching this shape — compliance failures (prose output) are impossible.
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title":      {"type": "string"},
+        "tools":      {"type": "string"},
+        "brands":     {"type": "string"},
+        "creators":   {"type": "string"},
+        "links":      {"type": "string"},
+        "techniques": {"type": "string"},
+        "locations":  {"type": "string"},
     },
+    "required": ["title", "tools", "brands", "creators", "links", "techniques", "locations"],
 }
+
+_SYSTEM_PROMPT = (
+    "You are a data extraction tool. "
+    "Output only valid JSON matching the requested schema. "
+    "Never add explanatory text, markdown, or any content outside the JSON object."
+)
 
 _PROMPT_TEMPLATE = """Extract enrichment fields from this saved Instagram post.
 
@@ -106,7 +61,7 @@ Transcript: {transcript}
 
 OCR/Slides: {ocr_text}
 
-Call save_local_enrichment with:
+Return a JSON object with these fields:
 1. title — concise and specific (not the caption), max 80 chars
 2. tools — software, apps, or platforms explicitly mentioned. One per line: name — how used
 3. brands — companies, products, or services mentioned. One per line: name — context
@@ -120,7 +75,7 @@ Leave any field as empty string if nothing in that category is mentioned.
 
 def _assemble_externals(args: dict) -> str:
     """
-    Build the grouped display string from per-category tool arguments.
+    Build the grouped display string from per-category fields.
 
     Format:
         [Category]
@@ -157,8 +112,12 @@ def validate_local_enrichment_config(config: Config) -> None:
 def enrich_local(config: Config, item: dict) -> dict:
     """
     Call Ollama to generate title and extracted_externals for one item.
+
+    Uses Ollama JSON schema format — constrained decoding prevents the model from
+    returning prose instead of structured output.
+
     Returns {"title": str, "extracted_externals": str}.
-    Raises RuntimeError if the model does not call the tool.
+    Raises RuntimeError on JSON parse failure (should not occur with constrained decoding).
     """
     prompt = _PROMPT_TEMPLATE.format(
         author=item.get("author") or "[unknown]",
@@ -172,20 +131,23 @@ def enrich_local(config: Config, item: dict) -> dict:
     client = ollama.Client(host=config.ollama_base_url)
     response = client.chat(
         model=config.ollama_model,
-        messages=[{"role": "user", "content": prompt}],
-        tools=[_LOCAL_TOOL],
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        format=_OUTPUT_SCHEMA,
     )
 
-    for tool_call in (response.message.tool_calls or []):
-        if tool_call.function.name == "save_local_enrichment":
-            args = tool_call.function.arguments
-            log.debug("enrichment_local: tool call ok for %s", item.get("source_id"))
-            return {
-                "title": str(args.get("title") or "").strip(),
-                "extracted_externals": _assemble_externals(args),
-            }
+    try:
+        result = json.loads(response.message.content)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError(
+            f"enrichment_local: JSON parse failed for source_id={item.get('source_id')!r}. "
+            f"Response: {response.message.content!r}"
+        ) from exc
 
-    raise RuntimeError(
-        f"enrichment_local: model did not call tool for source_id={item.get('source_id')!r}. "
-        f"Response: {response.message.content!r}"
-    )
+    log.debug("enrichment_local: ok for %s", item.get("source_id"))
+    return {
+        "title": str(result.get("title") or "").strip(),
+        "extracted_externals": _assemble_externals(result),
+    }
