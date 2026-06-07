@@ -490,7 +490,6 @@ def write_extraction(config: Config, page_id: str, results: dict) -> None:
 
     raw[processing_version] = {
         "transcript": results.get("transcript"),
-        "transcript_available": results.get("transcript_available", False),
         "ocr_text": results.get("ocr_text"),
         "carousel_slides": results.get("carousel_slides"),
         "last_processed_at": results.get("last_processed_at"),

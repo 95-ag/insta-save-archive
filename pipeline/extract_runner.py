@@ -9,19 +9,20 @@ Flow per item:
   2. Run extraction by type:
        Reel/IGTV → transcript (yt-dlp + faster-whisper) + OCR frames (ffmpeg + RapidOCR)
        Carousel  → slide download + OCR (Playwright page navigation)
-       Post      → single-image OCR not yet implemented — skipped with warning
+       Post      → single-image download + OCR (same pipeline as carousel, one slide)
   3. write_extraction on success; mark_failed on any unhandled exception
   4. Respect notion_write_delay between Notion writes
 """
 
 import datetime
 import logging
+import random
 import time
 
 from playwright.sync_api import BrowserContext
 
 from pipeline.config import Config
-from pipeline.extractor_deep import extract_transcript, extract_carousel, extract_ocr_frames
+from pipeline.extractor_deep import extract_transcript, extract_carousel, extract_ocr_frames, extract_post
 from pipeline.notion import mark_failed, write_extraction
 from pipeline.runner import run_priority_stage
 
@@ -62,7 +63,6 @@ def run_extract_item(config: Config, context: BrowserContext, item: dict) -> boo
         "processing_version": config.processing_version,
         "last_processed_at": now,
         "transcript": None,
-        "transcript_available": False,
         "ocr_text": None,
         "carousel_slides": None,
     }
@@ -75,7 +75,6 @@ def run_extract_item(config: Config, context: BrowserContext, item: dict) -> boo
             model_size=config.whisper_model,
         )
         results["transcript"] = t["transcript"]
-        results["transcript_available"] = t["transcript_available"]
         results["ocr_text"] = extract_ocr_frames(
             shortcode=shortcode,
             tmp_dir=config.tmp_dir,
@@ -91,15 +90,25 @@ def run_extract_item(config: Config, context: BrowserContext, item: dict) -> boo
         results["carousel_slides"] = slides
 
     elif post_type == "Post":
-        # Single-image post OCR not yet implemented — warned, not failed
-        log.warning("queue: %s is a Post — single-image OCR not implemented, skipping OCR", source_id)
+        slides = extract_post(
+            context=context,
+            ig_link=ig_link,
+            shortcode=shortcode,
+            tmp_dir=config.tmp_dir,
+        )
+        results["carousel_slides"] = slides
 
     else:
-        log.warning("queue: %s unknown type %r — writing empty extraction", source_id, post_type)
+        log.warning("queue: %s unknown type %r — skipping extraction", source_id, post_type)
+
+    has_content = bool(results.get("transcript") or results.get("ocr_text") or results.get("carousel_slides"))
+    if not has_content:
+        log.warning("queue: %s — no content extracted, status unchanged (stays Queued)", source_id)
+        return False
 
     write_extraction(config, page_id, results)
     time.sleep(config.notion_write_delay)
-    return bool(results.get("transcript") or results.get("ocr_text") or results.get("carousel_slides"))
+    return True
 
 
 def run_extract_stage(
@@ -122,8 +131,11 @@ def run_extract_stage(
         counter dict including at least {"extracted": int, "failed": int}
     """
     def _process(config: Config, item: dict, ctx: BrowserContext) -> str:
-        had_data = run_extract_item(config, ctx, item)
-        return "extracted" if had_data else "no_data"
+        try:
+            had_data = run_extract_item(config, ctx, item)
+            return "extracted" if had_data else "no_content"
+        finally:
+            time.sleep(random.uniform(config.extract_delay_min, config.extract_delay_max))
 
     def _on_error(config: Config, item: dict, exc: Exception) -> None:
         mark_failed(config, item["page_id"], str(exc))

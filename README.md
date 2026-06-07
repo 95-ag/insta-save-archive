@@ -1,6 +1,6 @@
 # Insta Save Archive
 
-Crawls Instagram saved collections, writes post metadata to Notion, extracts transcripts and OCR text, and enriches each item with AI-generated titles, external references, summaries, and insights. Runs entirely locally — no servers, no daemons, no cloud spend.
+Crawls Instagram saved collections, writes post metadata to Notion, extracts transcripts and OCR text, and enriches each item with AI-generated titles, external references, and summaries. Runs entirely locally — no servers, no daemons, no cloud spend.
 
 ## Pipeline overview
 
@@ -12,20 +12,21 @@ Phase 1 — Ingestion          scripts/ingest_batch.py / scripts/ingest.py
   Crawls each collection; writes author, type, caption, URL to Notion.
   Status: Imported
         │
+        ▼ (manual: set Queued + priority in Notion)
         ▼
-Phase 2 — Extraction         scripts/queue_pilot.py → scripts/run_extraction.py
-  Queues pilot collections; extracts transcripts (Reels) and OCR (Carousels).
-  Status: Queued → Expanded
+Phase 2 — Extraction         scripts/queue.py → scripts/extract.py
+  Queues items; extracts transcripts (Reels/IGTV) and OCR text (Carousels/Posts).
+  Status: Queued → Extracted
         │
         ▼
-Phase 3a — Local enrichment  scripts/run_enrichment_local.py   [automated, unattended]
-  Ollama (qwen2.5:7b) generates title and extracted_externals for all Expanded items.
-  Status: Expanded → Enriched
+Phase 3 — Title pass         scripts/title.py   [automated, Ollama, no status change]
+  Ollama (qwen2.5:7b) generates a human-readable title from caption.
+  Runs on Queued, Extracted, and Imported items — status unchanged.
         │
         ▼
-Phase 3b — Claude enrichment scripts/run_enrichment_claude_code.py   [manual, priority collections]
-  Claude Code session generates expanded_summary and key_insights, one collection per turn.
-  Status: Enriched → Summarised
+Phase 3 — Summarize pass     scripts/summarize.py   [manual Claude Code session]
+  Claude generates summary and externals for each Extracted item.
+  Status: Extracted → Summarized
 ```
 
 ### Pipeline status values
@@ -33,11 +34,10 @@ Phase 3b — Claude enrichment scripts/run_enrichment_claude_code.py   [manual, 
 | Status | Set by | Meaning |
 |---|---|---|
 | `Imported` | ingest scripts | Metadata written, awaiting extraction |
-| `Queued` | `queue_pilot.py` | Marked for deep extraction |
-| `Expanded` | `run_extraction.py` | Transcript + OCR extracted |
+| `Queued` | `queue.py` | Marked for deep extraction |
+| `Extracted` | `extract.py` | Transcript + OCR extracted |
+| `Summarized` | `summarize.py --upload` | Summary + externals written by Claude |
 | `Failed` | any stage | Stage failed; see `failure_notes` |
-| `Enriched` | `run_enrichment_local.py` | Title + externals written by Ollama |
-| `Summarised` | `run_enrichment_claude_code.py` | Summary + insights written by Claude |
 
 ---
 
@@ -91,9 +91,11 @@ cp .env.example .env
 | `PROCESSING_VERSION` | Version key for `raw_extraction` | `v1.0-base` |
 | `WHISPER_MODEL` | faster-whisper model: `base` or `small` | `base` |
 | `TMP_DIR` | Temp directory for media files | `tmp` |
-| `OLLAMA_MODEL` | Ollama model for local enrichment | `qwen2.5:7b` |
+| `OLLAMA_MODEL` | Ollama model for title pass | `qwen2.5:7b` |
 | `OLLAMA_BASE_URL` | Ollama API endpoint | `http://localhost:11434` |
-| `ENRICHMENT_VERSION` | Version tag written to enriched items | `v1.0-enrich` |
+| `ENRICHMENT_VERSION` | Version tag written to summarized items | `v1.0-enrich` |
+| `EXTRACT_DELAY_MIN` | Minimum seconds between extracted items (rate limit guard) | `3.0` |
+| `EXTRACT_DELAY_MAX` | Maximum seconds between extracted items | `7.0` |
 
 ### 4. Set up Notion
 
@@ -116,27 +118,26 @@ The database needs these properties. Add them in the order the phases are introd
 | `caption` | Text |
 | `posted_date` | Date |
 | `collection` | Multi-select |
-| `pipeline_status` | Select |
+| `status` | Select |
 | `failure_notes` | Text |
 
 **Phase 2 — add before running extraction:**
 
 | Property | Type |
 |---|---|
-| `transcript_available` | Checkbox |
+| `priority` | Select (options: High, Medium, Low) |
 | `transcript` | Text |
 | `ocr_text` | Text |
 | `raw_extraction` | Text |
 | `last_processed_at` | Date |
 | `processing_version` | Text |
 
-**Phase 3 — add before running enrichment (or use the setup snippet):**
+**Phase 3 — add before running enrichment:**
 
 | Property | Type |
 |---|---|
-| `extracted_externals` | Text |
-| `expanded_summary` | Text |
-| `key_insights` | Text |
+| `externals` | Text |
+| `summary` | Text |
 
 You can add Phase 3 properties programmatically instead of manually:
 
@@ -148,9 +149,8 @@ client = Client(auth=config.notion_token)
 db = client.databases.retrieve(database_id=config.notion_database_id)
 ds_id = db["data_sources"][0]["id"]
 client.data_sources.update(ds_id, properties={
-    "extracted_externals": {"rich_text": {}},
-    "expanded_summary":    {"rich_text": {}},
-    "key_insights":        {"rich_text": {}},
+    "externals": {"rich_text": {}},
+    "summary":   {"rich_text": {}},
 })
 ```
 
@@ -236,7 +236,7 @@ python scripts/ingest.py --dry-run
 python scripts/ingest.py --headed
 ```
 
-Single-collection mode skips discovery and reconciles only that collection. Tags for a post's *other* collections are left untouched (their crawls weren't run, so their absence isn't trusted) — these show as "unsafe removals skipped" in the summary, which is expected.
+Single-collection mode skips discovery and reconciles only that collection. Tags for a post's *other* collections are left untouched — these show as "unsafe removals skipped" in the summary, which is expected.
 
 #### Dry-run summary
 
@@ -250,44 +250,55 @@ collections=43 · creates=14 · retags=1 · unchanged=236 · skipped_unsafe=0
 
 ### Phase 2 — Extraction
 
-#### Step 1 — Queue pilot collections
+#### Step 1 — Queue items
+
+Set items to `Queued` status in Notion (and optionally set `priority`: High / Medium / Low). Then:
 
 ```bash
 # Queue all pilot collections (extract=True in collections.json)
-python scripts/queue_pilot.py --all-pilot
+python scripts/queue.py --all-pilot
 
 # Queue a single collection
-python scripts/queue_pilot.py --collection "<YOUR_COLLECTION>"
+python scripts/queue.py --collection "<YOUR_COLLECTION>"
 
 # Preview without writing
-python scripts/queue_pilot.py --all-pilot --dry-run
+python scripts/queue.py --all-pilot --dry-run
 ```
 
-Sets `pipeline_status` from `Imported` → `Queued` for matched items.
+Sets `status` from `Imported` → `Queued` for matched items.
 
 #### Step 2 — Run extraction
 
 ```bash
-# All Queued items
-python scripts/run_extraction.py
+# All Queued items (priority order: High → Medium → Low → unprioritised)
+python scripts/extract.py
 
 # Limit to N items
-python scripts/run_extraction.py --limit 10
+python scripts/extract.py --limit 10
 
 # Single item by shortcode
-python scripts/run_extraction.py --source_id <SHORTCODE>
+python scripts/extract.py --source_id <SHORTCODE>
 
-# Headed browser
-python scripts/run_extraction.py --headed
+# Headed browser (needed if Playwright can't find a display)
+python scripts/extract.py --headed
 ```
 
-Sets `pipeline_status` from `Queued` → `Expanded` (or `Failed`). Writes `transcript`, `ocr_text`, and versioned `raw_extraction`. Re-runnable — skips already `Expanded` items unless `--force`.
+Sets `status` from `Queued` → `Extracted` (or `Failed`). Items with no extractable content (no transcript and no OCR) stay `Queued` — they won't silently become `Extracted` with empty data.
+
+Inter-item delay (default 3–7s) is applied between each extraction to avoid HTTP 429 rate limiting. Adjust via `EXTRACT_DELAY_MIN` / `EXTRACT_DELAY_MAX` in `.env`.
+
+**Extraction by type:**
+- **Reel / IGTV** — transcript via yt-dlp + faster-whisper; OCR frames via ffmpeg + RapidOCR
+- **Carousel** — slide download + OCR per slide via Playwright
+- **Post** — single-image download + OCR via Playwright
 
 ---
 
-### Phase 3a — Local enrichment (Ollama, automated)
+### Phase 3 — Title pass (Ollama, automated)
 
-Generates `title` and `extracted_externals` for all `Expanded` items. Runs unattended. Sets `pipeline_status` → `Enriched`.
+Generates a human-readable `title` from caption for items that still have a placeholder title. Runs on **Queued**, **Extracted**, and **Imported** items. Does **not** change status.
+
+Safe to run anytime, repeatedly — only items with a placeholder title are processed.
 
 **Check Ollama is running:**
 ```bash
@@ -297,32 +308,18 @@ ollama serve &
 ```
 
 ```bash
-# Full run — all Expanded items (run overnight or when idle)
-python scripts/run_enrichment_local.py 2>&1 | tee /tmp/local_enrichment.log
-
-# Dry-run — preview output, no Notion writes
-python scripts/run_enrichment_local.py --dry-run --limit 5
+# Full run — all Queued + Extracted items (Imported items at lower priority)
+python scripts/title.py 2>&1 | tee /tmp/title.log
 
 # Limit to N items
-python scripts/run_enrichment_local.py --limit 10
+python scripts/title.py --limit 10
 
 # Single item by shortcode
-python scripts/run_enrichment_local.py --source_id <SHORTCODE>
+python scripts/title.py --source_id <SHORTCODE>
 
-# Force overwrite (re-runs even if title is not a placeholder)
-python scripts/run_enrichment_local.py --force --source_id <SHORTCODE>
+# Force overwrite (re-runs even if title already exists)
+python scripts/title.py --force
 ```
-
-Interrupt-safe — if it stops mid-run, re-run from the beginning. Items with a real title (non-placeholder) are skipped automatically.
-
-**extracted_externals format** (one entry per line):
-```
-[tool] Figma — UI design tool used
-[brand] Acme Co — subject of the post
-[creator] @username — person referenced
-[website] example.com — resource mentioned
-```
-Valid types: `tool`, `app`, `brand`, `creator`, `website`, `link`, `location`, `technique`
 
 **VRAM note:** qwen2.5:7b requires ~4GB VRAM. If you hit OOM:
 ```bash
@@ -333,52 +330,58 @@ ollama pull qwen2.5:3b
 
 ---
 
-### Phase 3b — Claude enrichment (Claude Code session)
+### Phase 3 — Summarize pass (Claude Code session)
 
-Generates `expanded_summary` and `key_insights` for priority collections. Runs as a Claude Code session — one collection per turn. Sets `pipeline_status` → `Summarised`.
+Generates `summary` and `externals` for `Extracted` items using a Claude Code session. Highest priority first (High → Medium → Low → unprioritised). Sets `status` → `Summarized`.
 
-**Run local enrichment first** — Claude pass reads `Enriched` items (post-local pass).
+Workflow — repeat until no `Extracted` items remain:
 
-#### Step 1 — Check priority order
-
-```bash
-python scripts/run_enrichment_claude_code.py --list-priority
-```
-
-#### Step 2 — Prepare a batch
+#### Step 1 — Prepare a batch
 
 ```bash
-python scripts/run_enrichment_claude_code.py --prepare --collection "<YOUR_COLLECTION>"
+python scripts/summarize.py --prepare
 ```
 
-Writes `tmp/enrichment_batch.json` (raw data) and `tmp/enrichment_prompt.txt` (Claude-ready prompt).
+Fetches the highest-priority non-empty `Extracted` bucket up to a content budget (~200k chars). Writes:
+- `tmp/enrichment_batch.json` — raw item data
+- `tmp/enrichment_prompt.txt` — Claude-ready prompt
 
-#### Step 3 — Run Claude
+#### Step 2 — Run Claude
 
-In this Claude Code session, say:
+In a Claude Code session, say:
 > *"Read tmp/enrichment_prompt.txt and write the results JSON to tmp/enrichment_results.json"*
 
-Claude reads all items for the collection in one turn and writes a JSON array:
+Claude reads all items in one turn and writes a JSON array:
 ```json
 [
   {
     "page_id": "...",
     "source_id": "...",
-    "expanded_summary": "...",
-    "key_insights": ["...", "..."]
+    "summary": "...",
+    "externals": "..."
   }
 ]
 ```
 
-#### Step 4 — Upload results
+#### Step 3 — Upload results
 
 ```bash
-python scripts/run_enrichment_claude_code.py --upload
+python scripts/summarize.py --upload
 ```
 
-Writes `expanded_summary` and `key_insights` to Notion for each item. Cleans up tmp files on success.
+Writes `summary` and `externals` to Notion for each item. Sets `status` → `Summarized`. Cleans up tmp files on full success.
 
-Repeat steps 2–4 for each priority collection.
+Repeat steps 1–3 until `--prepare` reports no `Extracted` items remain.
+
+**externals format** (grouped by category):
+```
+[Tools]
+  Figma — UI design tool used for wireframing
+[Creators]
+  @username — person referenced in post
+[Links]
+  https://example.com — resource mentioned in caption
+```
 
 ---
 
@@ -402,11 +405,8 @@ Session expired. Delete `session_cookies.json` and re-run to trigger re-auth.
 **`Ollama not reachable at http://localhost:11434`**
 Ollama isn't running. Start it: `ollama serve` or `sudo systemctl start ollama`.
 
-**`enrichment_local: model did not call tool`**
-Ollama returned a text response instead of a tool call. Usually a one-off — re-run the item with `--source_id`. If persistent, the model may be overloaded or the prompt is too long; try `qwen2.5:3b`.
-
-**`extracted_externals is not a property that exists`**
-Phase 3 Notion properties haven't been created yet. Run the setup snippet from the Notion setup section above.
+**`HTTP 429` during extraction**
+Instagram rate-limited the session. Increase `EXTRACT_DELAY_MIN` and `EXTRACT_DELAY_MAX` in `.env`, then re-run (already-extracted items are skipped).
 
 **`Collections file not found`**
 `config/collections.json` doesn't exist. Run `python scripts/list_collections.py --update` to generate it.

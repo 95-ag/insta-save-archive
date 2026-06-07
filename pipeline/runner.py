@@ -1,15 +1,15 @@
 """
 Shared priority-bucketed stage runner.
 
-Every per-item processing stage (extraction, local enrichment) reads items in a
-given pipeline_status, processes them highest-priority first, and writes results
-back. This module owns that loop once:
+Every per-item processing stage (extraction, title, summarize) reads items in a
+given status, processes them highest-priority first, and writes results back.
+This module owns that loop once:
 
     for bucket in PRIORITY_BUCKETS:          # High → Medium → Low → unprioritised
         for item in items(read_status, bucket):
             process_fn(config, item, ctx)    # does the work + Notion write + status
 
-process_fn returns a counter name (e.g. "expanded", "skipped") that the runner
+process_fn returns a counter name (e.g. "extracted", "skipped") that the runner
 bumps on the StageProgress display. Failures raise; the runner counts them as
 "failed" and routes the item to on_error (e.g. mark_failed) when given.
 
@@ -45,29 +45,33 @@ def run_priority_stage(
     source_id: str | None = None,
     stage_key: str = "item",
     bar_label: str = "Items",
+    exclude_priorities: list | None = None,
 ) -> dict:
     """
     Drive a per-item stage over priority buckets, reporting into a StageProgress.
 
     Args:
-        read_status: pipeline_status of items to pick up (e.g. "Queued", "Expanded").
+        read_status: status of items to pick up (e.g. "Queued", "Extracted").
         process_fn:  process_fn(config, item, ctx) -> str. Owns the work, the Notion
                      write, and the status transition. Returns a counter name.
         ctx:         shared per-stage resource passed to process_fn (e.g. a browser
                      BrowserContext for extraction, None for local enrichment).
         on_error:    optional on_error(config, item, exc) called when process_fn raises
                      (e.g. mark_failed). The runner always counts the item as "failed".
-        limit:       cumulative cap on items processed across all buckets (None = all).
-        source_id:   if set, process only the item with this source_id (it must be in
-                     read_status); all others are skipped.
-        stage_key:   label shown on the live status line (e.g. "extract", "enrich").
-        bar_label:   description for the progress bar.
+        limit:              cumulative cap on items processed across all buckets (None = all).
+        source_id:          if set, process only the item with this source_id (it must be in
+                            read_status); all others are skipped.
+        stage_key:          label shown on the live status line (e.g. "extract", "enrich").
+        bar_label:          description for the progress bar.
+        exclude_priorities: priority values to skip entirely (e.g. ["High"]). None = include all.
 
     Returns:
         dict of counter-name → count. Always includes "failed".
     """
     items: list[dict] = []
     for priority in PRIORITY_BUCKETS:
+        if exclude_priorities and priority in exclude_priorities:
+            continue
         for item in query_by_status_and_priority(config, read_status, priority):
             item["priority"] = priority
             items.append(item)
