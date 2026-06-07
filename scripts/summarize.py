@@ -138,6 +138,8 @@ def _build_prompt(label: str, items: list[dict]) -> str:
         "  • Strip filler: greetings, signoffs, 'see you next time', hashtag promos, conversational padding.",
         "  • Result should replace watching the video or reading the slides —",
         "    all information value, no medium noise.",
+        "  • Use blank lines (two newlines) between distinct topic sections.",
+        "    Do not write one continuous block of text — paragraph breaks aid readability.",
         "",
         "externals — Extract every external reference mentioned in the post.",
         "  Categories: Tools, Brands, Creators, Links, Techniques, Locations.",
