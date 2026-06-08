@@ -367,10 +367,23 @@ def extract_carousel(
                     slide_urls.append(url)
 
         _collect_current()
+        log.info("extractor_deep: carousel %s — initial load: %d slide URLs, next_btn=%s",
+                 shortcode, len(slide_urls), page.locator(CAROUSEL_NEXT_SEL).count() > 0)
+
+        clicks = 0
         while page.locator(CAROUSEL_NEXT_SEL).count() > 0:
             page.locator(CAROUSEL_NEXT_SEL).first.click()
+            clicks += 1
             _time.sleep(1.0)
             _collect_current()
+
+        log.info("extractor_deep: carousel %s — %d slides collected after %d clicks",
+                 shortcode, len(slide_urls), clicks)
+
+        if not slide_urls:
+            log.warning("extractor_deep: carousel %s — no slide URLs found (ul img matched nothing)",
+                        shortcode)
+            return []
 
         results = []
         for i, url in enumerate(slide_urls, start=1):
