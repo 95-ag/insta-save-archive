@@ -8,8 +8,8 @@
 ## Read First
 
 Before any task:
-- `.claude/docs/PROJECT.md` — architecture, schema, constraints, failure handling
-- `.claude/docs/IMPLEMENTATION_PLAN.md` — phases, deliverables, success criteria, file layout
+- `.claude/docs/ARCHITECTURE.md` — v2 architecture: stages, run modes, backends, engines, Notion schema, decision log
+- Archived v1 (reference only): `.claude/docs/archive/PROJECT.md`, `.claude/docs/archive/IMPLEMENTATION_PLAN.md`
 
 Current session state → `.claude/work/session.md`
 
