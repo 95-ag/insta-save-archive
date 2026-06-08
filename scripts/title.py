@@ -89,8 +89,8 @@ def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
         def _process(config, item, ctx):
             return _title_one(config, item, dry_run, force, progress)
 
-        # Run after extraction — Extracted first, Imported last. Never on Queued.
-        for read_status in ("Extracted", "Imported"):
+        # TODO(temp): expand to ("Extracted", "Imported") once set-2 extraction completes.
+        for read_status in ("Extracted",):
             run_priority_stage(
                 config,
                 read_status,

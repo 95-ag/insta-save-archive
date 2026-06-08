@@ -22,5 +22,8 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# claude session notes — local scratch only
+.claude/work/
+
 # os
 .DS_Store
