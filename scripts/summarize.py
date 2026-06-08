@@ -6,8 +6,9 @@ OCR, and caption rendered as clean prose — filler stripped, information preser
 Highest priority first (High → Medium → Low → unprioritised).
 
 --prepare fetches the highest-priority non-empty Extracted bucket up to a content
-budget (total chars of transcript + OCR + caption across the batch). Batch size
-adapts automatically — many short items or fewer long ones per session.
+budget (total chars of transcript + OCR + caption) and a max item count. Both caps
+are checked — whichever is hit first stops the batch. This keeps the prompt file
+small enough for a single-pass Claude Code session without context compaction.
 
 Workflow (repeat until no Extracted items remain):
   1. python scripts/summarize.py --prepare
@@ -40,8 +41,13 @@ _PROMPT_FILE = _TMP / "enrichment_prompt.txt"
 _RESULTS_FILE = _TMP / "enrichment_results.json"
 
 # Maximum total chars of content (transcript + OCR + caption) per batch.
-# Controls batch size automatically — many short items or fewer long ones per session.
-_CONTENT_BUDGET = 200_000
+# Controls batch size for long items — many short ones hit _MAX_ITEMS first.
+_CONTENT_BUDGET = 100_000
+
+# Hard ceiling on item count per batch. Prevents many short items from accumulating
+# enough per-item prompt overhead to blow out the Claude Code session context.
+# Whichever limit is reached first stops the batch.
+_MAX_ITEMS = 30
 
 
 def _next_nonempty_bucket(config) -> tuple[str | None, list[dict]]:
@@ -88,7 +94,7 @@ def prepare() -> None:
                     len(item.get("transcript") or "") +
                     len(item.get("ocr_text") or "")
                 )
-                if total_content + size > _CONTENT_BUDGET and items:
+                if (total_content + size > _CONTENT_BUDGET or len(items) >= _MAX_ITEMS) and items:
                     # Budget reached — leave remaining for the next --prepare run
                     log.info("prepare: content budget reached at %d items (%d chars)", len(items), total_content)
                     progress.advance(bar)
