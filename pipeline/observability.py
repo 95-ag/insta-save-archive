@@ -76,13 +76,9 @@ def setup_logging(stage_name: str, level: int = logging.DEBUG) -> Path:
         root.removeHandler(handler)
     root.addHandler(file_handler)
 
-    # Keep noisy libraries in the file, never on screen. Some libs (notably
-    # notion_client, via make_console_logger) attach their OWN StreamHandler-to-stderr
-    # on client init — and the ingest creates a fresh Client per call, so that handler
-    # gets re-added repeatedly and its retry warnings print straight to the terminal,
-    # bypassing the rich display. Pre-seeding a NullHandler makes those libs skip
-    # adding a stderr handler (they only add one when no handler exists), while
-    # propagate=True keeps their records flowing to the file handler above.
+    # Keep noisy libraries in the file, never on screen. propagate=True lets their
+    # records reach the file handler on root. notion_client's StreamHandler issue is
+    # handled via the make_console_logger patch below.
     for name in _NOISY_LOGGERS:
         lg = logging.getLogger(name)
         for h in list(lg.handlers):
@@ -90,6 +86,18 @@ def setup_logging(stage_name: str, level: int = logging.DEBUG) -> Path:
         lg.addHandler(logging.NullHandler())
         lg.propagate = True
         lg.setLevel(logging.INFO)
+
+    # notion_client.logging.make_console_logger unconditionally adds a new StreamHandler
+    # on every Client() init (no "if not logger.handlers" guard), then Client.__init__
+    # immediately calls setLevel(WARNING) — overwriting anything we set here.  Patching
+    # make_console_logger to return the logger without attaching a handler is the only
+    # reliable fix.  The NullHandler seeded above plus propagate=True keeps records
+    # flowing to the file handler on root, and _RetryWatcher still sees them.
+    try:
+        import notion_client.logging as _nc_logging
+        _nc_logging.make_console_logger = lambda: logging.getLogger("notion_client")
+    except ImportError:
+        pass
 
     return log_path
 
