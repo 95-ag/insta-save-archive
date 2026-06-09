@@ -3,7 +3,7 @@
 Hard-won fixes, workarounds, and non-obvious decisions that **must survive the v2 rewrite**.
 Committed deliberately: `.claude/work/lessons.md` is gitignored, so these would otherwise be lost
 in a fresh checkout. ⚠️ marks items found in **code but NOT in `lessons.md`** — highest risk to lose.
-Paths are repo-relative to the v1 tree (`pipeline/`, `scripts/`).
+Paths are repo-relative to the v1 tree, now archived under `legacy/` (`legacy/pipeline/`, `legacy/scripts/`).
 
 > Source: v1 audit of code + git history + lessons (2026-06-08). When v2 reimplements a stage,
 > check this list first.

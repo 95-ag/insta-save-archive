@@ -7,9 +7,9 @@ transcript, on-screen/slide text → OCR), and uses an LLM to enrich each item w
 **title, summary, externals, and semantic tags** — then optionally routes high-value
 items to downstream systems. The goal: never need to re-open the original post.
 
-> **Status:** v2 is in design/build. The working **v1** currently runs from `pipeline/` +
-> `scripts/`; its operating manual is preserved at [`legacy/README.md`](legacy/README.md), and
-> the code moves under `legacy/` during migration. This README describes the **v2 target**.
+> **Status:** v2 is in design/build. The working **v1** is archived under `legacy/` —
+> it runs from `legacy/pipeline/` + `legacy/scripts/`; its operating manual is preserved at
+> [`legacy/README.md`](legacy/README.md). This README describes the **v2 target**.
 > Full design + decision log: [`.claude/docs/ARCHITECTURE.md`](.claude/docs/ARCHITECTURE.md).
 
 ---
