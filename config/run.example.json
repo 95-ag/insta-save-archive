@@ -1,0 +1,10 @@
+{
+  "mode": "first-time",
+  "enrich": { "backend": "cowork", "model": "claude-sonnet", "effort": "medium" },
+  "extract": {
+    "transcript": { "model": "base", "vad": true },
+    "ocr": { "mode": "escalate", "escalate_threshold": 0.6 }
+  },
+  "batch": { "max_items": 15, "max_char_budget": 80000 },
+  "guardrails": { "max_items_per_run": null, "max_spend_usd": null }
+}
