@@ -8,24 +8,24 @@ Crawls Instagram saved collections, writes post metadata to Notion, extracts tra
 Instagram saved collections
         │
         ▼
-Phase 1 — Ingestion          scripts/ingest_batch.py / scripts/ingest.py
+Phase 1 — Ingestion          legacy/scripts/ingest_batch.py / legacy/scripts/ingest.py
   Crawls each collection; writes author, type, caption, URL to Notion.
   Status: Imported
         │
         ▼ (manual: mark items Queued + set priority in Notion)
         ▼
-Phase 2 — Extraction         scripts/extract.py
+Phase 2 — Extraction         legacy/scripts/extract.py
   Extracts transcripts (Reels/IGTV) and OCR text (Carousels/Posts) for Queued items.
   Status: Queued → Extracted
         │
         ▼ (run once all Queued items are extracted)
         ▼
-Phase 3 — Title pass         scripts/title.py   [automated, Ollama, no status change]
+Phase 3 — Title pass         legacy/scripts/title.py   [automated, Ollama, no status change]
   Generates a human-readable title from caption for Extracted and Imported items.
   Status: unchanged
         │
         ▼
-Phase 3 — Summarize pass     scripts/summarize.py   [manual Claude Code session]
+Phase 3 — Summarize pass     legacy/scripts/summarize.py   [manual Claude Code session]
   Claude generates summary and externals for each Extracted item.
   Status: Extracted → Summarized
 ```
@@ -160,7 +160,7 @@ client.data_sources.update(ds_id, properties={
 Your collection list lives in `config/collections.json` (gitignored). Generate it from your Instagram account:
 
 ```bash
-python scripts/list_collections.py --update
+python legacy/scripts/list_collections.py --update
 ```
 
 Then edit `config/collections.json` to set `group` and `extract` for each collection. See `config/collections.example.json` for the format.
@@ -175,12 +175,14 @@ On first run, a browser window opens at the Instagram login page. Log in manuall
 # Windows PowerShell — start VcXsrv
 Start-Process "C:\Program Files\VcXsrv\vcxsrv.exe" -ArgumentList ":1 -multiwindow -ac -noclipboard"
 # Then run with:
-python scripts/ingest.py --headed
+python legacy/scripts/ingest.py --headed
 ```
 
 ---
 
 ## Running
+
+> **v1 is archived under `legacy/`.** Run all commands from the **repo root** so relative `config/` and `tmp/` paths resolve. `pip install -e .` keeps the `pipeline` package importable from its new location (`pyproject.toml` scans both `.` and `legacy`), so `from pipeline.config import ...` and the `python legacy/scripts/*.py` entrypoints work unchanged.
 
 Always activate the venv first:
 
@@ -208,22 +210,22 @@ The terminal shows live progress bars; full detail goes to `logs/ingest_<timesta
 #### Full sync (all collections)
 
 ```bash
-python scripts/ingest_batch.py                 # discover + crawl + reconcile + apply
-python scripts/ingest_batch.py --dry-run        # compute the plan, write nothing
-python scripts/ingest_batch.py --discover-only  # just refresh collections.json
-python scripts/ingest_batch.py --headed         # visible browser (first login)
+python legacy/scripts/ingest_batch.py                 # discover + crawl + reconcile + apply
+python legacy/scripts/ingest_batch.py --dry-run        # compute the plan, write nothing
+python legacy/scripts/ingest_batch.py --discover-only  # just refresh collections.json
+python legacy/scripts/ingest_batch.py --headed         # visible browser (first login)
 ```
 
 Tuning and recovery:
 ```bash
 # Reuse complete snapshots younger than N minutes (default 360) — fast crash-resume
-python scripts/ingest_batch.py --max-snapshot-age 60
+python legacy/scripts/ingest_batch.py --max-snapshot-age 60
 
 # Ignore snapshots, re-crawl everything fresh
-python scripts/ingest_batch.py --fresh
+python legacy/scripts/ingest_batch.py --fresh
 
 # Allow stripping a collection you deleted on Instagram (repeatable)
-python scripts/ingest_batch.py --confirm-removed "Old Collection"
+python legacy/scripts/ingest_batch.py --confirm-removed "Old Collection"
 ```
 
 Snapshots live in `tmp/ingest/snapshots/` (gitignored). A crash loses at most the in-flight crawl; re-running reuses fresh snapshots and converges (all writes are idempotent).
@@ -232,9 +234,9 @@ Snapshots live in `tmp/ingest/snapshots/` (gitignored). A crash loses at most th
 
 ```bash
 # Set TARGET_COLLECTION in .env, then:
-python scripts/ingest.py
-python scripts/ingest.py --dry-run
-python scripts/ingest.py --headed
+python legacy/scripts/ingest.py
+python legacy/scripts/ingest.py --dry-run
+python legacy/scripts/ingest.py --headed
 ```
 
 Single-collection mode skips discovery and reconciles only that collection. Tags for a post's *other* collections are left untouched — these show as "unsafe removals skipped" in the summary, which is expected.
@@ -257,13 +259,13 @@ Set items to `Queued` status in Notion (and optionally set `priority`: High / Me
 
 ```bash
 # Queue all pilot collections (extract=True in collections.json)
-python scripts/promote.py --all-pilot
+python legacy/scripts/promote.py --all-pilot
 
 # Queue a single collection
-python scripts/promote.py --collection "<YOUR_COLLECTION>"
+python legacy/scripts/promote.py --collection "<YOUR_COLLECTION>"
 
 # Preview without writing
-python scripts/promote.py --all-pilot --dry-run
+python legacy/scripts/promote.py --all-pilot --dry-run
 ```
 
 Sets `status` from `Imported` → `Queued` for matched items.
@@ -272,16 +274,16 @@ Sets `status` from `Imported` → `Queued` for matched items.
 
 ```bash
 # All Queued items (priority order: High → Medium → Low → unprioritised)
-python scripts/extract.py
+python legacy/scripts/extract.py
 
 # Limit to N items
-python scripts/extract.py --limit 10
+python legacy/scripts/extract.py --limit 10
 
 # Single item by shortcode
-python scripts/extract.py --source_id <SHORTCODE>
+python legacy/scripts/extract.py --source_id <SHORTCODE>
 
 # Headed browser (needed if Playwright can't find a display)
-python scripts/extract.py --headed
+python legacy/scripts/extract.py --headed
 ```
 
 Sets `status` from `Queued` → `Extracted` (or `Failed`). Items with no extractable content (no transcript and no OCR) stay `Queued` — they won't silently become `Extracted` with empty data.
@@ -310,16 +312,16 @@ ollama serve &
 
 ```bash
 # Full run — all Queued + Extracted items (Imported items at lower priority)
-python scripts/title.py
+python legacy/scripts/title.py
 
 # Limit to N items
-python scripts/title.py --limit 10
+python legacy/scripts/title.py --limit 10
 
 # Single item by shortcode
-python scripts/title.py --source_id <SHORTCODE>
+python legacy/scripts/title.py --source_id <SHORTCODE>
 
 # Force overwrite (re-runs even if title already exists)
-python scripts/title.py --force
+python legacy/scripts/title.py --force
 ```
 
 **VRAM note:** qwen2.5:7b requires ~4GB VRAM. If you hit OOM:
@@ -340,7 +342,7 @@ Workflow — repeat until no `Extracted` items remain:
 #### Step 1 — Prepare a batch
 
 ```bash
-python scripts/summarize.py --prepare
+python legacy/scripts/summarize.py --prepare
 ```
 
 Fetches the highest-priority non-empty `Extracted` bucket up to a content budget (~200k chars). Writes:
@@ -367,7 +369,7 @@ Claude reads all items in one turn and writes a JSON array:
 #### Step 3 — Upload results
 
 ```bash
-python scripts/summarize.py --upload
+python legacy/scripts/summarize.py --upload
 ```
 
 Writes `summary` and `externals` to Notion for each item. Sets `status` → `Summarized`. Cleans up tmp files on full success.
@@ -392,7 +394,7 @@ Repeat steps 1–3 until `--prepare` reports no `Extracted` items remain.
 Browser opens for manual login. Complete it and the session saves automatically.
 
 **`crawler: collection 'X' not found`**
-Collection name must match exactly. Check `instagram.com/<username>/saved/` or run `python scripts/list_collections.py`.
+Collection name must match exactly. Check `instagram.com/<username>/saved/` or run `python legacy/scripts/list_collections.py`.
 
 **`Could not find property with name or id: <prop>`**
 A Notion property name doesn't match the pipeline's expectation. Verify names match the tables in the setup section — no trailing spaces, correct capitalisation.
@@ -410,4 +412,4 @@ Ollama isn't running. Start it: `ollama serve` or `sudo systemctl start ollama`.
 Instagram rate-limited the session. Increase `EXTRACT_DELAY_MIN` and `EXTRACT_DELAY_MAX` in `.env`, then re-run (already-extracted items are skipped).
 
 **`Collections file not found`**
-`config/collections.json` doesn't exist. Run `python scripts/list_collections.py --update` to generate it.
+`config/collections.json` doesn't exist. Run `python legacy/scripts/list_collections.py --update` to generate it.

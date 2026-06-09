@@ -11,5 +11,5 @@ requires-python = ">=3.12"
 isa = "cli.isa:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = [".", "legacy"]
 include = ["pipeline*", "insta_save*", "cli*"]
