@@ -61,6 +61,28 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     assert fields["tags"] == ["tool", "seo", "ai"]   # bogus dropped, content_type first
     assert version == "claude-sonnet/v2.0-enrich/Hustling"
     assert counts["written"] == 1
+    # full success -> tmp files cleaned (lets the next --prepare advance)
+    assert not (tmp_path / "enrich" / "results.json").exists()
+    assert not (tmp_path / "enrich" / "batch.json").exists()
+
+
+def test_prepare_excludes_other_group(tmp_path, monkeypatch):
+    # large cap so the cap never fires — only the group filter decides membership
+    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+                      {"page_id": "p2", "source_id": "s2", "collections": ["other"]},
+                      {"page_id": "p3", "source_id": "s3", "collections": ["hust-a"]}]}
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    monkeypatch.setattr(enrich, "get_page_content",
+                        lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
+                                          "transcript": "", "ocr_text": "", "type": "Reel",
+                                          "author": "a", "transcript_language": "en"})
+    n = enrich.prepare(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
+                       vocab=_vocab(), char_budget=100000, max_items=10,
+                       statuses=["Extracted"], prompt_template="H {vocab_block}")
+    assert n == 2
+    batch = json.loads((tmp_path / "enrich" / "batch.json").read_text())
+    assert [i["page_id"] for i in batch["items"]] == ["p1", "p3"]   # 'other' excluded
 
 
 def test_apply_errors_when_results_missing(tmp_path):
