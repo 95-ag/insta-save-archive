@@ -4,7 +4,7 @@ from insta_save.config import env as envcfg
 
 def _set(monkeypatch, **kw):
     for k in ["NOTION_TOKEN", "NOTION_DATABASE_ID", "TMP_DIR", "EXTRACT_VERSION",
-              "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
+              "ENRICH_VERSION", "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
               "DISPLAY_MODE", "COOKIES_FILE"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in kw.items():
@@ -54,3 +54,15 @@ def test_delay_min_exceeding_max_raises(monkeypatch):
     _set(monkeypatch, EXTRACT_DELAY_MIN="9.0", EXTRACT_DELAY_MAX="2.0")
     with pytest.raises(ValueError):
         envcfg.load_env()
+
+
+def test_enrich_version_default(monkeypatch):
+    _set(monkeypatch)
+    cfg = envcfg.load_env()
+    assert cfg.enrich_version == "v2.0-enrich"
+
+
+def test_enrich_version_override(monkeypatch):
+    _set(monkeypatch, ENRICH_VERSION="v2.1-enrich")
+    cfg = envcfg.load_env()
+    assert cfg.enrich_version == "v2.1-enrich"
