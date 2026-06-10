@@ -48,3 +48,9 @@ def test_invalid_float_raises(monkeypatch):
     _set(monkeypatch, NOTION_WRITE_DELAY="abc")
     with pytest.raises(ValueError):
         envcfg.load_env()
+
+
+def test_delay_min_exceeding_max_raises(monkeypatch):
+    _set(monkeypatch, EXTRACT_DELAY_MIN="9.0", EXTRACT_DELAY_MAX="2.0")
+    with pytest.raises(ValueError):
+        envcfg.load_env()

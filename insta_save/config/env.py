@@ -27,7 +27,7 @@ class EnvConfig:
     cookies_file: str
 
 
-def _float(key: str, default: float) -> float:
+def _env_float(key: str, default: float) -> float:
     raw = os.getenv(key, str(default)).strip()
     try:
         return float(raw)
@@ -41,14 +41,21 @@ def load_env() -> EnvConfig:
         raise ValueError(
             f"env: invalid DISPLAY_MODE {display_mode!r}; expected one of {sorted(VALID_DISPLAY_MODES)}"
         )
+    extract_delay_min = _env_float("EXTRACT_DELAY_MIN", 3.0)
+    extract_delay_max = _env_float("EXTRACT_DELAY_MAX", 7.0)
+    if extract_delay_min > extract_delay_max:
+        raise ValueError(
+            f"env: EXTRACT_DELAY_MIN ({extract_delay_min}) must not exceed "
+            f"EXTRACT_DELAY_MAX ({extract_delay_max})"
+        )
     return EnvConfig(
         notion_token=os.getenv("NOTION_TOKEN", "").strip(),
         notion_database_id=os.getenv("NOTION_DATABASE_ID", "").strip(),
         tmp_dir=os.getenv("TMP_DIR", "tmp").strip(),
         extract_version=os.getenv("EXTRACT_VERSION", "v2.0-base-tuned").strip(),
-        notion_write_delay=_float("NOTION_WRITE_DELAY", 0.4),
-        extract_delay_min=_float("EXTRACT_DELAY_MIN", 3.0),
-        extract_delay_max=_float("EXTRACT_DELAY_MAX", 7.0),
+        notion_write_delay=_env_float("NOTION_WRITE_DELAY", 0.4),
+        extract_delay_min=extract_delay_min,
+        extract_delay_max=extract_delay_max,
         display_mode=display_mode,
         cookies_file=os.getenv("COOKIES_FILE", "session_cookies.json").strip(),
     )
