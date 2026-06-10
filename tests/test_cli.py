@@ -98,6 +98,35 @@ class _FakeProgress:
     def __exit__(self, *a): return False
 
 
+def _patch_prepare_path(monkeypatch, prepare_return):
+    """Wire the enrich --prepare dispatch path with stubs, prepare() -> prepare_return."""
+    import cli.isa as isa
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+    monkeypatch.setattr(isa.enrich, "prepare", lambda *a, **k: prepare_return)
+    return isa
+
+
+def test_enrich_prepare_prints_drained_sentinel_when_empty(monkeypatch, capsys):
+    isa = _patch_prepare_path(monkeypatch, prepare_return=0)
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare", "--group", "Hustling"])
+    isa.dispatch_run(args)
+    assert "ENRICH_DRAINED group=Hustling" in capsys.readouterr().out
+
+
+def test_enrich_prepare_no_sentinel_when_items_left(monkeypatch, capsys):
+    isa = _patch_prepare_path(monkeypatch, prepare_return=5)
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare", "--group", "Hustling"])
+    isa.dispatch_run(args)
+    assert "ENRICH_DRAINED" not in capsys.readouterr().out
+
+
 def test_enrich_apply_calls_stage(monkeypatch):
     import cli.isa as isa
     calls = {}
