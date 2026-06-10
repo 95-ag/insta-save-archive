@@ -79,7 +79,8 @@ def test_run_item_unknown_type_no_content(monkeypatch):
 def _env():
     from insta_save.config.env import EnvConfig
     return EnvConfig(notion_token="t", notion_database_id="d", tmp_dir="tmp",
-                     extract_version="v2.0-base-tuned", notion_write_delay=0.0,
+                     extract_version="v2.0-base-tuned", enrich_version="v2.0-enrich",
+                     notion_write_delay=0.0,
                      extract_delay_min=0.0, extract_delay_max=0.0,
                      display_mode="none", cookies_file="session_cookies.json")
 
