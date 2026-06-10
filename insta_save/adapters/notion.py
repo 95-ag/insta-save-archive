@@ -39,6 +39,14 @@ def _rich_text(text):
     return {"rich_text": [{"text": {"content": _notion_truncate(text)}}]}
 
 
+def _title(text):
+    return {"title": [{"text": {"content": _notion_truncate(text or "")}}]}
+
+
+def _multi_select(values):
+    return {"multi_select": [{"name": v} for v in values]}
+
+
 def _select(value):
     if not value:
         return None
@@ -78,6 +86,34 @@ def _merge_raw(existing: dict, version: str, payload: dict) -> dict:
 
 def _synth_ocr_text(slides: list[dict]) -> str:
     return "\n\n".join(f"[Slide {s['slide']}]\n{s['text']}" for s in slides if s.get("text"))
+
+
+def _transcript_language_from_raw(raw: dict, extract_version: str):
+    """Pull transcript_language out of the raw_extraction payload — prefer the
+    slot matching extract_version, else any version that recorded one."""
+    slot = raw.get(extract_version) or {}
+    if slot.get("transcript_language"):
+        return slot["transcript_language"]
+    for payload in raw.values():
+        if isinstance(payload, dict) and payload.get("transcript_language"):
+            return payload["transcript_language"]
+    return None
+
+
+def _enrich_props(title, summary, externals, tags, version) -> dict:
+    """Build the Notion property payload for one enriched item. summary/externals
+    use chunked rich_text (full length); title is truncated to one block."""
+    props = {
+        "status": _select("Tagged"),
+        "enrich_version": _rich_text(version),
+        "title": _title(title),
+        "summary": _rich_text_chunked(summary or ""),
+    }
+    if externals:
+        props["externals"] = _rich_text_chunked(externals)
+    if tags:
+        props["tags"] = _multi_select(tags)
+    return props
 
 
 def _schema_property_additions(existing_props: dict) -> dict:
@@ -214,3 +250,56 @@ def write_extraction(env: EnvConfig, page_id: str, results: dict) -> None:
         log.info("notion: wrote extraction %s for page %s", version, page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: failed to write extraction for {page_id}: {e}") from e
+
+
+def get_page_content(env: EnvConfig, page_id: str) -> dict:
+    """Full content for enrich. Returns: page_id, source_id, title, author, type,
+    collections (list), caption, transcript, ocr_text, transcript_language."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    page = client.pages.retrieve(page_id=page_id)
+    props = page.get("properties", {})
+
+    def _text(name):
+        blocks = props.get(name, {}).get("rich_text", [])
+        return "".join(b["text"]["content"] for b in blocks) or None
+
+    title_blocks = props.get("title", {}).get("title", [])
+    title = "".join(b["text"]["content"] for b in title_blocks) or None
+    type_select = props.get("type", {}).get("select") or {}
+    collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
+
+    raw_text = _text("raw_extraction") or ""
+    try:
+        raw = json.loads(raw_text) if raw_text.strip() else {}
+    except json.JSONDecodeError:
+        raw = {}
+    extract_version = _text("extract_version") or ""
+    transcript_language = _transcript_language_from_raw(raw, extract_version)
+
+    return {
+        "page_id": page_id,
+        "source_id": _text("source_id"),
+        "title": title,
+        "author": _text("author"),
+        "type": type_select.get("name"),
+        "collections": collections,
+        "caption": _text("caption"),
+        "transcript": _text("transcript"),
+        "ocr_text": _text("ocr_text"),
+        "transcript_language": transcript_language,
+    }
+
+
+def write_enrichment(env: EnvConfig, page_id: str, fields: dict, version: str) -> None:
+    """Write one enriched item -> Tagged. fields: title, summary, externals, tags(list)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = _enrich_props(
+        title=fields.get("title"), summary=fields.get("summary"),
+        externals=fields.get("externals"), tags=fields.get("tags") or [], version=version)
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: wrote enrichment %s for page %s", version, page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to write enrichment for {page_id}: {e}") from e
