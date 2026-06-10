@@ -1,0 +1,17 @@
+{
+  "content_type": {
+    "tool": "A specific app/site/repo to use.",
+    "tutorial": "A step-by-step how-to.",
+    "explainer": "Educational — how something works / a concept."
+  },
+  "groups": {
+    "GroupOne": {
+      "topic-a": "First granular topic for this group.",
+      "topic-b": "Second granular topic for this group."
+    }
+  },
+  "cross_group": {
+    "shared-x": "A theme that spans multiple groups.",
+    "shared-y": "Another cross-cutting theme."
+  }
+}

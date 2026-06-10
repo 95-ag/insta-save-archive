@@ -7,6 +7,9 @@ name = "insta-save-archive"
 version = "0.1.0"
 requires-python = ">=3.12"
 
+[project.scripts]
+isa = "cli.isa:main"
+
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["pipeline*"]
+where = [".", "legacy"]
+include = ["pipeline*", "insta_save*", "cli*"]

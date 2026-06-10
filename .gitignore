@@ -15,6 +15,11 @@ logs/
 # private collection data — generate with: python scripts/list_collections.py --update
 config/collections.json
 
+# private v2 config (commit the *.example.json templates only)
+config/run.json
+config/tags.json
+config/routes.json
+
 # python
 __pycache__/
 *.pyc

@@ -1,0 +1,5 @@
+{
+  "by_tag": { "example-tag": "ExampleTargetDB" },
+  "by_collection": { "Example Collection A": "LearningDB" },
+  "by_group": { "GroupTwo": "MarketDB" }
+}

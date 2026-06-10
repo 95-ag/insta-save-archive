@@ -100,6 +100,10 @@ def run(limit=None, source_id=None, dry_run=False, force=False) -> None:
                 source_id=source_id,
                 stage_key=f"title_{read_status.lower()}",
                 bar_label=f"{read_status} items",
+                # TODO(temp): restrict title to the unprioritised bucket so it can
+                # run in parallel with summarize (which owns the prioritised items).
+                # Revert once the parallel title pass is done.
+                exclude_priorities=["High", "Medium", "Low"],
             )
 
 

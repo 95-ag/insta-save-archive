@@ -1,28 +1,7 @@
 {
-  "My Priority Collection": {
-    "slug": "my-priority-collection",
-    "numeric_id": "12345678901234567",
-    "group": "Hustling",
-    "extract": true,
-    "enrichment_order": 1
-  },
-  "Another Extract Collection": {
-    "slug": "another-extract-collection",
-    "numeric_id": "11111111111111111",
-    "group": "Hustling",
-    "extract": true,
-    "enrichment_order": 2
-  },
-  "Non-Priority Collection": {
-    "slug": "non-priority-collection",
-    "numeric_id": "22222222222222222",
-    "group": "Lifestyle",
-    "extract": true
-  },
-  "Non-Extract Collection": {
-    "slug": "non-extract-collection",
-    "numeric_id": "98765432109876543",
-    "group": "Lifestyle",
-    "extract": false
+  "groups": ["GroupOne", "GroupTwo", "uncategorized"],
+  "collections": {
+    "Example Collection A": { "group": "GroupOne", "extract": true },
+    "Example Collection B": { "group": "GroupTwo", "extract": false }
   }
 }
