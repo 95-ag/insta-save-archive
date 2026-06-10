@@ -104,6 +104,9 @@ def dispatch_run(args) -> None:
                                statuses=statuses, prompt_template=template, progress=progress)
         if n == 0:
             print(f"No items left to enrich in group {args.group}.")
+            # Stable machine token so an unattended prepare->fill->apply loop can detect
+            # a drained group without matching the prose above.
+            print(f"ENRICH_DRAINED group={args.group}")
         else:
             print(f"Prepared {n} items -> tmp/enrich/prompt.txt. In a Claude session: "
                   f'"Read tmp/enrich/prompt.txt and write tmp/enrich/results.json", '

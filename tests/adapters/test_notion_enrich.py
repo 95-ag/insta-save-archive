@@ -1,5 +1,31 @@
 # tests/adapters/test_notion_enrich.py
+import types
+
 from insta_save.adapters import notion
+
+
+def _rt(s):
+    return {"rich_text": [{"text": {"content": s}}]}
+
+
+def test_get_page_content_applies_ocr_cleaner(monkeypatch):
+    """OCR is cleaned at enrich-read (raw_extraction stays full); near-dup frames collapse."""
+    page = {"properties": {
+        "source_id": _rt("SRC1"),
+        "ocr_text": _rt("dup frame line\ndup frame line\nunique tail line"),
+        "raw_extraction": _rt("{}"),
+        "extract_version": _rt("v2.0-base-tuned"),
+        "type": {"select": {"name": "Reel"}},
+        "collection": {"multi_select": [{"name": "Coding - AI"}]},
+        "title": {"title": [{"text": {"content": "T"}}]},
+    }}
+    fake_pages = types.SimpleNamespace(retrieve=lambda page_id: page)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    monkeypatch.setattr(notion, "Client", lambda auth=None: types.SimpleNamespace(pages=fake_pages))
+    env = types.SimpleNamespace(notion_token="x", notion_database_id="db")
+
+    out = notion.get_page_content(env, "pid")
+    assert out["ocr_text"] == "dup frame line\nunique tail line"
 
 
 def test_transcript_language_from_raw_picks_matching_version():

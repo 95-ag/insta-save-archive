@@ -25,12 +25,12 @@ source; the design stays source-agnostic.
 ## 2. Pipeline overview
 
 ```
-0. CONFIG + DISCOVER ─ surface collections+links; first-time: set group/order/extract;
+0. CONFIG + DISCOVER ─ surface collections+links; first-time: set group + extract per collection;
                        incremental: prompt for new/removed collections
         │
 1. INGEST (Playwright) ───────────────────────────────────► Imported
         │
-2. SELECT ─ per collection: group · order# · extract? ── branch:
+2. SELECT ─ per collection: group · extract? ── branch:
         │                                              │
    extract = YES                                  extract = NO
         ▼                                              ▼
@@ -64,7 +64,7 @@ deterministic branch (stage 5) reaches `Tagged` without extract/enrich.
 |---|---|---|
 | Trigger | Initial run over the whole archive | New saves since last run |
 | Granularity | **Stage-at-a-time per group**: drain Extract for the group → calibrate → drain Enrich | Small delta; group order still respected |
-| Ordering | Group order + intra-group `order#` from config | Same ordering, applied to the delta |
+| Ordering | Group order (position in the `groups` list) | Same ordering, applied to the delta |
 | Calibration (3.5) | **Yes** — per group, before its enrich loop | **No** — reuses the locked vocab |
 | Human-in-loop | Per-group: vocab refine + spot-check | Spot-check only |
 | Correction cost | Paid **once per group** | Near-zero |
@@ -82,7 +82,7 @@ calibration has content to sample).
 |---|---|---|---|---|
 | 0 | Discover + config | `list_collections` (Playwright) + config loaders | no | — |
 | 1 | Ingest | Playwright (session/crawler/extractor) | no | `Imported` |
-| 2 | Select | `collections.json` (group/order/extract) | no | `Queued` or → branch |
+| 2 | Select | `collections.json` (group/extract) | no | `Queued` or → branch |
 | 3 | Extract | transcript + OCR/vision engines | engine-tiered | `Extracted` |
 | 3.5 | Calibrate | sample + chosen backend proposes vocab | yes | locks vocab |
 | 4 | Enrich | one-shot LLM | **yes** | `Tagged` |
@@ -104,15 +104,23 @@ and writes `tmp/enrich/results.json` against `enrich_schema`. Only *who fills re
 
 | Backend | Fills results by | Automated? | Quality | Cost |
 |---|---|---|---|---|
-| `local` | Ollama call inline (qwen2.5) | yes | lower | free |
+| `local` | Ollama call inline (qwen2.5) | yes | title-only (D8, spike-confirmed) | free |
 | `api` | Anthropic SDK call inline | yes | high | $ per token |
-| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | semi | high | subscription |
+| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | yes¹ | high | subscription |
 | `cowork` | a self-paced Cowork loop (one kickoff msg) | semi | high | subscription |
 
 The pipeline core (build batch → hand to backend → apply results → write Notion) is identical
 across all four. `enrich.backend` in run config selects one. Each backend also carries
 **`model`** and **`effort`** (effort → thinking budget on `api`, model-size on `local`, advisory
-on sessions).
+on sessions). **On sessions, model+effort set the context capacity that caps batch size — confirm
+both at run start.** (v1 observation: a Sonnet+low session fills context and needs `/compact` far
+sooner than Opus+high, so the safe `char_budget`/`max_items` ceiling scales with model+effort, not
+a single fixed number.)
+
+¹ **`claude-code` runs fully hands-off today with no new code** — a single session loops `--prepare`
+→ dispatch a fresh **fill-subagent** (reads `prompt.txt`, writes `results.json`) → `--apply`, until
+drained. The per-batch subagent keeps the driver session's context clean. This *is* the cowork loop
+below, done by hand; **`cowork` is the durable, compaction-safe productization** of it.
 
 **Cowork loop design (the friction-killer):** all state lives in Notion + `tmp/` files, never
 in conversation. So the loop is: `--prepare` next batch → read prompt → write results → `--apply`
@@ -128,7 +136,7 @@ batch). One kickoff message; idempotent; resumable.
 |---|---|---|
 | `local` | `single` (sequential, checkpoint every ~25) | 1 GPU, no batch gain |
 | `api` | `token_budget` + parallelism, or **Message Batches API** for bulk | ~50% cheaper async for first-time |
-| `claude-code` / `cowork` | `char_budget` + `max_items` (~15) | fit one session pass before compaction; small = resumable |
+| `claude-code` / `cowork` | `char_budget` + `max_items` (~15) | fit one session pass before compaction (ceiling scales with model+effort); small = resumable |
 
 ---
 
@@ -295,7 +303,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D5 | Backend file-contract (local/api/claude-code/cowork) | Subscription, API, and local must all work; user picks at start | Hardcode one engine; lose portability (Phase 6) |
 | D6 | Cowork loop: state in Notion, not chat | Makes auto-compaction safe and the loop crash-resumable | State in conversation (breaks on compaction) |
 | D7 | Per-backend dynamic batching | Optimal chunk differs (single vs token-budget vs char-budget) | One fixed batch size |
-| D8 | Local LLM scope = title-from-caption + deterministic only | 7B is reliable for constrained/automated tasks, weak for semantic extraction | Local for tags/summary (compliance + quality issues) |
+| D8 | Local LLM scope = title-from-caption + deterministic only | 7B is reliable for constrained/automated tasks, weak for semantic extraction. **Spike-confirmed 2026-06-10:** constrained `format=` fixes JSON compliance (the old reason is moot), but qwen2.5:7b summaries drop the high-value specifics (numbers, benchmarks, names) and externals come back empty or hallucinated — semantic *quality*, not compliance, is the wall | Local for tags/summary (compliance + quality issues) |
 | D9 | Three-axis tags + per-group vocab | Granular within group, correct cross-tagging, content-type for search/downstream | Flat tag list (loses the kind-of-item axis) |
 | D10 | Calibration gate (sample → propose → refine → lock) | Tag correction is expensive; front-load it onto a sample per group | Tag the whole group then correct (huge correction load) |
 | D11 | Cross-group: union vocab, enrich at last extract group (calibrate by membership) | All vocabs locked before tagging; first-time-only concern | Earliest-order (tags before later vocabs exist) |
