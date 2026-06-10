@@ -35,8 +35,8 @@ def _netscape_cookies(json_path: str, txt_path: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-def transcribe(audio_path: str, model_size: str = "base", vad: bool = True) -> tuple[str, bool]:
-    """faster-whisper base int8 on CPU with tuned params (D14). Returns (text, available)."""
+def transcribe(audio_path: str, model_size: str = "base", vad: bool = True) -> tuple[str, bool, str]:
+    """faster-whisper base int8 on CPU with tuned params (D14). Returns (text, available, language)."""
     from faster_whisper import WhisperModel
 
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
@@ -54,13 +54,13 @@ def transcribe(audio_path: str, model_size: str = "base", vad: bool = True) -> t
     for segment in segments:
         words.extend(segment.text.split())
     transcript = " ".join(words).strip()
-    return transcript, _gate(transcript, info.language_probability)
+    return transcript, _gate(transcript, info.language_probability), info.language
 
 
 def extract_transcript(ig_link: str, shortcode: str, tmp_dir: str, cookies_json: str,
                        model_size: str = "base", vad: bool = True) -> dict:
     """Download reel audio via yt-dlp and transcribe. Audio + cookies cleaned in finally.
-    Returns {"transcript": str|None, "transcript_available": bool}."""
+    Returns {"transcript": str|None, "transcript_available": bool, "transcript_language": str|None}."""
     tmp = Path(tmp_dir)
     tmp.mkdir(exist_ok=True)
     cookies_txt = str(tmp / "cookies.txt")
@@ -75,10 +75,11 @@ def extract_transcript(ig_link: str, shortcode: str, tmp_dir: str, cookies_json:
         )
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
-        transcript, available = transcribe(audio_path, model_size=model_size, vad=vad)
+        transcript, available, language = transcribe(audio_path, model_size=model_size, vad=vad)
         log.info("transcript %s — available=%s words=%d", shortcode, available,
                  len(transcript.split()) if transcript else 0)
-        return {"transcript": transcript if available else None, "transcript_available": available}
+        return {"transcript": transcript if available else None, "transcript_available": available,
+                "transcript_language": language if available else None}
     finally:
         for path in (audio_path, cookies_txt):
             try:

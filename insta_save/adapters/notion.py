@@ -186,6 +186,7 @@ def write_extraction(env: EnvConfig, page_id: str, results: dict) -> None:
 
     raw = _merge_raw(raw, version, {
         "transcript": results.get("transcript"),
+        "transcript_language": results.get("transcript_language"),
         "ocr_text": results.get("ocr_text"),
         "carousel_slides": results.get("carousel_slides"),
         "ocr_frames": results.get("ocr_frames"),

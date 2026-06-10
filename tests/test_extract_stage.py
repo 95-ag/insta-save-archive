@@ -10,7 +10,8 @@ def test_shortcode_from_link():
 
 def test_run_item_reel_dispatch(monkeypatch):
     monkeypatch.setattr(extract, "extract_transcript",
-                        lambda **k: {"transcript": "hello world here", "transcript_available": True})
+                        lambda **k: {"transcript": "hello world here", "transcript_available": True,
+                                     "transcript_language": "ta"})
     monkeypatch.setattr(extract, "extract_ocr_frames",
                         lambda **k: {"text": "ON SCREEN", "confidence": 0.9, "needs_vision": False})
     written = {}
@@ -24,6 +25,7 @@ def test_run_item_reel_dispatch(monkeypatch):
     assert written["ocr_text"] == "ON SCREEN"
     assert written["extract_version"] == "v2.0-base-tuned"
     assert written["ocr_frames"] == {"text": "ON SCREEN", "confidence": 0.9, "needs_vision": False}
+    assert written["transcript_language"] == "ta"
 
 
 def test_run_item_content_guard_stays_queued(monkeypatch):
