@@ -27,6 +27,29 @@ rl.on("close", () => {
   // Global / out-of-repo config: needs explicit approval regardless of project-relative path.
   // Matches WSL & Windows user-global Claude config, login/shell dotfiles, and /etc.
   const abs = String(filePath).replace(/\\/g, "/");
+
+  // Allowed freely even though they live under a global ~/.claude dir: plan files
+  // (the workflow's plans dir) and auto-memory files. These are Claude's own working
+  // surfaces, not config — no approval gate. Checked before GLOBAL_ASK so they win.
+  const GLOBAL_ALLOW = [
+    /\.claude\/plans(\/|$)/i,
+    /\.claude\/projects\/[^/]+\/memory(\/|$)/i,
+  ];
+  for (const pattern of GLOBAL_ALLOW) {
+    if (pattern.test(abs)) {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: `"${filePath}" is a global plan/memory file — allowed freely.`,
+          },
+        }),
+      );
+      process.exit(0);
+    }
+  }
+
   const GLOBAL_ASK = [
     /\/home\/[^/]+\/\.claude(\/|$)/i,
     /\/Users\/[^/]+\/\.claude(\/|$)/i,
