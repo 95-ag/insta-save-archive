@@ -42,3 +42,9 @@ def test_validate_notion_raises_when_missing(monkeypatch):
     cfg = envcfg.load_env()
     with pytest.raises(RuntimeError):
         envcfg.validate_notion(cfg)
+
+
+def test_invalid_float_raises(monkeypatch):
+    _set(monkeypatch, NOTION_WRITE_DELAY="abc")
+    with pytest.raises(ValueError):
+        envcfg.load_env()
