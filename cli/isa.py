@@ -39,7 +39,8 @@ def dispatch_run(args) -> None:
         run_cfg = _load_run()
         collections_cfg = _load_collections()
         ensure_schema(env)
-        setup_logging("extract")
+        log_path = setup_logging("extract")
+        print(f"Logging to {log_path}")
         with StageProgress("Extract") as progress:
             run_extract_stage(
                 env, run_cfg.extract, progress,
