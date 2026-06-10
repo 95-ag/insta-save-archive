@@ -69,7 +69,8 @@ def _get_data_source_id(client: Client, database_id: str) -> str:
 
 # --- pure helpers (unit-tested) --------------------------------------------
 def _merge_raw(existing: dict, version: str, payload: dict) -> dict:
-    """Append payload under version key; never overwrite prior versions."""
+    """Append payload under version key. Prior (different) version keys are preserved;
+    re-running the same version replaces its own slot."""
     merged = dict(existing)
     merged[version] = payload
     return merged
@@ -102,6 +103,7 @@ def ensure_schema(env: EnvConfig) -> None:
     props = ds.get("properties", {})
 
     to_add = _schema_property_additions(props)
+    # DB uses select-type for status (not Notion's native "status" type) — v1-consistent.
     status_prop = props.get("status", {}).get("select", {})
     existing_status = [o["name"] for o in status_prop.get("options", [])]
     new_status_opts = _status_option_additions(existing_status)
@@ -159,7 +161,7 @@ def mark_failed(env: EnvConfig, page_id: str, notes: str) -> None:
     try:
         client.pages.update(page_id=page_id, properties={
             "status": _select("Failed"),
-            "failure_notes": _rich_text(notes[:2000]),
+            "failure_notes": _rich_text(notes),
         })
         log.info("notion: marked %s as Failed", page_id)
     except APIResponseError as e:
@@ -202,7 +204,7 @@ def write_extraction(env: EnvConfig, page_id: str, results: dict) -> None:
     ocr_text = results.get("ocr_text")
     if ocr_text is None and results.get("carousel_slides"):
         ocr_text = _synth_ocr_text(results["carousel_slides"])
-    if ocr_text is not None:
+    if ocr_text:
         props["ocr_text"] = _rich_text_chunked(ocr_text)
 
     try:

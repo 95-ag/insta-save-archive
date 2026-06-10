@@ -12,7 +12,7 @@ def test_rich_text_chunked_splits_long_text():
     assert len(chunks) == 3 and sum(len(c["text"]["content"]) for c in chunks) == 4500
 
 
-def test_raw_extraction_merge_appends_version_never_overwrites():
+def test_raw_extraction_merge_preserves_other_versions():
     existing = {"v1.0-base": {"transcript": "old"}}
     merged = notion._merge_raw(existing, "v2.0-base-tuned",
                                {"transcript": "new", "ocr_text": None,
