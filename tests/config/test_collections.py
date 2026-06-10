@@ -50,3 +50,14 @@ def test_enrich_group_is_last_extract_group(tmp_path):
     assert c.enrich_group(["Coding"]) == "Hustling"
     # all extract=no -> None (deterministic branch)
     assert c.enrich_group(["Makeup"]) is None
+
+
+def test_legacy_flat_shape_raises(tmp_path):
+    # v1 flat shape (top-level name -> {slug, group, ...}, no "collections" key)
+    # must fail loudly, not silently yield an empty collections map.
+    p = tmp_path / "collections.json"
+    p.write_text(json.dumps({
+        "Job Hunt": {"slug": "job-hunt", "group": "Hustling", "extract": True},
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="flat"):
+        colcfg.load_collections(p)

@@ -58,6 +58,16 @@ def load_collections(path=_DEFAULT_COLLECTIONS) -> CollectionsConfig:
             f"Collections config not found: {p}\nBuild it with `isa discover` (see docs/OPERATING.md)."
         )
     data = json.loads(p.read_text(encoding="utf-8"))
+    if "collections" not in data:
+        # The v1 flat shape is top-level {name: {slug, group, ...}} with no
+        # "collections" key. Without this guard the loader would silently treat
+        # the file as empty (every collection -> uncategorized).
+        looks_legacy = any(isinstance(v, dict) and ("slug" in v or "group" in v)
+                           for v in data.values())
+        hint = (' it looks like the legacy v1 flat format — migrate it to the v2 nested '
+                'shape {"groups": [...], "collections": {<name>: {"group", "extract"}}}.'
+                if looks_legacy else "")
+        raise RuntimeError(f"Collections config {p} is missing the 'collections' key;{hint}")
     groups = tuple(data.get("groups", []))
     if UNCATEGORIZED not in groups:
         groups = groups + (UNCATEGORIZED,)
