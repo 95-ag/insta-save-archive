@@ -1,0 +1,19 @@
+You are proposing a tag vocabulary for the "{group}" group of saved Instagram posts.
+Below is a sample of this group's content (captions, transcripts, OCR text).
+
+Propose three things, each tag with a one-line definition:
+- GRANULAR TOPICS for this group (aim for 6-10): specific themes recurring in THIS group.
+- CROSS-GROUP TOPICS (only if clearly broad): themes that would span multiple groups.
+- CONTENT-TYPES: confirm the shared set fits (e.g. inspo, tool, tutorial, tips-hacks,
+  explainer); suggest an addition only if the sample clearly needs one.
+
+Keep tags short, lowercase, hyphenated (e.g. "web-dev", "job-search"). Prefer fewer,
+high-signal tags over many overlapping ones.
+
+Write the proposal as JSON to tmp/calibrate/proposed_tags.json in this shape:
+  {
+    "content_type": {"tool": "An app/site/repo to use.", ...},
+    "groups": {"<GROUP>": {"web-dev": "Building websites/apps.", ...}},
+    "cross_group": {"ai": "AI/ML themes spanning groups.", ...}
+  }
+Use the exact group name given. The human will review and merge this into config/tags.json.
