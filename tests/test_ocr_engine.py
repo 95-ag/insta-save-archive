@@ -32,3 +32,8 @@ def test_needs_vision_ok_above_threshold():
 def test_slide_record_shape():
     rec = ocr.slide_record(2, "txt", 0.5, threshold=0.6)
     assert rec == {"slide": 2, "text": "txt", "ocr_confidence": 0.5, "needs_vision": True}
+
+
+def test_ocr_score_text_without_scores():
+    # boxes have text but no confidence score -> text returned, confidence None
+    assert ocr.ocr_score([[None, "hello", None]]) == ("hello", None)

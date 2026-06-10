@@ -235,6 +235,7 @@ def extract_post(
 
 
 def extract_ocr_frames(
+    ig_link: str,
     shortcode: str,
     tmp_dir: str,
     cookies_json: str,
@@ -253,7 +254,6 @@ def extract_ocr_frames(
     cookies_txt = str(tmp / "cookies.txt")
     _netscape_cookies(cookies_json, cookies_txt)
 
-    ig_link = f"https://www.instagram.com/reel/{shortcode}/"
     video_path = str(tmp / f"{shortcode}_ocr.mp4")
     frames_dir = tmp / f"{shortcode}_frames"
     frames_dir.mkdir(exist_ok=True)
