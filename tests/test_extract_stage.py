@@ -23,6 +23,7 @@ def test_run_item_reel_dispatch(monkeypatch):
     assert written["transcript"] == "hello world here"
     assert written["ocr_text"] == "ON SCREEN"
     assert written["extract_version"] == "v2.0-base-tuned"
+    assert written["ocr_frames"] == {"text": "ON SCREEN", "confidence": 0.9, "needs_vision": False}
 
 
 def test_run_item_content_guard_stays_queued(monkeypatch):

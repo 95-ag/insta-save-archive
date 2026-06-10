@@ -188,6 +188,7 @@ def write_extraction(env: EnvConfig, page_id: str, results: dict) -> None:
         "transcript": results.get("transcript"),
         "ocr_text": results.get("ocr_text"),
         "carousel_slides": results.get("carousel_slides"),
+        "ocr_frames": results.get("ocr_frames"),
         "last_processed_at": results.get("last_processed_at"),
     })
 

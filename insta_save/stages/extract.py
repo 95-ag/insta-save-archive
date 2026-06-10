@@ -57,7 +57,7 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
     post_type = item.get("type") or "Unknown"
     threshold = run_extract_cfg.ocr_escalate_threshold
     results = {"extract_version": env.extract_version, "last_processed_at": now,
-               "transcript": None, "ocr_text": None, "carousel_slides": None}
+               "transcript": None, "ocr_text": None, "carousel_slides": None, "ocr_frames": None}
 
     if post_type in ("Reel", "IGTV"):
         t = extract_transcript(ig_link=ig_link, shortcode=shortcode, tmp_dir=env.tmp_dir,
@@ -68,6 +68,7 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
         frames = extract_ocr_frames(ig_link=ig_link, shortcode=shortcode, tmp_dir=env.tmp_dir,
                                     cookies_json=env.cookies_file, threshold=threshold)
         results["ocr_text"] = frames["text"] or None
+        results["ocr_frames"] = frames  # {text, confidence, needs_vision} — kept for the deferred vision pass
     elif post_type == "Carousel":
         results["carousel_slides"] = extract_carousel(
             context=browser.context(), ig_link=ig_link, shortcode=shortcode,
