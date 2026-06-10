@@ -97,6 +97,8 @@ def run_extract_stage(env, run_extract_cfg, progress, *, limit=None, source_id=N
         browser = _LazyBrowser(pw, env, headless)
         try:
             def _process(env_, item, ctx):
+                # ctx (from the runner) is unused; the browser context comes from the
+                # _LazyBrowser closure, opened lazily only for Carousel/Post items.
                 try:
                     return run_extract_item(env_, run_extract_cfg, browser, item)
                 finally:

@@ -50,6 +50,28 @@ def test_run_item_carousel_uses_browser(monkeypatch):
     assert holder.opened is True
 
 
+def test_run_item_post_uses_browser(monkeypatch):
+    slides = [{"slide": 1, "text": "P", "ocr_confidence": 0.8, "needs_vision": False}]
+    monkeypatch.setattr(extract, "extract_post", lambda **k: slides)
+    written = {}
+    monkeypatch.setattr(extract, "write_extraction", lambda env, pid, res: written.update(res))
+    item = {"page_id": "p", "source_id": "S", "ig_link": "https://www.instagram.com/p/ab/",
+            "type": "Post", "collections": []}
+    holder = _holder_returns("CTX")
+    assert extract.run_extract_item(_env(), _run(), holder, item) == "extracted"
+    assert written["carousel_slides"] == slides
+    assert holder.opened is True
+
+
+def test_run_item_unknown_type_no_content(monkeypatch):
+    monkeypatch.setattr(extract, "write_extraction",
+                        lambda *a: pytest.fail("must not write on unknown type"))
+    item = {"page_id": "p", "source_id": "S", "ig_link": "https://www.instagram.com/p/ab/",
+            "type": "Unknown", "collections": []}
+    # _holder_raises() asserts the browser is never opened for an unknown type
+    assert extract.run_extract_item(_env(), _run(), _holder_raises(), item) == "no_content"
+
+
 # --- tiny fakes ---
 def _env():
     from insta_save.config.env import EnvConfig
