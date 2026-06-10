@@ -10,6 +10,7 @@ from notion_client import Client
 from notion_client.errors import APIResponseError
 
 from insta_save.config.env import EnvConfig, validate_notion
+from insta_save.engines.ocr_clean import clean_ocr_text
 
 log = logging.getLogger(__name__)
 
@@ -277,6 +278,11 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
     extract_version = _text("extract_version") or ""
     transcript_language = _transcript_language_from_raw(raw, extract_version)
 
+    # Collapse near-duplicate frame-OCR at enrich-read so enrich/calibrate read (and budget on)
+    # the cleaned text, while raw_extraction keeps the full OCR (D13: durable/reprocessable).
+    ocr_raw = _text("ocr_text")
+    ocr_text = clean_ocr_text(ocr_raw) if ocr_raw else None
+
     return {
         "page_id": page_id,
         "source_id": _text("source_id"),
@@ -286,7 +292,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
         "collections": collections,
         "caption": _text("caption"),
         "transcript": _text("transcript"),
-        "ocr_text": _text("ocr_text"),
+        "ocr_text": ocr_text,
         "transcript_language": transcript_language,
     }
 
