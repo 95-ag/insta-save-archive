@@ -60,5 +60,49 @@ def test_run_extract_dispatches(monkeypatch):
 def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
-            "mode": "incremental", "stage": "enrich", "group": None,
+            "mode": "incremental", "stage": "ingest", "group": None,
             "limit": None, "reextract": False, "reenrich": False, "retry_failed": False})())
+
+
+def _fake_run():
+    import types
+    return types.SimpleNamespace(
+        enrich=types.SimpleNamespace(backend="claude-code", model="claude-sonnet", effort="medium"),
+        char_budget=80000, max_items=15)
+
+
+def test_enrich_prepare_requires_group(monkeypatch, capsys):
+    import cli.isa as isa
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare"])
+    try:
+        isa.dispatch_run(args)
+        assert False, "expected SystemExit"
+    except SystemExit as e:
+        assert "group" in str(e).lower()
+
+
+def test_calibrate_requires_group(monkeypatch):
+    import cli.isa as isa
+    args = isa.build_parser().parse_args(["run", "--stage", "calibrate"])
+    try:
+        isa.dispatch_run(args)
+        assert False, "expected SystemExit"
+    except SystemExit as e:
+        assert "group" in str(e).lower()
+
+
+def test_enrich_apply_calls_stage(monkeypatch):
+    import cli.isa as isa
+    calls = {}
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    def _fake_apply(env, *, vocab, model):
+        calls["apply"] = (vocab, model)
+        return {"written": 1, "failed": 0}
+    monkeypatch.setattr(isa.enrich, "apply", _fake_apply)
+    args = isa.build_parser().parse_args(["run", "--stage", "enrich", "--apply"])
+    isa.dispatch_run(args)
+    assert calls["apply"] == ("VOCAB", "claude-sonnet")
