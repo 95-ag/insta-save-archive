@@ -63,9 +63,10 @@ def dispatch_run(args) -> None:
         collections_cfg = _load_collections()
         statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
         template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
-        n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
-                             limit=args.calibrate_limit, statuses=statuses,
-                             prompt_template=template)
+        with StageProgress("Calibrate") as progress:
+            n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
+                                 limit=args.calibrate_limit, statuses=statuses,
+                                 prompt_template=template, progress=progress)
         if n == 0:
             print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}). "
                   f"Add --reenrich to also sample already-Summarized items.")
@@ -87,7 +88,8 @@ def dispatch_run(args) -> None:
         if args.apply:
             log_path = setup_logging("enrich-apply")
             print(f"Logging to {log_path}")
-            counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model)
+            with StageProgress("Enrich apply") as progress:
+                counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model, progress=progress)
             print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
             return
         # prepare (group guaranteed present by the guard above)
@@ -96,9 +98,10 @@ def dispatch_run(args) -> None:
         collections_cfg = _load_collections()
         statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
         template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
-        n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
-                           char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
-                           statuses=statuses, prompt_template=template)
+        with StageProgress("Enrich prepare") as progress:
+            n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
+                               char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
+                               statuses=statuses, prompt_template=template, progress=progress)
         if n == 0:
             print(f"No items left to enrich in group {args.group}.")
         else:

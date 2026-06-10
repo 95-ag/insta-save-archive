@@ -92,6 +92,12 @@ def test_calibrate_requires_group(monkeypatch):
         assert "group" in str(e).lower()
 
 
+class _FakeProgress:
+    """Stub StageProgress so the rich live display never runs under pytest."""
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
 def test_enrich_apply_calls_stage(monkeypatch):
     import cli.isa as isa
     calls = {}
@@ -99,10 +105,11 @@ def test_enrich_apply_calls_stage(monkeypatch):
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
-    def _fake_apply(env, *, vocab, model):
-        calls["apply"] = (vocab, model)
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+    def _fake_apply(env, *, vocab, model, progress=None):
+        calls["apply"] = (vocab, model, progress is not None)
         return {"written": 1, "failed": 0}
     monkeypatch.setattr(isa.enrich, "apply", _fake_apply)
     args = isa.build_parser().parse_args(["run", "--stage", "enrich", "--apply"])
     isa.dispatch_run(args)
-    assert calls["apply"] == ("VOCAB", "claude-sonnet")
+    assert calls["apply"] == ("VOCAB", "claude-sonnet", True)  # progress passed through

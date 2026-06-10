@@ -41,15 +41,21 @@ def _group_stubs(env, statuses, group, collections_cfg):
                     yield stub
 
 
-def sample(env, *, group, collections_cfg, limit, statuses, prompt_template) -> int:
+def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, progress=None) -> int:
     """Collect up to `limit` items of the group across `statuses` (priority order),
     write sample.json + prompt.txt. Returns the sample size. `statuses` lets calibrate
-    sample already-Summarized groups (the re-enrich migration path), not just Extracted."""
+    sample already-Summarized groups (the re-enrich migration path), not just Extracted.
+    Optional `progress` (StageProgress) shows a live per-item sample bar."""
     items = []
+    bar = progress.add_bar(f"Calibrate sample · {group}", total=limit) if progress else None
     for stub in _group_stubs(env, statuses, group, collections_cfg):
         if len(items) >= limit:
             break
-        items.append(get_page_content(env, stub["page_id"]))
+        content = get_page_content(env, stub["page_id"])
+        items.append(content)
+        if progress:
+            progress.set_current("sample", content.get("source_id") or content["page_id"])
+            progress.bump("sampled"); progress.advance(bar)
 
     if not items:
         log.info("calibrate.sample: no items in group %s (statuses=%s)", group, statuses)

@@ -37,15 +37,17 @@ def _ordered_group_stubs(env, statuses, group, collections_cfg):
 
 
 def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statuses,
-            prompt_template) -> int:
+            prompt_template, progress=None) -> int:
     """Build batch.json + prompt.txt for the highest-priority budget-worth of the
-    group's items. Returns the batch size (0 = nothing left).
+    group's items. Returns the batch size (0 = nothing left). Optional `progress`
+    (StageProgress) shows a live per-item fetch bar.
 
     char_budget bounds the RENDERED prompt length (header + vocab + per-item
     scaffolding + content) — i.e. what the session actually reads — not just raw
     content. The first matching item is always admitted even if it alone is large."""
     items = []
     total = backend.header_len(group, vocab, prompt_template)
+    bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg):
         if max_items is not None and len(items) >= max_items:
             break
@@ -55,6 +57,9 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
             break
         items.append(content)
         total += block
+        if progress:
+            progress.set_current("fetch", content.get("source_id") or content["page_id"])
+            progress.bump("fetched"); progress.advance(bar)
 
     if not items:
         log.info("enrich.prepare: no items left for group %s", group)
@@ -70,10 +75,11 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
     return len(items)
 
 
-def apply(env, *, vocab, model) -> dict:
+def apply(env, *, vocab, model, progress=None) -> dict:
     """Read results.json, validate tags vs the locked vocab, write each to Notion.
     Reads batch.json for the group (-> vocab axis + enrich_version). Cleans tmp on
-    full success. Returns {written, failed}."""
+    full success. Returns {written, failed}. Optional `progress` (StageProgress)
+    shows a live per-item bar."""
     d = _enrich_dir(env)
     batch_file, results_file = d / "batch.json", d / "results.json"
     if not results_file.exists():
@@ -87,12 +93,17 @@ def apply(env, *, vocab, model) -> dict:
 
     results = backend.parse_results(results_file)
     counts = {"written": 0, "failed": 0}
+    bar = progress.add_bar(f"Enrich → Tagged · {group}", total=len(results)) if progress else None
     for item in results:
         page_id = item.get("page_id")
         sid = item.get("source_id") or page_id
+        if progress:
+            progress.set_current("enrich", sid or "?")
         if not page_id or not item.get("summary"):
             log.warning("enrich.apply: %s missing page_id/summary — skipping", sid)
             counts["failed"] += 1
+            if progress:
+                progress.bump("failed"); progress.advance(bar)
             continue
         content_type, topics = enrich_schema.validate_item(
             item, vocab.content_types, topics_allowed)
@@ -105,10 +116,16 @@ def apply(env, *, vocab, model) -> dict:
         try:
             write_enrichment(env, page_id, fields, version)
             counts["written"] += 1
+            if progress:
+                progress.bump("written")
             time.sleep(env.notion_write_delay)
         except Exception as exc:
             log.error("enrich.apply: failed %s — %s", sid, exc)
             counts["failed"] += 1
+            if progress:
+                progress.bump("failed")
+        if progress:
+            progress.advance(bar)
 
     if counts["failed"] == 0 and counts["written"] > 0:
         for f in (batch_file, d / "prompt.txt", results_file):
