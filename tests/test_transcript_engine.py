@@ -15,3 +15,11 @@ def test_gate_rejects_low_language_prob():
 
 def test_gate_accepts_good():
     assert tr._gate("one two three four", 0.80) is True
+
+
+def test_gate_accepts_exactly_three_words():
+    assert tr._gate("one two three", 0.99) is True
+
+
+def test_gate_accepts_language_prob_at_threshold():
+    assert tr._gate("one two three", 0.5) is True
