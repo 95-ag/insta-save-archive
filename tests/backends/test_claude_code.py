@@ -15,24 +15,21 @@ def _vocab():
     )
 
 
-def test_batch_full_first_item_never_full():
-    # an empty batch is never full, even if the item is huge
-    assert backend.batch_full(0, 0, 999999, char_budget=100, max_items=5) is False
-
-
-def test_batch_full_on_max_items():
-    assert backend.batch_full(5, 10, 1, char_budget=100, max_items=5) is True
-
-
-def test_batch_full_on_char_budget():
-    assert backend.batch_full(2, 90, 20, char_budget=100, max_items=5) is True
-    assert backend.batch_full(2, 90, 5, char_budget=100, max_items=5) is False
-
-
-def test_batch_full_none_max_items_uses_only_char_budget():
-    # max_items=None -> no item-count cap; only char_budget can fill the batch (no TypeError)
-    assert backend.batch_full(99, 50, 10, char_budget=100, max_items=None) is False
-    assert backend.batch_full(99, 95, 10, char_budget=100, max_items=None) is True
+def test_header_and_item_len_sum_to_rendered_prompt_length():
+    # The budgeting invariant: header_len + sum(item_len) == len(build_prompt(...)),
+    # so prepare can budget the rendered prompt without re-rendering each step.
+    items = [
+        {"page_id": "p1", "source_id": "s1", "type": "Reel", "author": "a",
+         "caption": "cap one", "transcript": "spoken words", "ocr_text": "",
+         "transcript_language": "en"},
+        {"page_id": "p2", "source_id": "s2", "type": "Reel", "author": "b",
+         "caption": "", "transcript": "", "ocr_text": "slide text",
+         "transcript_language": "ta"},
+    ]
+    tmpl = "HEADER {vocab_block} END"
+    rendered = backend.build_prompt("Hustling", items, _vocab(), tmpl)
+    measured = backend.header_len("Hustling", _vocab(), tmpl) + sum(backend.item_len(i) for i in items)
+    assert measured == len(rendered)
 
 
 def test_build_prompt_includes_vocab_and_items_and_language():

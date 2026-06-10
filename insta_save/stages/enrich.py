@@ -27,11 +27,6 @@ def _enrich_dir(env) -> Path:
     return d
 
 
-def _content_size(item) -> int:
-    return (len(item.get("caption") or "") + len(item.get("transcript") or "")
-            + len(item.get("ocr_text") or ""))
-
-
 def _ordered_group_stubs(env, statuses, group, collections_cfg):
     """Stubs across input statuses, priority order, filtered to the group."""
     for status in statuses:
@@ -44,15 +39,22 @@ def _ordered_group_stubs(env, statuses, group, collections_cfg):
 def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statuses,
             prompt_template) -> int:
     """Build batch.json + prompt.txt for the highest-priority budget-worth of the
-    group's items. Returns the batch size (0 = nothing left)."""
-    items, total = [], 0
+    group's items. Returns the batch size (0 = nothing left).
+
+    char_budget bounds the RENDERED prompt length (header + vocab + per-item
+    scaffolding + content) — i.e. what the session actually reads — not just raw
+    content. The first matching item is always admitted even if it alone is large."""
+    items = []
+    total = backend.header_len(group, vocab, prompt_template)
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg):
+        if max_items is not None and len(items) >= max_items:
+            break
         content = get_page_content(env, stub["page_id"])
-        size = _content_size(content)
-        if backend.batch_full(len(items), total, size, char_budget, max_items):
+        block = backend.item_len(content)
+        if items and total + block > char_budget:
             break
         items.append(content)
-        total += size
+        total += block
 
     if not items:
         log.info("enrich.prepare: no items left for group %s", group)
@@ -64,7 +66,7 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
         encoding="utf-8")
     (d / "prompt.txt").write_text(
         backend.build_prompt(group, items, vocab, prompt_template), encoding="utf-8")
-    log.info("enrich.prepare: wrote %d items (%d chars) for group %s", len(items), total, group)
+    log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s", len(items), total, group)
     return len(items)
 
 

@@ -45,6 +45,28 @@ def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
     assert (tmp_path / "enrich" / "prompt.txt").exists()
 
 
+def test_prepare_budgets_on_rendered_prompt(tmp_path, monkeypatch):
+    # char_budget bounds the RENDERED prompt (header + scaffolding + content), not
+    # just raw content. Three identical items + a budget sized for exactly two.
+    from insta_save.backends import claude_code as backend
+    stubs = {"High": [{"page_id": f"p{i}", "source_id": f"p{i}", "collections": ["hust-a"]}
+                      for i in range(3)]}
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    base = {"caption": "c" * 40, "transcript": "", "ocr_text": "", "type": "Reel",
+            "author": "a", "transcript_language": "en"}
+    monkeypatch.setattr(enrich, "get_page_content",
+                        lambda env, pid: {**base, "page_id": pid, "source_id": pid})
+    vocab, tmpl = _vocab(), "H {vocab_block}"
+    one = {**base, "page_id": "p0", "source_id": "p0"}
+    budget = backend.header_len("Hustling", vocab, tmpl) + 2 * backend.item_len(one) + 5
+
+    n = enrich.prepare(_env(tmp_path), group="Hustling", collections_cfg=_Cols(), vocab=vocab,
+                       char_budget=budget, max_items=10, statuses=["Extracted"], prompt_template=tmpl)
+    assert n == 2  # third item would push the rendered prompt over budget
+    assert len((tmp_path / "enrich" / "prompt.txt").read_text()) <= budget
+
+
 def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     (tmp_path / "enrich").mkdir()
     (tmp_path / "enrich" / "batch.json").write_text(json.dumps(

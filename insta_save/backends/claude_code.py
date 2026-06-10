@@ -14,17 +14,6 @@ from insta_save.config.tags import allowed_topics
 PROMPT_VERSION = "enrich_v2.0"
 
 
-def batch_full(batch_len, total_chars, next_size, char_budget, max_items) -> bool:
-    """True if the batch already has >=1 item AND adding next_size would breach a cap.
-    Checked BEFORE adding the candidate, so the first item is always admitted.
-    max_items=None means no item-count cap — char_budget still bounds the batch."""
-    if batch_len < 1:
-        return False
-    if max_items is not None and batch_len >= max_items:
-        return True
-    return total_chars + next_size > char_budget
-
-
 def _vocab_block(group, vocab) -> str:
     """Human-readable vocab the session must choose from: content-types (pick 1),
     the group's topics + cross-group (pick 0-3), each with its one-line definition."""
@@ -38,29 +27,50 @@ def _vocab_block(group, vocab) -> str:
     return "\n".join(lines)
 
 
+def _header_lines(group, vocab, template) -> list[str]:
+    header = template.replace("{vocab_block}", _vocab_block(group, vocab))
+    return [header, "", f"Group: {group}", "=" * 60, ""]
+
+
+def _item_block(item) -> str:
+    sid = item.get("source_id") or item["page_id"]
+    lines = [f"--- {sid} ---",
+             f"page_id:    {item['page_id']}",
+             f"source_id:  {sid}",
+             f"Type:       {item.get('type') or '[none]'}",
+             f"Author:     {item.get('author') or '[none]'}"]
+    lang = item.get("transcript_language")
+    if lang and lang != "en":
+        lines.append(f"Language:   {lang}  (translate to English; note the original language)")
+    if item.get("caption"):
+        lines.append(f"Caption:    {item['caption']}")
+    if item.get("transcript"):
+        lines.append(f"Transcript: {item['transcript']}")
+    if item.get("ocr_text"):
+        lines.append(f"OCR text:   {item['ocr_text']}")
+    return "\n".join(lines)
+
+
 def build_prompt(group, items, vocab, template) -> str:
     """Assemble the full prompt: instruction header (template, with {vocab_block}
     filled) + a per-item content section."""
-    header = template.replace("{vocab_block}", _vocab_block(group, vocab))
-    lines = [header, "", f"Group: {group}", "=" * 60, ""]
+    lines = _header_lines(group, vocab, template)
     for item in items:
-        sid = item.get("source_id") or item["page_id"]
-        lines.append(f"--- {sid} ---")
-        lines.append(f"page_id:    {item['page_id']}")
-        lines.append(f"source_id:  {sid}")
-        lines.append(f"Type:       {item.get('type') or '[none]'}")
-        lines.append(f"Author:     {item.get('author') or '[none]'}")
-        lang = item.get("transcript_language")
-        if lang and lang != "en":
-            lines.append(f"Language:   {lang}  (translate to English; note the original language)")
-        if item.get("caption"):
-            lines.append(f"Caption:    {item['caption']}")
-        if item.get("transcript"):
-            lines.append(f"Transcript: {item['transcript']}")
-        if item.get("ocr_text"):
-            lines.append(f"OCR text:   {item['ocr_text']}")
+        lines.append(_item_block(item))
         lines.append("")
     return "\n".join(lines)
+
+
+def header_len(group, vocab, template) -> int:
+    """Rendered length of the fixed prompt header (instructions + vocab + group line)."""
+    return len("\n".join(_header_lines(group, vocab, template)))
+
+
+def item_len(item) -> int:
+    """Rendered length one item adds to the prompt: its block plus the two newlines
+    it contributes in the final join. Invariant:
+    header_len(...) + sum(item_len(i)) == len(build_prompt(group, items, ...))."""
+    return len(_item_block(item)) + 2
 
 
 def parse_results(path) -> list[dict]:
