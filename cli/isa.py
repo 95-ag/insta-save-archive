@@ -6,7 +6,7 @@ from insta_save.config.env import load_env as _load_env
 from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
 from insta_save.adapters.notion import ensure_schema
-from insta_save.observability import StageProgress, setup_logging
+from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
