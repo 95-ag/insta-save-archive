@@ -60,7 +60,7 @@ def _launch_vcxsrv_strategy() -> None:
     _ensure()
 
 
-def ensure_display(mode: str, headless: bool) -> None:
+def apply_display_strategy(mode: str, headless: bool) -> None:
     """No-op except on the wsl-vcxsrv strategy with a headed browser."""
     if headless or mode in ("native", "none"):
         return
@@ -74,7 +74,7 @@ def ensure_display(mode: str, headless: bool) -> None:
 
 def _launch_browser(playwright: Playwright, env: EnvConfig, headless: bool = True) -> Browser:
     if not headless:
-        ensure_display(resolve_display_mode(env.display_mode), headless=False)
+        apply_display_strategy(resolve_display_mode(env.display_mode), headless=headless)
     return playwright.chromium.launch(
         headless=headless,
         slow_mo=80 if not headless else 0,
