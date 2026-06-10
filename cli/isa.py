@@ -61,12 +61,18 @@ def dispatch_run(args) -> None:
         log_path = setup_logging("calibrate")
         print(f"Logging to {log_path}")
         collections_cfg = _load_collections()
+        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
         template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
         n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
-                             limit=args.calibrate_limit, prompt_template=template)
-        print(f"Sampled {n} items -> tmp/calibrate/prompt.txt. In a Claude session: "
-              f'"Read tmp/calibrate/prompt.txt and write tmp/calibrate/proposed_tags.json", '
-              f"then review + merge into config/tags.json.")
+                             limit=args.calibrate_limit, statuses=statuses,
+                             prompt_template=template)
+        if n == 0:
+            print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}). "
+                  f"Add --reenrich to also sample already-Summarized items.")
+        else:
+            print(f"Sampled {n} items -> tmp/calibrate/prompt.txt. In a Claude session: "
+                  f'"Read tmp/calibrate/prompt.txt and write tmp/calibrate/proposed_tags.json", '
+                  f"then review + merge into config/tags.json.")
         return
 
     if args.stage == "enrich":

@@ -32,21 +32,27 @@ def _build_prompt(template, group, items) -> str:
     return "\n".join(lines)
 
 
-def sample(env, *, group, collections_cfg, limit, prompt_template) -> int:
-    """Collect up to `limit` Extracted items in the group (priority order), write
-    sample.json + prompt.txt. Returns the sample size."""
+def _group_stubs(env, statuses, group, collections_cfg):
+    """Stubs across the given input statuses, priority order, filtered to the group."""
+    for status in statuses:
+        for bucket in PRIORITY_BUCKETS:
+            for stub in query_by_status_and_priority(env, status, bucket):
+                if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
+                    yield stub
+
+
+def sample(env, *, group, collections_cfg, limit, statuses, prompt_template) -> int:
+    """Collect up to `limit` items of the group across `statuses` (priority order),
+    write sample.json + prompt.txt. Returns the sample size. `statuses` lets calibrate
+    sample already-Summarized groups (the re-enrich migration path), not just Extracted."""
     items = []
-    for bucket in PRIORITY_BUCKETS:
-        for stub in query_by_status_and_priority(env, "Extracted", bucket):
-            if len(items) >= limit:
-                break
-            if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
-                items.append(get_page_content(env, stub["page_id"]))
+    for stub in _group_stubs(env, statuses, group, collections_cfg):
         if len(items) >= limit:
             break
+        items.append(get_page_content(env, stub["page_id"]))
 
     if not items:
-        log.info("calibrate.sample: no Extracted items in group %s", group)
+        log.info("calibrate.sample: no items in group %s (statuses=%s)", group, statuses)
         return 0
 
     d = _calibrate_dir(env)
