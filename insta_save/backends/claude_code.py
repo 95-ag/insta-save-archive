@@ -16,10 +16,13 @@ PROMPT_VERSION = "enrich_v2.0"
 
 def batch_full(batch_len, total_chars, next_size, char_budget, max_items) -> bool:
     """True if the batch already has >=1 item AND adding next_size would breach a cap.
-    Checked BEFORE adding the candidate, so the first item is always admitted."""
+    Checked BEFORE adding the candidate, so the first item is always admitted.
+    max_items=None means no item-count cap — char_budget still bounds the batch."""
     if batch_len < 1:
         return False
-    return batch_len >= max_items or total_chars + next_size > char_budget
+    if max_items is not None and batch_len >= max_items:
+        return True
+    return total_chars + next_size > char_budget
 
 
 def _vocab_block(group, vocab) -> str:

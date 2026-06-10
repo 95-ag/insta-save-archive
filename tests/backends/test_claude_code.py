@@ -29,6 +29,12 @@ def test_batch_full_on_char_budget():
     assert backend.batch_full(2, 90, 5, char_budget=100, max_items=5) is False
 
 
+def test_batch_full_none_max_items_uses_only_char_budget():
+    # max_items=None -> no item-count cap; only char_budget can fill the batch (no TypeError)
+    assert backend.batch_full(99, 50, 10, char_budget=100, max_items=None) is False
+    assert backend.batch_full(99, 95, 10, char_budget=100, max_items=None) is True
+
+
 def test_build_prompt_includes_vocab_and_items_and_language():
     items = [{
         "page_id": "p1", "source_id": "s1", "title": "t", "author": "a",
