@@ -142,3 +142,9 @@ def test_enrich_apply_calls_stage(monkeypatch):
     args = isa.build_parser().parse_args(["run", "--stage", "enrich", "--apply"])
     isa.dispatch_run(args)
     assert calls["apply"] == ("VOCAB", "claude-sonnet", True)  # progress passed through
+
+
+def test_discover_parser_accepts_flags():
+    from cli.isa import build_parser
+    args = build_parser().parse_args(["discover", "--headed", "--fresh", "--collection", "Dev"])
+    assert args.command == "discover" and args.headed and args.fresh and args.collection == "Dev"
