@@ -154,6 +154,51 @@ def dispatch_run(args) -> None:
               f"{r.get('deterministic_pending', 0)} left Imported (deterministic branch).")
         return
 
+    if args.stage == "deterministic":
+        env = _load_env()
+        run_cfg = _load_run()
+        collections_cfg = _load_collections()
+        ensure_schema(env)
+        from insta_save.stages import deterministic as det
+        if run_cfg.deterministic_title_mode == "llm":
+            if not (args.prepare or args.apply):
+                raise SystemExit("isa run --stage deterministic: title_mode=llm requires "
+                                 "--prepare or --apply")
+            if args.apply:
+                log_path = setup_logging("deterministic-apply")
+                print(f"Logging to {log_path}")
+                with StageProgress("Deterministic apply") as progress:
+                    counts = det.apply(env, progress=progress)
+                print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+                return
+            if not args.group:
+                raise SystemExit("isa run --stage deterministic --prepare: --group is required")
+            log_path = setup_logging("deterministic-prepare")
+            print(f"Logging to {log_path}")
+            template = Path(f"prompts/{det.PROMPT_VERSION}.txt").read_text(encoding="utf-8")
+            with StageProgress("Deterministic prepare") as progress:
+                r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
+                                language=run_cfg.output_language, prompt_template=template,
+                                max_items=run_cfg.max_items, progress=progress)
+            if r["batched"] == 0:
+                print(f"No caption-bearing items to title in group {args.group} "
+                      f"({r['finalized_template']} finalized with template titles).")
+            else:
+                print(f"Prepared {r['batched']} titles -> tmp/deterministic/prompt.txt "
+                      f"({r['finalized_template']} finalized, no caption). In a Claude session: "
+                      f'"Read tmp/deterministic/prompt.txt and write tmp/deterministic/results.json", '
+                      f"then: isa run --stage deterministic --apply")
+            return
+        # template mode (one-shot)
+        log_path = setup_logging("deterministic")
+        print(f"Logging to {log_path}")
+        with StageProgress("Deterministic") as progress:
+            r = det.run_deterministic_stage(env, collections_cfg, progress,
+                                            limit=args.limit, group=args.group)
+        print(f"Deterministic: {r.get('tagged', 0)} → Tagged, "
+              f"{r.get('skipped_extract_path', 0)} skipped (extract path).")
+        return
+
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 

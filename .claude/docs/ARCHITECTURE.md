@@ -86,14 +86,14 @@ calibration has content to sample).
 | 3 | Extract | transcript + OCR/vision engines | engine-tiered | `Extracted` |
 | 3.5 | Calibrate | sample + chosen backend proposes vocab | yes | locks vocab |
 | 4 | Enrich | one-shot LLM | **yes** | `Tagged` |
-| 5 | Deterministic | pure Python (maps/templates) | no | `Tagged` |
+| 5 | Deterministic | slug-tag union + title (template default, opt-in llm) | title only (opt-in) | `Tagged` |
 | 6 | Route | pure Python (`routes.json`) | no | `Routed` (optional) |
 
 - **Discover** surfaces all collections + post links. First-time → prompt group + extract per collection (group *order* is set once in the `groups` list). Incremental → diff config, prompt only new/removed collections (smart-merge). v2 uses **one** harvester/merger — v1 had two divergent copies (`crawler.py` vs `list_collections.py`); see `CARRYOVER.md`.
 - **Ingest** pulls metadata **yt-dlp `--dump-json` first** (more 429-resilient, works on image posts), browser render as fallback, with a **wall guard** (stop after 5 consecutive yt-dlp failures, defer to the next run).
 - **Select** fans items to the extract path (`Queued`) or the deterministic branch (`extract=no` collections — no deep content worth a transcript).
 - **Enrich** is one LLM pass producing all four fields from `title-seed + transcript + ocr_text + caption`. Replaces v1's separate `title` (Ollama) + `summarize` (Claude) passes for extracted items.
-- **Deterministic** branch tags from collection membership and titles from collection/caption/author — no LLM, for thin/visual saves.
+- **Deterministic** branch (st.5) tags `extract=no` items from the **slugified union of their collection names** and titles them by a config mode — `template` (`{collection} — {author}`, default) or opt-in `llm` (title from caption+collection+author). No transcript/OCR/semantic-LLM; `summary`/`externals` stay `None`; status → `Tagged` (marker `enrich_version="deterministic-v2.0"`). The `llm` mode is a **thin parallel `--prepare`/`--apply`** reusing the claude-code file contract (`parse_results` + `get_page_content` + the batch/prompt/results pattern); its formal `Backend` protocol lands with #5. `output_language` (top-level run config) normalizes titles/summaries/tags to English — only raw transcript/OCR keep their original language.
 
 ---
 
@@ -270,7 +270,7 @@ insta-save-archive/
 │   ├── enrich_schema.py · reconcile.py · snapshots.py · backup.py
 ├── cli/isa.py                   # single entrypoint: isa discover|run|status|backup
 ├── config/                      # gitignored DATA: collections.json · tags.json · routes.json · run.json
-├── prompts/                     # versioned enrich + calibrate prompts
+├── prompts/                     # versioned enrich · calibrate · deterministic-title prompts
 ├── tests/  tmp/  logs/
 └── pyproject.toml               # installs insta_save* ; legacy run via its own note
 ```
