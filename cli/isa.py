@@ -140,6 +140,19 @@ def dispatch_run(args) -> None:
               f"{' (dry-run)' if args.dry_run else ''}.")
         return
 
+    if args.stage == "select":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        log_path = setup_logging("select")
+        print(f"Logging to {log_path}")
+        from insta_save.stages.select import run_select_stage
+        with StageProgress("Select") as progress:
+            r = run_select_stage(env, collections_cfg, progress,
+                                 limit=args.limit, group=args.group)
+        print(f"Select: {r.get('queued', 0)} → Queued, "
+              f"{r.get('deterministic_pending', 0)} left Imported (deterministic branch).")
+        return
+
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
