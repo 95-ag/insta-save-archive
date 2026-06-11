@@ -197,7 +197,11 @@ def extract_post(context: BrowserContext, url: str) -> dict:
 
     except Exception as e:
         log.error("extractor: failed on %s — %s", url, e)
-        log.debug("extractor: page HTML on failure:\n%s", page.content()[:3000])
+        if log.isEnabledFor(logging.DEBUG):
+            try:
+                log.debug("extract_post failed for %s: %s", url, page.content()[:3000])
+            except Exception:
+                pass
         return base
     finally:
         page.close()
@@ -243,7 +247,7 @@ def _author_from_ytdlp_meta(meta: dict) -> str | None:
     raw = meta.get("uploader_id")
     if not raw:
         return None
-    handle = raw.lstrip("@").strip()
+    handle = str(raw).lstrip("@").strip()
     return handle or None
 
 

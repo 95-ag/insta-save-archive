@@ -136,7 +136,8 @@ def dispatch_run(args) -> None:
                            confirmed_removed=confirmed, headed=args.headed,
                            dry_run=args.dry_run, progress=progress)
         print(f"Ingest: {r['created']} created, {r['retagged']} retagged, "
-              f"{r['backfilled']} backfilled, {r['skipped_unsafe']} unsafe-skipped"
+              f"{r['backfilled']} backfilled, {r['degraded']} degraded, "
+              f"{r['skipped_unsafe']} unsafe-skipped"
               f"{' (dry-run)' if args.dry_run else ''}.")
         return
 

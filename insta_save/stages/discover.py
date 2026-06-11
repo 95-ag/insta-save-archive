@@ -21,8 +21,12 @@ log = logging.getLogger(__name__)
 def refresh_collections_config(context, ig_username, *, collections_path, persist=True):
     """Index crawl → merge into collections.json. Returns (merged, new_names, missing, complete)."""
     discovered, complete = discover_collections(context, ig_username)
-    existing = json.loads(Path(collections_path).read_text(encoding="utf-8")) \
-        if Path(collections_path).exists() else {"groups": [UNCATEGORIZED], "collections": {}}
+    p = Path(collections_path)
+    if p.exists():
+        load_collections(collections_path)  # validate: raises on a v1 flat-shape file
+        existing = json.loads(p.read_text(encoding="utf-8"))
+    else:
+        existing = {"groups": [UNCATEGORIZED], "collections": {}}
     merged, new_names, missing = merge_discovered(existing, discovered)
     if persist:
         write_collections(merged, collections_path)
@@ -37,7 +41,12 @@ def batch_confirm(collections_path, new_names) -> None:
     print(f"{len(new_names)} new collection(s) need group + extract: {', '.join(new_names)}")
     print(f"Opening {collections_path} — set 'group' and 'extract' for each, then save & close.")
     editor = os.environ.get("EDITOR", "nano")
-    subprocess.run([editor, str(collections_path)], check=False)
+    try:
+        subprocess.run([editor, str(collections_path)], check=False)
+    except FileNotFoundError:
+        print(f"Editor {editor!r} not found. Set $EDITOR, then edit {collections_path} "
+              f"to set group/extract for: {', '.join(new_names)}")
+        return
     load_collections(collections_path)  # raises loudly on a broken file
     print("collections.json validated.")
 
@@ -67,6 +76,9 @@ def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_
 def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
                  fresh=False, names=None, max_age_min=360, persist=True):
     """Full discover: auth → index refresh → batch-confirm → crawl all grids."""
+    if not ig_username:
+        raise RuntimeError("discover: IG_USERNAME is not set (in .env) and no --ig-username "
+                           "was given — cannot build collection URLs.")
     from playwright.sync_api import sync_playwright
     from insta_save.adapters.instagram.session import ensure_authenticated
     with sync_playwright() as pw:

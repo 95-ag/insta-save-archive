@@ -418,4 +418,4 @@ def mark_queued(env: EnvConfig, page_id: str) -> None:
         client.pages.update(page_id=page_id, properties={"status": _select("Queued")})
         log.info("notion: marked %s Queued", page_id)
     except APIResponseError as e:
-        log.error("notion: could not mark %s Queued: %s", page_id, e)
+        raise RuntimeError(f"notion: mark_queued failed on {page_id}: {e}") from e

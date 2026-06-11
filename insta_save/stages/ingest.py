@@ -63,24 +63,42 @@ def apply_plan(*, env, plan, context, cookies_txt, refresh_targets, dry_run, pro
     """Execute the reconcile Plan: create new pages (with metadata), retag existing,
     backfill metadata. wall guard shared across all extractions this run."""
     wall = {"consec": 0, "hit": False, "cookies_txt": cookies_txt}
-    created = retagged = backfilled = 0
+    created = retagged = backfilled = degraded = 0
+
+    bar = None
+    if progress is not None:
+        total = len(plan.creates) + len(plan.retags) + len(refresh_targets)
+        bar = progress.add_bar("Ingesting", total=total)
+
     for action in plan.creates:
         if dry_run:
             created += 1
+            if progress is not None:
+                progress.advance(bar)
             continue
         meta = _meta_for(env, action.url, wall, context)
         meta["source_id"] = action.source_id
         meta["ig_link"] = action.url
         meta["collections"] = sorted(action.final)
+        if not meta.get("author"):
+            degraded += 1
+            log.warning("ingest: created %s with no author (extraction wall/failure) — "
+                        "will backfill next run", action.source_id)
         notion.create_page(env, meta)
         created += 1
+        if progress is not None:
+            progress.advance(bar)
     for action in plan.retags:
         if not dry_run:
             notion.set_collections(env, action.page_id, action.final)
         retagged += 1
+        if progress is not None:
+            progress.advance(bar)
     for page_id, url, sid in refresh_targets:
         if dry_run:
             backfilled += 1
+            if progress is not None:
+                progress.advance(bar)
             continue
         meta = _meta_for(env, url, wall, context)
         if meta.get("author"):
@@ -88,8 +106,13 @@ def apply_plan(*, env, plan, context, cookies_txt, refresh_targets, dry_run, pro
             meta["ig_link"] = url
             notion.update_metadata(env, page_id, meta)
             backfilled += 1
+        else:
+            log.warning("ingest: backfill skipped for %s — no author extracted", sid)
+        if progress is not None:
+            progress.advance(bar)
     return {"created": created, "retagged": retagged, "backfilled": backfilled,
-            "unchanged": plan.unchanged, "skipped_unsafe": len(plan.skipped_unsafe)}
+            "degraded": degraded, "unchanged": plan.unchanged,
+            "skipped_unsafe": len(plan.skipped_unsafe)}
 
 
 def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
@@ -129,6 +152,6 @@ def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
             browser.close()
             try:
                 os.unlink(cookies_txt)
-            except FileNotFoundError:
+            except OSError:
                 pass
     return result

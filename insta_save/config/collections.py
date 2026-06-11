@@ -98,7 +98,10 @@ def merge_discovered(existing: dict, discovered: dict) -> tuple[dict, list, list
     new_names = []
     for name, ids in discovered.items():
         if name in cols:
-            cols[name] = {**cols[name], "slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}
+            updates = {k: v for k, v in
+                       {"slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}.items()
+                       if v is not None}
+            cols[name] = {**cols[name], **updates}
         else:
             cols[name] = {"group": UNCATEGORIZED, "extract": False,
                           "slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}
