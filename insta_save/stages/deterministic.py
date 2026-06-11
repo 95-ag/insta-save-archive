@@ -109,12 +109,11 @@ def _deterministic_stubs(env, group, collections_cfg):
             yield stub
 
 
-def prepare(env, *, group, collections_cfg, language, max_items=None, progress=None) -> dict:
+def prepare(env, *, group, collections_cfg, language, prompt_template, max_items=None, progress=None) -> dict:
     """llm-mode prepare. Caption-bearing items → batch.json (tags precomputed) + prompt.txt
     for a Claude session. Caption-less items need no LLM → finalized immediately with a
     template title. Returns {batched, finalized_template}."""
     d = _det_dir(env)
-    template = Path(f"prompts/{PROMPT_VERSION}.txt").read_text(encoding="utf-8")
     batch_items, finalized = [], 0
     for stub in _deterministic_stubs(env, group, collections_cfg):
         if max_items is not None and len(batch_items) >= max_items:
@@ -139,7 +138,7 @@ def prepare(env, *, group, collections_cfg, language, max_items=None, progress=N
             json.dumps({"group": group, "language": language, "items": batch_items},
                        ensure_ascii=False, indent=2), encoding="utf-8")
         (d / "prompt.txt").write_text(
-            build_title_prompt(batch_items, template, language), encoding="utf-8")
+            build_title_prompt(batch_items, prompt_template, language), encoding="utf-8")
     log.info("deterministic.prepare: %d batched, %d finalized (no caption) for group %s",
              len(batch_items), finalized, group)
     return {"batched": len(batch_items), "finalized_template": finalized}

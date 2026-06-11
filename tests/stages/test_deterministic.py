@@ -80,3 +80,33 @@ def test_apply_falls_back_to_template_when_result_missing(tmp_path, monkeypatch)
     assert ("p1", "Glowy summer makeup", ["makeup"]) in writes
     assert ("p2", "Travel — x", ["travel"]) in writes  # template fallback
     assert not (d / "results.json").exists()  # cleaned on full success
+
+
+def test_prepare_caption_split(tmp_path, monkeypatch):
+    # one captioned item (→ batch) + one caption-less item (→ finalized immediately)
+    contents = {
+        "p1": {"page_id": "p1", "source_id": "s1", "author": "a",
+               "collections": ["Makeup"], "caption": "glowy look"},
+        "p2": {"page_id": "p2", "source_id": "s2", "author": "b",
+               "collections": ["Travel"], "caption": None},
+    }
+    monkeypatch.setattr(det, "_deterministic_stubs",
+                        lambda env, group, cfg: [{"page_id": "p1"}, {"page_id": "p2"}])
+    monkeypatch.setattr(det, "get_page_content", lambda env, pid: contents[pid])
+    finalized = []
+    monkeypatch.setattr(det, "write_deterministic",
+                        lambda e, pid, title, tags, ver: finalized.append((pid, title, tags)))
+
+    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    out = det.prepare(env, group="Lifestyle", collections_cfg=None,
+                      language="english", prompt_template="Lang={language}", max_items=None)
+
+    assert out == {"batched": 1, "finalized_template": 1}
+    # caption-less p2 finalized immediately with its template title + slug tag
+    assert finalized == [("p2", "Travel — b", ["travel"])]
+    # captioned p1 written to batch.json with precomputed tags, NOT finalized
+    import json as _json
+    batch = _json.loads((tmp_path / "deterministic" / "batch.json").read_text(encoding="utf-8"))
+    assert [i["page_id"] for i in batch["items"]] == ["p1"]
+    assert batch["items"][0]["tags"] == ["makeup"]
+    assert batch["language"] == "english"
