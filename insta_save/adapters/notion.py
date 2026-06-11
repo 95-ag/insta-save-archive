@@ -60,6 +60,12 @@ def _date(iso):
     return {"date": {"start": iso}}
 
 
+def _url(value):
+    if not value:
+        return None
+    return {"url": value}
+
+
 def _rich_text_chunked(text: str) -> dict:
     chunks, remaining = [], text
     while remaining and len(chunks) < 100:
@@ -114,6 +120,30 @@ def _enrich_props(title, summary, externals, tags, version) -> dict:
         props["externals"] = _rich_text_chunked(externals)
     if tags:
         props["tags"] = _multi_select(tags)
+    return props
+
+
+def _build_ingest_properties(metadata: dict) -> dict:
+    """Map extractor metadata → Notion props for a new/updated page. Nulls omitted.
+    Phase-1 title is `{handle} — {shortcode}` (author is the handle; replaced when
+    enrich writes a real title)."""
+    author = metadata.get("author")
+    source_id = metadata.get("source_id", "")
+    props = {
+        "title": _title(f"{author} — {source_id}" if author else source_id),
+        "source_id": _rich_text(source_id),
+        "status": _select("Imported"),
+    }
+    if metadata.get("collections"):
+        props["collection"] = _multi_select(list(metadata["collections"]))
+    for key, builder in [("ig_link", _url), ("author", _rich_text),
+                         ("type", _select), ("caption", _rich_text_chunked),
+                         ("posted_date", _date)]:
+        val = metadata.get(key)
+        if val is not None:
+            built = builder(val)
+            if built is not None:
+                props[key] = built
     return props
 
 
@@ -309,3 +339,83 @@ def write_enrichment(env: EnvConfig, page_id: str, fields: dict, version: str) -
         log.info("notion: wrote enrichment %s for page %s", version, page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: failed to write enrichment for {page_id}: {e}") from e
+
+
+def create_page(env: EnvConfig, metadata: dict) -> str:
+    """Create a new page from metadata (Imported). Caller dedups via bulk_load_state."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        resp = client.pages.create(
+            parent={"database_id": env.notion_database_id},
+            properties=_build_ingest_properties(metadata))
+        log.info("notion: created page %s for %s", resp["id"], metadata.get("source_id"))
+        return resp["id"]
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: create failed for {metadata.get('source_id')}: {e}") from e
+
+
+def bulk_load_state(env: EnvConfig) -> dict:
+    """Load the whole DB once → {source_id: {page_id, collections:set, needs_metadata}}.
+
+    needs_metadata = author OR posted_date missing (a clean extract always has both;
+    caption is genuinely optional and deliberately not a trigger)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_database_id)
+    state, cursor = {}, None
+    while True:
+        kwargs = {"start_cursor": cursor} if cursor else {}
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            props = page.get("properties", {})
+            sid_blocks = props.get("source_id", {}).get("rich_text", [])
+            sid = sid_blocks[0]["text"]["content"] if sid_blocks else None
+            if not sid:
+                continue
+            collections = {c["name"] for c in props.get("collection", {}).get("multi_select", [])}
+            author_blocks = props.get("author", {}).get("rich_text", [])
+            has_author = bool(author_blocks and author_blocks[0]["text"]["content"].strip())
+            has_date = bool(props.get("posted_date", {}).get("date"))
+            state[sid] = {"page_id": page["id"], "collections": collections,
+                          "needs_metadata": (not has_author) or (not has_date)}
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    log.info("notion: bulk-loaded %d pages", len(state))
+    return state
+
+
+def set_collections(env: EnvConfig, page_id: str, collections: set) -> None:
+    """Overwrite the collection multi-select (absolute set → idempotent retag)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        client.pages.update(page_id=page_id,
+                            properties={"collection": _multi_select(sorted(collections))})
+        log.info("notion: set collections on %s → %s", page_id, sorted(collections))
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: set_collections failed on {page_id}: {e}") from e
+
+
+def update_metadata(env: EnvConfig, page_id: str, metadata: dict) -> None:
+    """Backfill metadata on an existing page (self-healing). Keeps current status."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = _build_ingest_properties(metadata)
+    props.pop("status", None)   # never reset status on a backfill
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: backfilled metadata on %s", page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: update_metadata failed on {page_id}: {e}") from e
+
+
+def mark_queued(env: EnvConfig, page_id: str) -> None:
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        client.pages.update(page_id=page_id, properties={"status": _select("Queued")})
+        log.info("notion: marked %s Queued", page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: mark_queued failed on {page_id}: {e}") from e

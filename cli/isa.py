@@ -20,7 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="isa", description="Insta-Save v2 pipeline.")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("discover", help="Surface collections + configure / diff.")
+    disc = sub.add_parser("discover", help="Surface collections + configure / diff + crawl grids.")
+    disc.add_argument("--headed", action="store_true")
+    disc.add_argument("--fresh", action="store_true", help="Ignore reusable snapshots.")
+    disc.add_argument("--collection", default=None, help="Limit crawl to one collection.")
+    disc.add_argument("--ig-username", default=None, help="Override IG_USERNAME from env.")
 
     run = sub.add_parser("run", help="Run the pipeline (a mode, or a single stage).")
     run.add_argument("--mode", choices=["first-time", "incremental"], default="incremental")
@@ -33,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
     run.add_argument("--calibrate-limit", type=int, default=20)
+    run.add_argument("--collection", default=None)
+    run.add_argument("--fresh", action="store_true")
+    run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--headed", action="store_true")
+    run.add_argument("--confirm-removed", action="append", default=None)
 
     sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
@@ -113,6 +122,38 @@ def dispatch_run(args) -> None:
                   f"then: isa run --stage enrich --apply")
         return
 
+    if args.stage == "ingest":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        ensure_schema(env)
+        log_path = setup_logging("ingest")
+        print(f"Logging to {log_path}")
+        from insta_save.stages.ingest import run_ingest
+        names = [args.collection] if getattr(args, "collection", None) else None
+        confirmed = set(args.confirm_removed or [])
+        with StageProgress("Ingest") as progress:
+            r = run_ingest(env, collections_cfg=collections_cfg, names=names,
+                           confirmed_removed=confirmed, headed=args.headed,
+                           dry_run=args.dry_run, progress=progress)
+        print(f"Ingest: {r['created']} created, {r['retagged']} retagged, "
+              f"{r['backfilled']} backfilled, {r['degraded']} degraded, "
+              f"{r['skipped_unsafe']} unsafe-skipped"
+              f"{' (dry-run)' if args.dry_run else ''}.")
+        return
+
+    if args.stage == "select":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        log_path = setup_logging("select")
+        print(f"Logging to {log_path}")
+        from insta_save.stages.select import run_select_stage
+        with StageProgress("Select") as progress:
+            r = run_select_stage(env, collections_cfg, progress,
+                                 limit=args.limit, group=args.group)
+        print(f"Select: {r.get('queued', 0)} → Queued, "
+              f"{r.get('deterministic_pending', 0)} left Imported (deterministic branch).")
+        return
+
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
@@ -122,6 +163,20 @@ def main() -> None:
         if args.stage is None:
             raise SystemExit("isa run: --stage is required for now (mode orchestration comes later)")
         dispatch_run(args)
+        return
+    if args.command == "discover":
+        env = _load_env()
+        ig_username = args.ig_username or env.ig_username
+        log_path = setup_logging("discover")
+        print(f"Logging to {log_path}")
+        from insta_save.stages.discover import run_discover
+        names = [args.collection] if args.collection else None
+        summary = run_discover(env, ig_username=ig_username,
+                               collections_path="config/collections.json",
+                               tmp_dir=env.tmp_dir, headed=args.headed,
+                               fresh=args.fresh, names=names)
+        print(f"Discover: {len(summary['new'])} new, {len(summary['missing'])} missing, "
+              f"index_complete={summary['index_complete']}, skipped={summary['skipped']}")
         return
     raise SystemExit(f"isa {args.command}: not implemented yet (v2 scaffold — see ARCHITECTURE.md)")
 

@@ -72,7 +72,47 @@ def load_collections(path=_DEFAULT_COLLECTIONS) -> CollectionsConfig:
     if UNCATEGORIZED not in groups:
         groups = groups + (UNCATEGORIZED,)
     collections = {
-        name: {"group": meta.get("group", UNCATEGORIZED), "extract": bool(meta.get("extract", False))}
+        name: {
+            "group": meta.get("group", UNCATEGORIZED),
+            "extract": bool(meta.get("extract", False)),
+            "slug": meta.get("slug"),
+            "numeric_id": meta.get("numeric_id"),
+        }
         for name, meta in data.get("collections", {}).items()
     }
     return CollectionsConfig(groups=groups, collections=collections)
+
+
+def merge_discovered(existing: dict, discovered: dict) -> tuple[dict, list, list]:
+    """Additively merge {name: {slug, numeric_id}} into a collections.json dict.
+
+    Pure: existing annotations (group/extract) are preserved; new collections get
+    defaults (group=uncategorized, extract=False). Returns (merged, new_names,
+    missing_names). missing = known but not in this crawl — never dropped (a single
+    crawl can be incomplete; absence is not authoritative, mirrors reconcile).
+    """
+    groups = list(existing.get("groups", []))
+    if UNCATEGORIZED not in groups:
+        groups.append(UNCATEGORIZED)
+    cols = dict(existing.get("collections", {}))
+    new_names = []
+    for name, ids in discovered.items():
+        if name in cols:
+            updates = {k: v for k, v in
+                       {"slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}.items()
+                       if v is not None}
+            cols[name] = {**cols[name], **updates}
+        else:
+            cols[name] = {"group": UNCATEGORIZED, "extract": False,
+                          "slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}
+            new_names.append(name)
+    new_names = sorted(new_names)
+    missing_names = sorted(set(existing.get("collections", {})) - set(discovered))
+    return {"groups": groups, "collections": cols}, new_names, missing_names
+
+
+def write_collections(data: dict, path=_DEFAULT_COLLECTIONS) -> None:
+    """Persist a collections.json dict (pretty, UTF-8, non-ASCII preserved)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -61,3 +61,79 @@ def test_legacy_flat_shape_raises(tmp_path):
     }), encoding="utf-8")
     with pytest.raises(RuntimeError, match="flat"):
         colcfg.load_collections(p)
+
+
+from insta_save.config.collections import (
+    load_collections, merge_discovered, write_collections, CollectionsConfig,
+)
+
+
+def _write(tmp_path, data):
+    import json
+    p = tmp_path / "collections.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    return p
+
+
+def test_loader_surfaces_slug_and_numeric_id(tmp_path):
+    p = _write(tmp_path, {
+        "groups": ["Hustling", "uncategorized"],
+        "collections": {"Dev": {"group": "Hustling", "extract": True,
+                                 "slug": "dev", "numeric_id": "123"}},
+    })
+    cfg = load_collections(p)
+    assert cfg.collections["Dev"]["slug"] == "dev"
+    assert cfg.collections["Dev"]["numeric_id"] == "123"
+    assert cfg.is_extract_path(["Dev"]) is True
+    assert cfg.group_of("Dev") == "Hustling"
+
+
+def test_loader_tolerates_missing_ids(tmp_path):
+    p = _write(tmp_path, {"groups": ["uncategorized"],
+                          "collections": {"X": {"group": "uncategorized", "extract": False}}})
+    cfg = load_collections(p)
+    assert cfg.collections["X"]["slug"] is None
+    assert cfg.collections["X"]["numeric_id"] is None
+
+
+def test_merge_discovered_adds_new_and_preserves_annotations():
+    existing = {"groups": ["Hustling", "uncategorized"],
+                "collections": {"Dev": {"group": "Hustling", "extract": True,
+                                        "slug": "dev", "numeric_id": "1"}}}
+    discovered = {"Dev": {"slug": "dev", "numeric_id": "1"},
+                  "New": {"slug": "new", "numeric_id": "2"}}
+    merged, new_names, missing = merge_discovered(existing, discovered)
+    assert new_names == ["New"]
+    assert missing == []
+    assert merged["collections"]["Dev"] == {"group": "Hustling", "extract": True,
+                                            "slug": "dev", "numeric_id": "1"}
+    assert merged["collections"]["New"] == {"group": "uncategorized", "extract": False,
+                                            "slug": "new", "numeric_id": "2"}
+
+
+def test_merge_discovered_does_not_clobber_ids_with_none():
+    existing = {"groups": ["uncategorized"],
+                "collections": {"Dev": {"group": "uncategorized", "extract": True,
+                                        "slug": "dev", "numeric_id": "1"}}}
+    merged, _, _ = merge_discovered(existing, {"Dev": {"slug": None, "numeric_id": None}})
+    assert merged["collections"]["Dev"]["slug"] == "dev"
+    assert merged["collections"]["Dev"]["numeric_id"] == "1"
+
+
+def test_merge_discovered_reports_missing():
+    existing = {"groups": ["uncategorized"],
+                "collections": {"Gone": {"group": "uncategorized", "extract": False,
+                                         "slug": "gone", "numeric_id": "9"}}}
+    merged, new_names, missing = merge_discovered(existing, {})
+    assert missing == ["Gone"]
+    assert "Gone" in merged["collections"]
+
+
+def test_write_then_load_roundtrip(tmp_path):
+    data = {"groups": ["Hustling", "uncategorized"],
+            "collections": {"Dev": {"group": "Hustling", "extract": True,
+                                    "slug": "dev", "numeric_id": "1"}}}
+    p = tmp_path / "collections.json"
+    write_collections(data, p)
+    cfg = load_collections(p)
+    assert cfg.collections["Dev"]["slug"] == "dev"

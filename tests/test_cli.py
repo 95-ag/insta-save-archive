@@ -60,8 +60,11 @@ def test_run_extract_dispatches(monkeypatch):
 def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
-            "mode": "incremental", "stage": "ingest", "group": None,
-            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False})())
+            "mode": "incremental", "stage": "deterministic", "group": None,
+            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
+            "collection": None, "fresh": False, "dry_run": False, "headed": False,
+            "confirm_removed": None, "apply": False, "prepare": False,
+            "calibrate_limit": 20})())
 
 
 def _fake_run():
@@ -142,3 +145,9 @@ def test_enrich_apply_calls_stage(monkeypatch):
     args = isa.build_parser().parse_args(["run", "--stage", "enrich", "--apply"])
     isa.dispatch_run(args)
     assert calls["apply"] == ("VOCAB", "claude-sonnet", True)  # progress passed through
+
+
+def test_discover_parser_accepts_flags():
+    from cli.isa import build_parser
+    args = build_parser().parse_args(["discover", "--headed", "--fresh", "--collection", "Dev"])
+    assert args.command == "discover" and args.headed and args.fresh and args.collection == "Dev"
