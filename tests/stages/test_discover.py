@@ -1,3 +1,5 @@
+import json
+
 from insta_save.stages import discover
 from insta_save.config.collections import CollectionsConfig
 
@@ -31,3 +33,26 @@ def test_crawl_all_skips_collections_without_ids(tmp_path):
                                  tmp_dir=tmp_path, crawl_fn=lambda *a: ([], True),
                                  fresh=True, names=None, max_age_min=360)
     assert "NoIds" in skipped
+
+
+def test_refresh_collections_config_preserves_and_reports_missing(tmp_path, monkeypatch):
+    p = tmp_path / "collections.json"
+    p.write_text(json.dumps({
+        "groups": ["uncategorized"],
+        "collections": {
+            "Dev": {"group": "uncategorized", "extract": True, "slug": "dev", "numeric_id": "1"},
+            "Gone": {"group": "uncategorized", "extract": False, "slug": "gone", "numeric_id": "9"},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(discover, "discover_collections",
+                        lambda ctx, user: ({"Dev": {"slug": "dev", "numeric_id": "1"}}, True))
+
+    merged, new_names, missing, complete = discover.refresh_collections_config(
+        None, "me", collections_path=p, persist=True)
+
+    assert "Dev" in merged["collections"]
+    assert missing == ["Gone"]
+    assert new_names == []
+    assert complete is True
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert "Dev" in written["collections"]

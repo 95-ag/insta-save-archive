@@ -37,7 +37,7 @@ def test_apply_creates_and_retags(monkeypatch):
     assert retagged == [("pb", {"Dev"})]
 
 
-def test_run_ingest_applies_retags_without_browser(monkeypatch):
+def test_run_ingest_applies_retags_without_browser(monkeypatch, tmp_path):
     """Retag-only plan (no creates/backfills) must still WRITE — the no-browser
     fast-path must not silently become a dry-run."""
     from insta_save.config.collections import CollectionsConfig
@@ -47,13 +47,10 @@ def test_run_ingest_applies_retags_without_browser(monkeypatch):
     from insta_save.snapshots import write_snapshot
 
     class _Env:
-        tmp_dir = None
+        tmp_dir = str(tmp_path)
         cookies_file = "x"
 
-    import tempfile
-    tmpdir = tempfile.mkdtemp()
-    _Env.tmp_dir = tmpdir
-    write_snapshot(tmpdir, name="Dev", slug="dev", numeric_id="1",
+    write_snapshot(str(tmp_path), name="Dev", slug="dev", numeric_id="1",
                    posts=[{"shortcode": "a", "url": "ua"}], complete=True)
 
     # Notion already has page "a" with NO collections → reconcile yields a retag (add Dev)

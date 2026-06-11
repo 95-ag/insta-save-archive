@@ -1,4 +1,9 @@
-from insta_save.adapters.instagram.extractor import _extract_author, _author_from_ytdlp_meta
+from insta_save.adapters.instagram.extractor import (
+    _author_from_ytdlp_meta,
+    _canonical_url,
+    _extract_author,
+    _iso_date,
+)
 
 
 class _Link:
@@ -36,3 +41,25 @@ def test_ytdlp_author_prefers_handle_field():
 def test_ytdlp_author_strips_at_and_handles_missing():
     assert _author_from_ytdlp_meta({"uploader_id": "@dev"}) == "dev"
     assert _author_from_ytdlp_meta({}) is None
+
+
+def test_ytdlp_author_coerces_numeric_id():
+    assert _author_from_ytdlp_meta({"uploader_id": 12345}) == "12345"
+
+
+def test_canonical_url_strips_query_on_post():
+    assert _canonical_url("/reel/CODE/?x=1") == "https://www.instagram.com/reel/CODE/"
+
+
+def test_canonical_url_passthrough_for_non_post():
+    assert _canonical_url("not-a-post") == "not-a-post"
+
+
+def test_iso_date_from_epoch_timestamp():
+    # 2026-01-01T00:00:00Z = 1767225600
+    assert _iso_date({"timestamp": 1767225600}) == "2026-01-01T00:00:00.000Z"
+
+
+def test_iso_date_from_upload_date_and_empty():
+    assert _iso_date({"upload_date": "20260101"}) == "2026-01-01"
+    assert _iso_date({}) is None

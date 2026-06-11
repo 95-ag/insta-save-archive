@@ -111,6 +111,15 @@ def test_merge_discovered_adds_new_and_preserves_annotations():
                                             "slug": "new", "numeric_id": "2"}
 
 
+def test_merge_discovered_does_not_clobber_ids_with_none():
+    existing = {"groups": ["uncategorized"],
+                "collections": {"Dev": {"group": "uncategorized", "extract": True,
+                                        "slug": "dev", "numeric_id": "1"}}}
+    merged, _, _ = merge_discovered(existing, {"Dev": {"slug": None, "numeric_id": None}})
+    assert merged["collections"]["Dev"]["slug"] == "dev"
+    assert merged["collections"]["Dev"]["numeric_id"] == "1"
+
+
 def test_merge_discovered_reports_missing():
     existing = {"groups": ["uncategorized"],
                 "collections": {"Gone": {"group": "uncategorized", "extract": False,
