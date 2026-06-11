@@ -60,7 +60,7 @@ def test_run_extract_dispatches(monkeypatch):
 def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
-            "mode": "incremental", "stage": "deterministic", "group": None,
+            "mode": "incremental", "stage": "route", "group": None,
             "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
             "confirm_removed": None, "apply": False, "prepare": False,
@@ -151,3 +151,56 @@ def test_discover_parser_accepts_flags():
     from cli.isa import build_parser
     args = build_parser().parse_args(["discover", "--headed", "--fresh", "--collection", "Dev"])
     assert args.command == "discover" and args.headed and args.fresh and args.collection == "Dev"
+
+
+def _stub_progress(monkeypatch):
+    class _SP:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _SP())
+
+
+def _det_common(monkeypatch, run_obj):
+    monkeypatch.setattr(isa, "_load_env", lambda: "ENV")
+    monkeypatch.setattr(isa, "_load_run", lambda: run_obj)
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
+    _stub_progress(monkeypatch)
+
+
+def _det_args(**kw):
+    base = {"mode": "incremental", "stage": "deterministic", "group": None, "limit": None,
+            "prepare": False, "apply": False, "reextract": False, "reenrich": False,
+            "retry_failed": False, "collection": None}
+    base.update(kw)
+    return type("A", (), base)()
+
+
+def test_deterministic_template_dispatches(monkeypatch):
+    run_obj = type("R", (), {"deterministic_title_mode": "template",
+                             "output_language": "english", "max_items": None})()
+    _det_common(monkeypatch, run_obj)
+    seen = {}
+    import insta_save.stages.deterministic as det
+    monkeypatch.setattr(det, "run_deterministic_stage",
+                        lambda env, cols, progress, **kw: seen.setdefault("kw", kw) or {"tagged": 2, "skipped_extract_path": 1})
+    isa.dispatch_run(_det_args(group="Lifestyle", limit=5))
+    assert seen["kw"] == {"limit": 5, "group": "Lifestyle"}
+
+
+def test_deterministic_llm_requires_prepare_or_apply(monkeypatch):
+    run_obj = type("R", (), {"deterministic_title_mode": "llm",
+                             "output_language": "english", "max_items": None})()
+    _det_common(monkeypatch, run_obj)
+    with pytest.raises(SystemExit):
+        isa.dispatch_run(_det_args())
+
+
+def test_deterministic_llm_apply_dispatches(monkeypatch):
+    run_obj = type("R", (), {"deterministic_title_mode": "llm",
+                             "output_language": "english", "max_items": None})()
+    _det_common(monkeypatch, run_obj)
+    import insta_save.stages.deterministic as det
+    monkeypatch.setattr(det, "apply", lambda env, progress=None: {"written": 3, "failed": 0})
+    isa.dispatch_run(_det_args(apply=True))  # no SystemExit = dispatched
