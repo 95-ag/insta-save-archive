@@ -204,3 +204,11 @@ def test_deterministic_llm_apply_dispatches(monkeypatch):
     import insta_save.stages.deterministic as det
     monkeypatch.setattr(det, "apply", lambda env, progress=None: {"written": 3, "failed": 0})
     isa.dispatch_run(_det_args(apply=True))  # no SystemExit = dispatched
+
+
+def test_deterministic_llm_prepare_requires_group(monkeypatch):
+    run_obj = type("R", (), {"deterministic_title_mode": "llm",
+                             "output_language": "english", "max_items": None})()
+    _det_common(monkeypatch, run_obj)
+    with pytest.raises(SystemExit):
+        isa.dispatch_run(_det_args(prepare=True))  # --prepare without --group
