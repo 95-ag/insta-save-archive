@@ -14,3 +14,14 @@ def test_deterministic_tags_union_sorted_deduped():
     assert det.deterministic_tags([]) == []
     # a name that slugifies to empty is dropped
     assert det.deterministic_tags(["!!!", "Travel"]) == ["travel"]
+
+
+def test_template_title_uses_alpha_first_collection_and_author():
+    item = {"collections": ["Travel", "Makeup"], "author": "dinarakasko"}
+    assert det.template_title(item) == "Makeup — dinarakasko"
+
+
+def test_template_title_fallbacks():
+    assert det.template_title({"collections": ["Makeup"], "author": None}) == "Makeup"
+    assert det.template_title({"collections": [], "author": "x", "title": "T — abc"}) == "T — abc"
+    assert det.template_title({"collections": [], "author": None, "source_id": "abc"}) == "abc"

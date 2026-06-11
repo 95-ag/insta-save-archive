@@ -20,3 +20,15 @@ def slugify_collection(name: str) -> str:
 def deterministic_tags(collections) -> list[str]:
     """Sorted, de-duped union of slugified collection names; empties dropped."""
     return sorted({s for c in collections if (s := slugify_collection(c))})
+
+
+def template_title(item) -> str:
+    """Pure title: '{primary_collection} — {author}'. primary = alphabetically-first
+    collection (deterministic + stable across reruns). Fallbacks: no author → collection;
+    no collection → keep the existing placeholder title, else source_id, else ''."""
+    collections = sorted(item.get("collections") or [])
+    if not collections:
+        return item.get("title") or item.get("source_id") or ""
+    primary = collections[0]
+    author = item.get("author")
+    return f"{primary} — {author}" if author else primary
