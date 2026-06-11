@@ -60,8 +60,11 @@ def test_run_extract_dispatches(monkeypatch):
 def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
-            "mode": "incremental", "stage": "ingest", "group": None,
-            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False})())
+            "mode": "incremental", "stage": "select", "group": None,
+            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
+            "collection": None, "fresh": False, "dry_run": False, "headed": False,
+            "confirm_removed": None, "apply": False, "prepare": False,
+            "calibrate_limit": 20})())
 
 
 def _fake_run():

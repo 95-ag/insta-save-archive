@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
     run.add_argument("--calibrate-limit", type=int, default=20)
+    run.add_argument("--collection", default=None)
+    run.add_argument("--fresh", action="store_true")
+    run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--headed", action="store_true")
+    run.add_argument("--confirm-removed", action="append", default=None)
 
     sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
@@ -115,6 +120,24 @@ def dispatch_run(args) -> None:
             print(f"Prepared {n} items -> tmp/enrich/prompt.txt. In a Claude session: "
                   f'"Read tmp/enrich/prompt.txt and write tmp/enrich/results.json", '
                   f"then: isa run --stage enrich --apply")
+        return
+
+    if args.stage == "ingest":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        ensure_schema(env)
+        log_path = setup_logging("ingest")
+        print(f"Logging to {log_path}")
+        from insta_save.stages.ingest import run_ingest
+        names = [args.collection] if getattr(args, "collection", None) else None
+        confirmed = set(args.confirm_removed or [])
+        with StageProgress("Ingest") as progress:
+            r = run_ingest(env, collections_cfg=collections_cfg, names=names,
+                           confirmed_removed=confirmed, headed=args.headed,
+                           dry_run=args.dry_run, progress=progress)
+        print(f"Ingest: {r['created']} created, {r['retagged']} retagged, "
+              f"{r['backfilled']} backfilled, {r['skipped_unsafe']} unsafe-skipped"
+              f"{' (dry-run)' if args.dry_run else ''}.")
         return
 
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
