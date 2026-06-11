@@ -47,3 +47,27 @@ def test_status_option_additions_appends_missing_keeping_existing():
 def test_status_option_additions_noop_when_all_present():
     existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed"]
     assert notion._status_option_additions(existing) is None
+
+
+from insta_save.adapters.notion import _build_ingest_properties, _url
+
+
+def test_ingest_props_title_uses_handle_and_shortcode():
+    props = _build_ingest_properties({
+        "source_id": "ABC", "author": "natgeo", "ig_link": "https://x/reel/ABC/",
+        "type": "Reel", "caption": "hi", "posted_date": "2026-01-01",
+        "collections": ["Dev"]})
+    assert props["title"]["title"][0]["text"]["content"] == "natgeo — ABC"
+    assert props["status"]["select"]["name"] == "Imported"
+    assert props["author"]["rich_text"][0]["text"]["content"] == "natgeo"
+    assert props["collection"]["multi_select"] == [{"name": "Dev"}]
+
+
+def test_ingest_props_omit_nulls_and_title_falls_back_to_shortcode():
+    props = _build_ingest_properties({"source_id": "ABC", "author": None})
+    assert props["title"]["title"][0]["text"]["content"] == "ABC"
+    assert "author" not in props and "caption" not in props
+
+
+def test_url_builder():
+    assert _url("https://x/")["url"] == "https://x/"
