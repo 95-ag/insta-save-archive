@@ -110,3 +110,14 @@ def test_prepare_caption_split(tmp_path, monkeypatch):
     assert [i["page_id"] for i in batch["items"]] == ["p1"]
     assert batch["items"][0]["tags"] == ["makeup"]
     assert batch["language"] == "english"
+
+
+def test_apply_raises_when_batch_missing(tmp_path):
+    import pytest
+    d = tmp_path / "deterministic"
+    d.mkdir()
+    # results.json present but batch.json absent
+    (d / "results.json").write_text("[]", encoding="utf-8")
+    env = type("E", (), {"tmp_dir": str(tmp_path), "notion_write_delay": 0})()
+    with pytest.raises(FileNotFoundError):
+        det.apply(env, progress=None)

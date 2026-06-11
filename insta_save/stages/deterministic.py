@@ -116,6 +116,8 @@ def prepare(env, *, group, collections_cfg, language, prompt_template, max_items
     d = _det_dir(env)
     batch_items, finalized = [], 0
     for stub in _deterministic_stubs(env, group, collections_cfg):
+        # max_items caps the LLM batch; caption-less items finalized before the cap is
+        # hit are already written, those after are deferred to the next --prepare run.
         if max_items is not None and len(batch_items) >= max_items:
             break
         content = get_page_content(env, stub["page_id"])
@@ -153,6 +155,9 @@ def apply(env, *, progress=None) -> dict:
     if not results_file.exists():
         raise FileNotFoundError(
             f"{results_file} not found — have a Claude session write results from {d / 'prompt.txt'} first")
+    if not batch_file.exists():
+        raise FileNotFoundError(
+            f"{batch_file} not found — run --prepare first to build the batch")
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     results_by_id = {r.get("page_id"): r for r in backend.parse_results(results_file)}
     counts = {"written": 0, "failed": 0}
