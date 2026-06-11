@@ -5,7 +5,13 @@ collection names; title is either a pure template ({collection} — {author}) or
 that copies the claude-code file contract (it does NOT reuse enrich's vocab-coupled
 prepare/apply). summary/externals stay None (Data Integrity)."""
 
+import logging
 import re
+
+from insta_save.adapters.notion import write_deterministic
+from insta_save.orchestrator.runner import run_priority_stage
+
+log = logging.getLogger(__name__)
 
 DETERMINISTIC_VERSION = "deterministic-v2.0"
 PROMPT_VERSION = "deterministic_title_v2.0"
@@ -32,3 +38,24 @@ def template_title(item) -> str:
     primary = collections[0]
     author = item.get("author")
     return f"{primary} — {author}" if author else primary
+
+
+def _tag_item(env, item, collections_cfg) -> str:
+    """Template-mode processor. Skip extract-path items (richer wins, D2); else write
+    slug-tags + template title → Tagged."""
+    if collections_cfg.is_extract_path(item.get("collections", [])):
+        return "skipped_extract_path"
+    tags = deterministic_tags(item.get("collections", []))
+    write_deterministic(env, item["page_id"], template_title(item), tags, DETERMINISTIC_VERSION)
+    return "tagged"
+
+
+def run_deterministic_stage(env, collections_cfg, progress, *, limit=None, group=None) -> dict:
+    """Drive the template (one-shot) deterministic branch over Imported items."""
+    def _process(env_, item, ctx):
+        return _tag_item(env_, item, ctx)
+
+    return run_priority_stage(
+        env, "Imported", _process, progress,
+        ctx=collections_cfg, limit=limit, group=group, collections_cfg=collections_cfg,
+        stage_key="deterministic", bar_label="Deterministic (Imported)")
