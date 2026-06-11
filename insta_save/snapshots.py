@@ -38,14 +38,14 @@ def write_snapshot(tmp_dir, *, name, slug, numeric_id, posts, complete, now=None
     log.info("snapshot: wrote %s (%d posts, complete=%s)", slug, len(posts), complete)
 
 
-def read_snapshot(tmp_dir, slug: str):
+def read_snapshot(tmp_dir, slug: str) -> dict | None:
     p = snapshot_path(tmp_dir, slug)
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def is_reusable(snapshot, max_age_min: int, now=None) -> bool:
+def is_reusable(snapshot: dict | None, max_age_min: int, now: str | None = None) -> bool:
     """Reuse a snapshot only if it is complete AND younger than max_age_min."""
     if not snapshot or not snapshot.get("complete"):
         return False
@@ -53,6 +53,8 @@ def is_reusable(snapshot, max_age_min: int, now=None) -> bool:
     if not crawled:
         return False
     fmt = "%Y-%m-%dT%H:%M:%SZ"
+    # `now` is a string in "%Y-%m-%dT%H:%M:%SZ" form (the snapshot time format); the
+    # real-clock branch strips tzinfo so the subtraction below stays naive-vs-naive.
     now_dt = (datetime.datetime.strptime(now, fmt) if now
               else datetime.datetime.now(datetime.UTC).replace(tzinfo=None))
     age_min = (now_dt - datetime.datetime.strptime(crawled, fmt)).total_seconds() / 60

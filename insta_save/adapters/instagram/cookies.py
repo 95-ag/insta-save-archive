@@ -11,6 +11,8 @@ def json_cookies_to_netscape(json_path, out_path) -> str:
     src = json.loads(Path(json_path).read_text(encoding="utf-8"))
     lines = ["# Netscape HTTP Cookie File"]
     for c in src:
+        if "name" not in c or "value" not in c:
+            raise RuntimeError(f"cookies: malformed entry missing name/value in {json_path}")
         domain = c.get("domain", ".instagram.com")
         expires = c.get("expires", 0)
         expires = 0 if expires in (-1, None) else int(expires)

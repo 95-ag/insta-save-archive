@@ -106,8 +106,9 @@ def merge_discovered(existing: dict, discovered: dict) -> tuple[dict, list, list
             cols[name] = {"group": UNCATEGORIZED, "extract": False,
                           "slug": ids.get("slug"), "numeric_id": ids.get("numeric_id")}
             new_names.append(name)
+    new_names = sorted(new_names)
     missing_names = sorted(set(existing.get("collections", {})) - set(discovered))
-    return {"groups": groups, "collections": cols}, sorted(new_names), missing_names
+    return {"groups": groups, "collections": cols}, new_names, missing_names
 
 
 def write_collections(data: dict, path=_DEFAULT_COLLECTIONS) -> None:

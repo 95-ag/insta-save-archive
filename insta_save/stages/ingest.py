@@ -30,6 +30,7 @@ def build_reconcile_inputs(tmp_dir, collections_cfg, names=None):
         slug = meta.get("slug")
         snap = read_snapshot(tmp_dir, slug) if slug else None
         if snap is None:
+            log.debug("ingest: no snapshot for %s — skipping (not crawled?)", name)
             continue
         complete[name] = snap.get("complete", False)
         for post in snap.get("posts", []):
@@ -39,7 +40,7 @@ def build_reconcile_inputs(tmp_dir, collections_cfg, names=None):
     return desired, urls, complete
 
 
-def _meta_for(env, url, wall, context) -> dict:
+def _meta_for(url, wall, context) -> dict:
     """Metadata with throttle + wall guard. yt-dlp first; browser fallback on no-author."""
     if wall["hit"]:
         return minimal_metadata(url)
@@ -76,7 +77,7 @@ def apply_plan(*, env, plan, context, cookies_txt, refresh_targets, dry_run, pro
             if progress is not None:
                 progress.advance(bar)
             continue
-        meta = _meta_for(env, action.url, wall, context)
+        meta = _meta_for(action.url, wall, context)
         meta["source_id"] = action.source_id
         meta["ig_link"] = action.url
         meta["collections"] = sorted(action.final)
@@ -100,7 +101,7 @@ def apply_plan(*, env, plan, context, cookies_txt, refresh_targets, dry_run, pro
             if progress is not None:
                 progress.advance(bar)
             continue
-        meta = _meta_for(env, url, wall, context)
+        meta = _meta_for(url, wall, context)
         if meta.get("author"):
             meta["source_id"] = sid
             meta["ig_link"] = url

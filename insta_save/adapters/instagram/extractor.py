@@ -37,6 +37,9 @@ DATE_SEL = "time[datetime]"
 # Carousel indicator: navigation button present when post has multiple images
 CAROUSEL_NEXT_SEL = "button[aria-label='Next']"
 
+# Video indicator on the post page
+VIDEO_SEL = "video"
+
 # Username pattern: /username/ — single path segment, alphanumeric + . _ -
 _USERNAME_RE = re.compile(r'^/[A-Za-z0-9._]+/$')
 
@@ -67,10 +70,6 @@ def _canonical_url(url: str) -> str:
     return f"{INSTAGRAM_BASE}/{m.group(1)}/{m.group(2)}/"
 
 
-# Video indicator on the post page
-VIDEO_SEL = "video"
-
-
 def _detect_type(url: str, page) -> str:
     if "/reel/" in url:
         return "Reel"
@@ -95,8 +94,8 @@ def _extract_author(page) -> str | None:
     NOT inner_text() — the visible text can be the display name. The href that
     _USERNAME_RE matches IS the handle; strip the slashes.
 
-    inner_text() is still checked for presence (non-empty) to confirm the element
-    is a rendered profile link, not a bare navigation anchor.
+    inner_text is only used as a presence check — skip links that haven't rendered
+    visible text yet; the handle always comes from the href.
     """
     for link in page.locator(ROLE_LINK_SEL).all():
         href = link.get_attribute("href") or ""
@@ -212,6 +211,8 @@ def _type_from_url(url: str, n_entries: int) -> str:
         return "Reel"
     if "/tv/" in url:
         return "IGTV"
+    # NB: diverges from _detect_type (returns "Unknown" for unrecognized URLs) — yt-dlp
+    # only runs on real posts, so "Post" is the safe default here.
     return "Carousel" if n_entries > 1 else "Post"
 
 

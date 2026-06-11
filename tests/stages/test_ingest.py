@@ -26,7 +26,7 @@ def test_apply_creates_and_retags(monkeypatch):
     state = {"b": {"page_id": "pb", "collections": set(), "needs_metadata": False}}
     plan = reconcile(desired, urls, state, {"Dev": True})
     created, retagged = [], []
-    monkeypatch.setattr(ingest, "_meta_for", lambda env, url, wall, ctx: {
+    monkeypatch.setattr(ingest, "_meta_for", lambda url, wall, ctx: {
         "source_id": "a", "author": "natgeo", "ig_link": url, "type": "Reel"})
     monkeypatch.setattr(ingest.notion, "create_page", lambda env, m: created.append(m) or "pa")
     monkeypatch.setattr(ingest.notion, "set_collections",
