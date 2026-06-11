@@ -243,9 +243,12 @@ def minimal_metadata(url: str) -> dict:
 
 
 def _author_from_ytdlp_meta(meta: dict) -> str | None:
-    """The IG handle from yt-dlp metadata. `uploader_id` carries the handle; `uploader`/
-    `channel` are display names. (Confirm against a live post during end-to-end verify.)"""
-    raw = meta.get("uploader_id")
+    """The IG handle from yt-dlp metadata. For Instagram, `channel` holds the @handle;
+    `uploader` is the display name and `uploader_id` the NUMERIC user id (verified live
+    2026-06-11: post C-7y7NgNbNO → channel='playconveyor', uploader='Play Conveyor',
+    uploader_id='49100450665'). If `channel` is absent, return None so the caller falls
+    back to the browser href (also the handle)."""
+    raw = meta.get("channel")
     if not raw:
         return None
     handle = str(raw).lstrip("@").strip()

@@ -34,18 +34,26 @@ def test_browser_author_skips_nav_hrefs():
     assert _extract_author(page) == "jane.doe"
 
 
-def test_ytdlp_author_prefers_handle_field():
-    meta = {"uploader": "National Geographic", "uploader_id": "natgeo", "channel": "Nat Geo"}
-    assert _author_from_ytdlp_meta(meta) == "natgeo"
+def test_ytdlp_author_uses_channel_as_handle():
+    # Verified live: for IG, yt-dlp puts the @handle in `channel`; `uploader` is the
+    # display name and `uploader_id` the numeric user id.
+    meta = {"uploader": "Play Conveyor", "uploader_id": "49100450665", "channel": "playconveyor"}
+    assert _author_from_ytdlp_meta(meta) == "playconveyor"
+
+
+def test_ytdlp_author_ignores_uploader_and_numeric_id():
+    # uploader (display name) and uploader_id (numeric) must NOT be used; with no channel,
+    # return None so the caller falls back to the browser href.
+    assert _author_from_ytdlp_meta({"uploader": "Play Conveyor", "uploader_id": "49100450665"}) is None
 
 
 def test_ytdlp_author_strips_at_and_handles_missing():
-    assert _author_from_ytdlp_meta({"uploader_id": "@dev"}) == "dev"
+    assert _author_from_ytdlp_meta({"channel": "@dev"}) == "dev"
     assert _author_from_ytdlp_meta({}) is None
 
 
-def test_ytdlp_author_coerces_numeric_id():
-    assert _author_from_ytdlp_meta({"uploader_id": 12345}) == "12345"
+def test_ytdlp_author_coerces_numeric_channel():
+    assert _author_from_ytdlp_meta({"channel": 12345}) == "12345"
 
 
 def test_canonical_url_strips_query_on_post():
