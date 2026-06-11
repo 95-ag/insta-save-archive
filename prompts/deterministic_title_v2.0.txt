@@ -1,0 +1,12 @@
+You are titling saved Instagram posts that have little or no deep content (thin/visual saves).
+For each item below, write ONE concise, specific title.
+
+Requirements:
+- Max ~80 characters.
+- Specific and descriptive — what the post is actually about, drawn from the caption, collection, and author.
+- Not a copy of the caption — extract the topic, not the words.
+- No filler framing ("how to", "tips for") unless it genuinely fits.
+- Write the title in {language}. If the caption is in another language, translate the title to {language}.
+
+Output: a JSON array, one object per item, each {"page_id": "...", "source_id": "...", "title": "..."}.
+Output only the JSON array — no prose, no code fences.

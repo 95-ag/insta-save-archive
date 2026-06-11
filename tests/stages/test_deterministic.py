@@ -1,3 +1,5 @@
+import json
+
 from insta_save.config.collections import CollectionsConfig
 from insta_save.stages import deterministic as det
 
@@ -46,3 +48,35 @@ def test_tag_item_writes_tagged(monkeypatch):
     item = {"page_id": "p1", "collections": ["Makeup"], "author": "dinarakasko"}
     assert det._tag_item("ENV", item, _cfg()) == "tagged"
     assert writes == [("p1", "Makeup — dinarakasko", ["makeup"], det.DETERMINISTIC_VERSION)]
+
+
+def test_build_title_prompt_includes_language_and_caption():
+    items = [{"page_id": "p1", "source_id": "s1", "author": "a",
+              "collections": ["Makeup"], "caption": "glowy look"}]
+    out = det.build_title_prompt(items, "Write in {language}.", "english")
+    assert "Write in english." in out
+    assert "s1" in out and "glowy look" in out and "Makeup" in out
+
+
+def test_apply_falls_back_to_template_when_result_missing(tmp_path, monkeypatch):
+    d = tmp_path / "deterministic"
+    d.mkdir()
+    (d / "batch.json").write_text(json.dumps({"group": "Lifestyle", "language": "english", "items": [
+        {"page_id": "p1", "source_id": "s1", "author": "dinarakasko",
+         "collections": ["Makeup"], "caption": "x", "tags": ["makeup"]},
+        {"page_id": "p2", "source_id": "s2", "author": "x",
+         "collections": ["Travel"], "caption": "y", "tags": ["travel"]}]}), encoding="utf-8")
+    # results only cover p1 → p2 must fall back to its template title
+    (d / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "Glowy summer makeup"}]), encoding="utf-8")
+
+    env = type("E", (), {"tmp_dir": str(tmp_path), "notion_write_delay": 0})()
+    writes = []
+    monkeypatch.setattr(det, "write_deterministic",
+                        lambda e, pid, title, tags, ver: writes.append((pid, title, tags)))
+    counts = det.apply(env, progress=None)
+
+    assert counts == {"written": 2, "failed": 0}
+    assert ("p1", "Glowy summer makeup", ["makeup"]) in writes
+    assert ("p2", "Travel — x", ["travel"]) in writes  # template fallback
+    assert not (d / "results.json").exists()  # cleaned on full success
