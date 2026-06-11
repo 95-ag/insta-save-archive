@@ -44,3 +44,20 @@ def test_defaults_when_minimal(tmp_path):
 def test_invalid_enum_raises(tmp_path, bad):
     with pytest.raises(ValueError):
         runcfg.load_run_config(_write(tmp_path, bad))
+
+
+def test_deterministic_and_language_defaults(tmp_path):
+    cfg = runcfg.load_run_config(_write(tmp_path, {}))
+    assert cfg.deterministic_title_mode == "template"
+    assert cfg.output_language == "english"
+
+
+def test_deterministic_title_mode_llm(tmp_path):
+    cfg = runcfg.load_run_config(_write(tmp_path, {
+        "deterministic": {"title_mode": "llm"}, "output_language": "english"}))
+    assert cfg.deterministic_title_mode == "llm"
+
+
+def test_invalid_title_mode_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        runcfg.load_run_config(_write(tmp_path, {"deterministic": {"title_mode": "bogus"}}))

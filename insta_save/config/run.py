@@ -7,6 +7,7 @@ from pathlib import Path
 VALID_MODES = {"first-time", "incremental"}
 VALID_BACKENDS = {"local", "api", "claude-code", "cowork"}
 VALID_OCR_MODES = {"none", "rapidocr", "local_vlm", "claude_vlm", "escalate"}
+VALID_TITLE_MODES = {"template", "llm"}
 
 _DEFAULT_RUN = Path("config") / "run.json"
 
@@ -35,6 +36,8 @@ class RunConfig:
     char_budget: int
     guardrails_max_items_per_run: int | None
     guardrails_max_spend_usd: float | None
+    deterministic_title_mode: str = "template"
+    output_language: str = "english"
 
 
 def _require(value, valid, label):
@@ -64,6 +67,10 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
     )
     batch = data.get("batch", {})
     guard = data.get("guardrails", {})
+    det_raw = data.get("deterministic", {})
+    title_mode = _require(det_raw.get("title_mode", "template"), VALID_TITLE_MODES,
+                          "deterministic.title_mode")
+    output_language = data.get("output_language", "english")
     return RunConfig(
         mode=mode,
         enrich=enrich,
@@ -72,4 +79,6 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         char_budget=int(batch.get("max_char_budget", 80000)),
         guardrails_max_items_per_run=guard.get("max_items_per_run"),
         guardrails_max_spend_usd=guard.get("max_spend_usd"),
+        deterministic_title_mode=title_mode,
+        output_language=output_language,
     )
