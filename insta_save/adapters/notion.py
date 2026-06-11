@@ -343,6 +343,25 @@ def write_enrichment(env: EnvConfig, page_id: str, fields: dict, version: str) -
         raise RuntimeError(f"notion: failed to write enrichment for {page_id}: {e}") from e
 
 
+def write_deterministic(env: EnvConfig, page_id: str, title: str, tags: list, version: str) -> None:
+    """Write a deterministic-branch item -> Tagged: title + tags + status only.
+    No summary/externals (Data Integrity: those need an LLM and stay null)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Tagged"),
+        "enrich_version": _rich_text(version),
+        "title": _title(title),
+    }
+    if tags:
+        props["tags"] = _multi_select(tags)
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: wrote deterministic %s for page %s", version, page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to write deterministic for {page_id}: {e}") from e
+
+
 def create_page(env: EnvConfig, metadata: dict) -> str:
     """Create a new page from metadata (Imported). Caller dedups via bulk_load_state."""
     validate_notion(env)

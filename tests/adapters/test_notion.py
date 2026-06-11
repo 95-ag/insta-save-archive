@@ -87,3 +87,41 @@ def test_row_includes_author():
 def test_row_author_none_when_absent():
     page = {"id": "p2", "properties": {}}
     assert notion._row(page)["author"] is None
+
+
+def test_write_deterministic_builds_minimal_props(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.write_deterministic(env, "pg", "Makeup — dinarakasko", ["makeup"], "deterministic-v2.0")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg"
+    assert props["status"]["select"]["name"] == "Tagged"
+    assert props["title"]["title"][0]["text"]["content"] == "Makeup — dinarakasko"
+    assert props["tags"]["multi_select"] == [{"name": "makeup"}]
+    assert props["enrich_version"]["rich_text"][0]["text"]["content"] == "deterministic-v2.0"
+    # no summary/externals written
+    assert "summary" not in props and "externals" not in props
+
+
+def test_write_deterministic_omits_empty_tags(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(notion, "Client",
+                        lambda auth: type("C", (), {"pages": type("P", (), {
+                            "update": lambda self, page_id, properties: captured.update(properties=properties)})()})())
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    notion.write_deterministic(type("E", (), {"notion_token": "t"})(), "pg", "T", [], "v")
+    assert "tags" not in captured["properties"]
