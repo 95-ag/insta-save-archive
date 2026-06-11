@@ -71,3 +71,19 @@ def test_ingest_props_omit_nulls_and_title_falls_back_to_shortcode():
 
 def test_url_builder():
     assert _url("https://x/")["url"] == "https://x/"
+
+
+def test_row_includes_author():
+    page = {"id": "p1", "properties": {
+        "source_id": {"rich_text": [{"text": {"content": "abc"}}]},
+        "author": {"rich_text": [{"text": {"content": "playconveyor"}}]},
+        "collection": {"multi_select": [{"name": "Makeup"}]},
+    }}
+    row = notion._row(page)
+    assert row["author"] == "playconveyor"
+    assert row["collections"] == ["Makeup"]
+
+
+def test_row_author_none_when_absent():
+    page = {"id": "p2", "properties": {}}
+    assert notion._row(page)["author"] is None

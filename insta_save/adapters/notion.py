@@ -187,11 +187,13 @@ def ensure_schema(env: EnvConfig) -> None:
 def _row(page: dict) -> dict:
     props = page.get("properties", {})
     sid_blocks = props.get("source_id", {}).get("rich_text", [])
+    author_blocks = props.get("author", {}).get("rich_text", [])
     type_select = props.get("type", {}).get("select") or {}
     collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
     return {
         "page_id": page["id"],
         "source_id": sid_blocks[0]["text"]["content"] if sid_blocks else None,
+        "author": author_blocks[0]["text"]["content"] if author_blocks else None,
         "ig_link": props.get("ig_link", {}).get("url"),
         "type": type_select.get("name"),
         "collections": collections,
@@ -200,7 +202,7 @@ def _row(page: dict) -> dict:
 
 def query_by_status_and_priority(env: EnvConfig, status: str, priority) -> list[dict]:
     """Pages where status==status AND priority bucket matches (None = is_empty). Paginates.
-    Each row: {page_id, source_id, ig_link, type, collections}."""
+    Each row: {page_id, source_id, author, ig_link, type, collections}."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
