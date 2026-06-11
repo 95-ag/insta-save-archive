@@ -110,9 +110,14 @@ def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
         log.info("ingest: %d unsafe removals skipped (incomplete crawl / not confirmed)",
                  len(plan.skipped_unsafe))
 
-    if dry_run or not (plan.creates or refresh_targets):
+    if dry_run:
         return apply_plan(env=env, plan=plan, context=None, cookies_txt="",
                           refresh_targets=refresh_targets, dry_run=True, progress=progress)
+    if not (plan.creates or refresh_targets):
+        # Retag-only: no metadata extraction → no browser/cookies needed, but these ARE
+        # real writes (set_collections), so dry_run stays False.
+        return apply_plan(env=env, plan=plan, context=None, cookies_txt="",
+                          refresh_targets=[], dry_run=False, progress=progress)
 
     cookies_txt = json_cookies_to_netscape(env.cookies_file, Path(env.tmp_dir) / "cookies.txt")
     with sync_playwright() as pw:
