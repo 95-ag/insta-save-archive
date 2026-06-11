@@ -265,8 +265,9 @@ insta-save-archive/
 │   ├── stages/                  # discover · ingest · select · extract · calibrate · enrich · deterministic · route
 │   ├── engines/                 # transcript · ocr · vision  (extract plugins)
 │   ├── backends/                # base · local_ollama · api_anthropic · claude_code · cowork
-│   ├── adapters/                # notion (state) · instagram/ (session·crawler·extractor)
-│   ├── enrich_schema.py · observability.py · backup.py
+│   ├── adapters/                # notion (state) · instagram/ (session·display·harvest·crawl·extractor·cookies)
+│   ├── helpers/                 # observability (StageProgress, setup_logging)
+│   ├── enrich_schema.py · reconcile.py · snapshots.py · backup.py
 ├── cli/isa.py                   # single entrypoint: isa discover|run|status|backup
 ├── config/                      # gitignored DATA: collections.json · tags.json · routes.json · run.json
 ├── prompts/                     # versioned enrich + calibrate prompts
