@@ -13,3 +13,8 @@ isa = "cli.isa:main"
 [tool.setuptools.packages.find]
 where = [".", "legacy"]
 include = ["pipeline*", "insta_save*", "cli*"]
+
+[tool.pytest.ini_options]
+# importlib mode gives each test file a path-unique identity, preventing basename
+# collisions between tests/ and legacy/tests/ (both have test_reconcile.py).
+addopts = "--import-mode=importlib"
