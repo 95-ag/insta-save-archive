@@ -16,10 +16,13 @@ We deliberately do NOT use output_config.format structured outputs (uncertain
 typing in SDK 0.105.2). Instead the prompt instructs the model to emit ONLY a
 JSON array; _parse_json_array strips any ```json fence and json.loads it.
 
-Identity (page_id/source_id) is normalized from the batch where matchable — the
-shared apply() validates content_type/topics against the locked vocab, so fill
-does not validate vocab. The model id (run_cfg.enrich.model) must be a Claude id
-(a config concern, not enforced here)."""
+Identity is normalized from the batch (_normalize): only results whose page_id
+is a real batch item survive (fabricated ids dropped, de-duped), and source_id
+is overwritten from the matching batch item — the model is never trusted for
+identity (same posture as local_ollama.fill). The shared apply() validates
+content_type/topics against the locked vocab, so fill does not validate vocab.
+The model id (run_cfg.enrich.model) must be a Claude id (a config concern, not
+enforced here)."""
 
 import base64
 import json
@@ -42,6 +45,12 @@ def _messages(env, run_cfg):
     """Return the Anthropic client's messages resource. Monkeypatched in tests."""
     import anthropic
     return anthropic.Anthropic(api_key=env.anthropic_api_key).messages
+
+
+def _batches(env, run_cfg):
+    """Return the Anthropic client's message-batches resource. Monkeypatched in tests."""
+    import anthropic
+    return anthropic.Anthropic(api_key=env.anthropic_api_key).messages.batches
 
 
 def batch_budgets(run_cfg) -> Budgets:
@@ -114,6 +123,23 @@ def _first_text(message) -> str:
     raise ValueError("no text block in response")
 
 
+def _normalize(parsed, batch_items) -> list[dict]:
+    """Trust the batch, not the model, for identity. Keep only results whose
+    page_id is a real batch item (drops fabricated ids), de-dupe on first
+    occurrence, and overwrite source_id from the matching batch item. The
+    model's title/summary/externals/content_type/topics are left intact."""
+    by_page_id = {item["page_id"]: item for item in batch_items}
+    kept, seen = [], set()
+    for result in parsed:
+        page_id = result.get("page_id")
+        if page_id not in by_page_id or page_id in seen:
+            continue
+        seen.add(page_id)
+        result["source_id"] = by_page_id[page_id].get("source_id")
+        kept.append(result)
+    return kept
+
+
 def fill(env, run_cfg, enrich_dir) -> FillResult:
     d = Path(enrich_dir)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
@@ -128,10 +154,10 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     else:
         text = _fill_sync(env, run_cfg, kwargs)
 
-    parsed = _parse_json_array(text)
-    (d / "results.json").write_text(json.dumps(parsed, ensure_ascii=False, indent=2),
+    results = _normalize(_parse_json_array(text), items)
+    (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
-    filled = len(parsed)
+    filled = len(results)
     failed = max(len(items) - filled, 0)
     log.info("api fill (%s): %d filled, %d failed", run_cfg.enrich.api_mode, filled, failed)
     return FillResult(filled=filled, failed=failed)
@@ -150,12 +176,12 @@ def _fill_batches(env, run_cfg, kwargs) -> str:
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
     from anthropic.types.messages.batch_create_params import Request
 
-    messages = _messages(env, run_cfg)
-    batch = messages.batches.create(requests=[
+    batches = _batches(env, run_cfg)
+    batch = batches.create(requests=[
         Request(custom_id="enrich-batch",
                 params=MessageCreateParamsNonStreaming(**kwargs))])
-    while messages.batches.retrieve(batch.id).processing_status != "ended":
+    while batches.retrieve(batch.id).processing_status != "ended":
         time.sleep(5)
-    for result in messages.batches.results(batch.id):
+    for result in batches.results(batch.id):
         return _first_text(result.result.message)
     raise ValueError("batch returned no results")
