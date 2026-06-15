@@ -45,6 +45,24 @@ def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
     assert (tmp_path / "enrich" / "prompt.txt").exists()
 
 
+def test_prepare_prompt_rendered_through_prompt_module(tmp_path, monkeypatch):
+    # prompt.txt is assembled by backends.prompt: the rendered vocab block carries
+    # the group's locked topic, proving assembly routes through the prompt module.
+    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    monkeypatch.setattr(enrich, "get_page_content",
+                        lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
+                                          "transcript": "", "ocr_text": "", "type": "Reel",
+                                          "author": "a", "transcript_language": "en"})
+    n = enrich.prepare(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
+                       vocab=_vocab(), char_budget=100000, max_items=10,
+                       statuses=["Extracted"], prompt_template="H {vocab_block}")
+    assert n == 1
+    rendered = (tmp_path / "enrich" / "prompt.txt").read_text()
+    assert "seo" in rendered  # group-locked topic from the vocab block
+
+
 def test_prepare_budgets_on_rendered_prompt(tmp_path, monkeypatch):
     # char_budget bounds the RENDERED prompt (header + scaffolding + content), not
     # just raw content. Three identical items + a budget sized for exactly two.
