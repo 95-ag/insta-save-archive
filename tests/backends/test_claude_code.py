@@ -63,3 +63,21 @@ def test_parse_results_rejects_non_list(tmp_path):
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_item_block_lists_slide_images():
+    item = {"page_id": "p1", "source_id": "s1", "type": "Carousel", "author": "a",
+            "caption": "cap", "slide_images": ["tmp/slides/ab/slide1.jpg",
+                                               "tmp/slides/ab/slide2.jpg"]}
+    block = backend._item_block(item)
+    assert "tmp/slides/ab/slide1.jpg" in block and "tmp/slides/ab/slide2.jpg" in block
+
+
+def test_item_block_no_images_section_for_text_item():
+    item = {"page_id": "p1", "source_id": "s1", "type": "Reel", "transcript": "spoken"}
+    assert "IMAGES" not in backend._item_block(item) and "Slides" not in backend._item_block(item)
+
+
+def test_image_token_estimate_counts_slides():
+    assert backend.image_token_estimate({"slide_images": ["a", "b", "c"]}) == 3 * backend.PER_SLIDE_IMAGE_TOKENS
+    assert backend.image_token_estimate({"transcript": "x"}) == 0
