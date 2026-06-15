@@ -42,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--headed", action="store_true")
     run.add_argument("--confirm-removed", action="append", default=None)
+    run.add_argument("--lane", choices=["text", "vision"], default="text")
 
     sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
@@ -106,18 +107,26 @@ def dispatch_run(args) -> None:
         print(f"Logging to {log_path}")
         collections_cfg = _load_collections()
         statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
-        template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+        if args.lane == "vision":
+            kinds = {"Carousel", "Post"}
+            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = run_cfg.image_token_budget
+        else:
+            kinds = {"Reel", "IGTV"}
+            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = None
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
                                char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
-                               statuses=statuses, prompt_template=template, progress=progress)
+                               statuses=statuses, prompt_template=template,
+                               kinds=kinds, image_token_budget=image_budget, progress=progress)
         if n == 0:
-            print(f"No items left to enrich in group {args.group}.")
+            print(f"No items left to enrich in group {args.group} (lane={args.lane}).")
             # Stable machine token so an unattended prepare->fill->apply loop can detect
             # a drained group without matching the prose above.
-            print(f"ENRICH_DRAINED group={args.group}")
+            print(f"ENRICH_DRAINED group={args.group} lane={args.lane}")
         else:
-            print(f"Prepared {n} items -> tmp/enrich/prompt.txt. In a Claude session: "
+            print(f"Prepared {n} items (lane={args.lane}) -> tmp/enrich/prompt.txt. In a Claude session: "
                   f'"Read tmp/enrich/prompt.txt and write tmp/enrich/results.json", '
                   f"then: isa run --stage enrich --apply")
         return

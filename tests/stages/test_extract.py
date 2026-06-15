@@ -13,7 +13,7 @@ def test_run_item_reel_dispatch(monkeypatch):
                         lambda **k: {"transcript": "hello world here", "transcript_available": True,
                                      "transcript_language": "ta"})
     monkeypatch.setattr(extract, "extract_ocr_frames",
-                        lambda **k: {"text": "ON SCREEN", "confidence": 0.9, "needs_vision": False})
+                        lambda **k: {"text": "ON SCREEN", "confidence": 0.9})
     written = {}
     monkeypatch.setattr(extract, "write_extraction", lambda env, pid, res: written.update(res))
     env = _env()
@@ -24,7 +24,7 @@ def test_run_item_reel_dispatch(monkeypatch):
     assert written["transcript"] == "hello world here"
     assert written["ocr_text"] == "ON SCREEN"
     assert written["extract_version"] == "v2.0-base-tuned"
-    assert written["ocr_frames"] == {"text": "ON SCREEN", "confidence": 0.9, "needs_vision": False}
+    assert written["ocr_frames"] == {"text": "ON SCREEN", "confidence": 0.9}
     assert written["transcript_language"] == "ta"
 
 
@@ -32,7 +32,7 @@ def test_run_item_content_guard_stays_queued(monkeypatch):
     monkeypatch.setattr(extract, "extract_transcript",
                         lambda **k: {"transcript": None, "transcript_available": False})
     monkeypatch.setattr(extract, "extract_ocr_frames",
-                        lambda **k: {"text": "", "confidence": None, "needs_vision": True})
+                        lambda **k: {"text": "", "confidence": None})
     monkeypatch.setattr(extract, "write_extraction",
                         lambda *a: pytest.fail("must not write on no_content"))
     item = {"page_id": "p", "source_id": "S", "ig_link": "https://www.instagram.com/reel/ab/",
@@ -41,7 +41,7 @@ def test_run_item_content_guard_stays_queued(monkeypatch):
 
 
 def test_run_item_carousel_uses_browser(monkeypatch):
-    slides = [{"slide": 1, "text": "A", "ocr_confidence": 0.9, "needs_vision": False}]
+    slides = [{"slide": 1, "text": "A", "ocr_confidence": 0.9, "image": "slides/ab/slide1.jpg"}]
     monkeypatch.setattr(extract, "extract_carousel", lambda **k: slides)
     written = {}
     monkeypatch.setattr(extract, "write_extraction", lambda env, pid, res: written.update(res))
@@ -54,7 +54,7 @@ def test_run_item_carousel_uses_browser(monkeypatch):
 
 
 def test_run_item_post_uses_browser(monkeypatch):
-    slides = [{"slide": 1, "text": "P", "ocr_confidence": 0.8, "needs_vision": False}]
+    slides = [{"slide": 1, "text": "P", "ocr_confidence": 0.8, "image": "slides/ab/slide1.jpg"}]
     monkeypatch.setattr(extract, "extract_post", lambda **k: slides)
     written = {}
     monkeypatch.setattr(extract, "write_extraction", lambda env, pid, res: written.update(res))
@@ -86,8 +86,7 @@ def _env():
 
 def _run():
     from insta_save.config.run import ExtractConfig
-    return ExtractConfig(transcript_model="base", transcript_vad=True,
-                         ocr_mode="escalate", ocr_escalate_threshold=0.6)
+    return ExtractConfig(transcript_model="base", transcript_vad=True, ocr_mode="rapidocr")
 
 class _Holder:
     def __init__(self, ctx=None): self._ctx = ctx; self.opened = False

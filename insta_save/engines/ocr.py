@@ -1,9 +1,9 @@
-"""OCR engine — RapidOCR + carousel/post/frames. NEW: per-slide confidence + needs_vision flag.
+"""OCR engine — RapidOCR + carousel/post/frames.
 
 CARRYOVER: carousel scope 'ul img'; post scope 'img'; CDN markers t51.82787-15/t51.71878-15;
 IG CDN instagram.fblr22-*.fna.fbcdn.net; cookie-header image download; yt-dlp mp4 + ffmpeg fps=1;
-cleanup in finally. Sub-threshold slides are FLAGGED only (needs_vision) for a later vision pass —
-no API call here."""
+cleanup in finally. Carousel/post slide images are PERSISTED under slides/<shortcode>/ in tmp_dir
+so a vision-capable enrich stage can read them directly — no flagging or escalation here."""
 
 import json
 import logging
@@ -31,20 +31,16 @@ def ocr_score(rapid_result) -> tuple[str, float | None]:
     return "\n".join(texts), (sum(scores) / len(scores) if scores else None)
 
 
-def needs_vision(text: str, confidence: float | None, threshold: float) -> bool:
-    if not text.strip():
-        return True
-    if confidence is None:
-        return True
-    return confidence < threshold
-
-
-def slide_record(slide: int, text: str, confidence: float | None, threshold: float) -> dict:
+def slide_record(slide: int, text: str, confidence: float | None, image: str | None = None) -> dict:
+    """One slide's OCR result. `ocr_confidence` is the mean RapidOCR per-detection
+    score (0-1, higher = more confident text recognition) — a diagnostic only; it
+    no longer gates anything. `image` is the slide image path relative to tmp_dir,
+    so a vision-capable enrich can Read it."""
     return {
         "slide": slide,
         "text": text or None,
         "ocr_confidence": confidence,
-        "needs_vision": needs_vision(text, confidence, threshold),
+        "image": image,
     }
 
 
@@ -115,20 +111,22 @@ def extract_carousel(
     shortcode: str,
     tmp_dir: str,
     cookies_json: str,
-    threshold: float,
 ) -> list[dict]:
     """
     Step through carousel slides via DOM navigation, download each slide image,
     and OCR it.
 
-    Returns a list of slide_record dicts ordered by slide position.
-    Images are downloaded to tmp_dir and cleaned up in a finally block.
+    Returns a list of slide_record dicts ordered by slide position. Slide images
+    are persisted to slides/<shortcode>/ under tmp_dir (not deleted) so a
+    vision-capable enrich stage can read them. The `image` field in each record
+    is the path relative to tmp_dir.
     """
     tmp = Path(tmp_dir)
     tmp.mkdir(exist_ok=True)
+    slides_dir = tmp / "slides" / shortcode
+    slides_dir.mkdir(parents=True, exist_ok=True)
     cookie_header = _load_session_cookies(cookies_json)
 
-    downloaded: list[str] = []
     page = context.new_page()
     try:
         page.goto(ig_link, wait_until="domcontentloaded", timeout=20_000)
@@ -163,27 +161,22 @@ def extract_carousel(
 
         results = []
         for i, url in enumerate(slide_urls, start=1):
-            dest = str(tmp / f"{shortcode}_slide{i}.jpg")
+            dest = slides_dir / f"slide{i}.jpg"
             try:
-                _download_image(url, dest, cookie_header)
-                downloaded.append(dest)
-                text, conf = ocr_image(dest)
-                results.append(slide_record(i, text, conf, threshold))
+                _download_image(url, str(dest), cookie_header)
+                text, conf = ocr_image(str(dest))
+                rel = os.path.relpath(str(dest), tmp_dir)
+                results.append(slide_record(i, text, conf, image=rel))
                 log.info("ocr: carousel %s slide %d — %d chars conf=%.2f",
                          shortcode, i, len(text), conf if conf is not None else 0)
             except Exception as e:
                 log.warning("ocr: carousel %s slide %d failed — %s", shortcode, i, e)
-                results.append(slide_record(i, "", None, threshold))
+                results.append(slide_record(i, "", None, image=None))
 
         return results
 
     finally:
         page.close()
-        for path in downloaded:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
 
 
 def extract_post(
@@ -192,21 +185,22 @@ def extract_post(
     shortcode: str,
     tmp_dir: str,
     cookies_json: str,
-    threshold: float,
 ) -> list[dict]:
     """
     Download and OCR the single image of a Post.
 
     Uses scope="img" (not "ul img") because Post images are not wrapped in a <ul>.
-    Returns [slide_record(1, text, conf, threshold)] — same format as extract_carousel so
-    results write to the carousel_slides field without any schema change.
+    Returns [slide_record(1, text, conf, image=rel)] — same format as extract_carousel so
+    results write to the carousel_slides field without any schema change. The image is
+    persisted to slides/<shortcode>/slide1.jpg under tmp_dir for a vision-capable enrich.
     Returns [] if no content image is found on the page.
     """
     tmp = Path(tmp_dir)
     tmp.mkdir(exist_ok=True)
+    slides_dir = tmp / "slides" / shortcode
+    slides_dir.mkdir(parents=True, exist_ok=True)
     cookie_header = _load_session_cookies(cookies_json)
 
-    downloaded: list[str] = []
     page = context.new_page()
     try:
         page.goto(ig_link, wait_until="domcontentloaded", timeout=20_000)
@@ -217,21 +211,16 @@ def extract_post(
             log.warning("ocr: post %s — no content image found", shortcode)
             return []
 
-        dest = str(tmp / f"{shortcode}_post.jpg")
-        _download_image(urls[0], dest, cookie_header)
-        downloaded.append(dest)
-        text, conf = ocr_image(dest)
+        dest = slides_dir / "slide1.jpg"
+        _download_image(urls[0], str(dest), cookie_header)
+        text, conf = ocr_image(str(dest))
+        rel = os.path.relpath(str(dest), tmp_dir)
         log.info("ocr: post %s — %d chars conf=%s", shortcode, len(text),
                  f"{conf:.2f}" if conf is not None else "None")
-        return [slide_record(1, text, conf, threshold)]
+        return [slide_record(1, text, conf, image=rel)]
 
     finally:
         page.close()
-        for path in downloaded:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
 
 
 def extract_ocr_frames(
@@ -239,13 +228,12 @@ def extract_ocr_frames(
     shortcode: str,
     tmp_dir: str,
     cookies_json: str,
-    threshold: float,
 ) -> dict:
     """
     Sample frames from a yt-dlp-downloaded video file and OCR each frame.
 
     Downloads the video separately (extract_transcript only keeps the mp3).
-    Returns {"text": joined_text, "confidence": mean_conf, "needs_vision": bool}.
+    Returns {"text": joined_text, "confidence": mean_conf}.
     Temp files (video, cookies.txt, frames dir) are cleaned up in a finally block.
     """
     tmp = Path(tmp_dir)
@@ -303,7 +291,6 @@ def extract_ocr_frames(
         return {
             "text": joined,
             "confidence": mean_conf,
-            "needs_vision": needs_vision(joined, mean_conf, threshold),
         }
 
     finally:

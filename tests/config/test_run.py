@@ -14,16 +14,17 @@ def test_loads_full_config(tmp_path):
         "mode": "first-time",
         "enrich": {"backend": "cowork", "model": "claude-sonnet", "effort": "medium"},
         "extract": {"transcript": {"model": "base", "vad": True},
-                    "ocr": {"mode": "escalate", "escalate_threshold": 0.6}},
-        "batch": {"max_items": 15, "max_char_budget": 80000},
+                    "ocr": {"mode": "rapidocr"}},
+        "batch": {"max_items": 15, "max_char_budget": 80000, "max_image_tokens": 150000},
         "guardrails": {"max_items_per_run": 500, "max_spend_usd": 5.0},
     }))
     assert cfg.mode == "first-time"
     assert cfg.enrich.backend == "cowork"
     assert cfg.extract.transcript_model == "base"
-    assert cfg.extract.ocr_mode == "escalate"
+    assert cfg.extract.ocr_mode == "rapidocr"
     assert cfg.max_items == 15
     assert cfg.guardrails_max_spend_usd == 5.0
+    assert cfg.image_token_budget == 150000
 
 
 def test_defaults_when_minimal(tmp_path):
@@ -32,8 +33,9 @@ def test_defaults_when_minimal(tmp_path):
     assert cfg.enrich.backend == "local"
     assert cfg.extract.transcript_model == "base"
     assert cfg.extract.transcript_vad is True
-    assert cfg.extract.ocr_mode == "escalate"
+    assert cfg.extract.ocr_mode == "rapidocr"
     assert cfg.max_items is None
+    assert cfg.image_token_budget == 120000
 
 
 @pytest.mark.parametrize("bad", [

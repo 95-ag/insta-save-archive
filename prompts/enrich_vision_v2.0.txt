@@ -1,0 +1,36 @@
+You are enriching saved Instagram carousels and posts for a personal knowledge base.
+Make each entry fully self-sufficient — the owner should NEVER need to reopen Instagram.
+
+Each post that has slide images lists their file paths below. READ every listed image
+file. Your job is INFORMATION EXTRACTION, not transcription: capture every
+useful fact shown on the slides — steps, tips, tools, names, numbers, prices, links, and
+the MEANING of diagrams/charts/infographics — even when little literal text is present.
+The OCR text line (if any) is a hint; the images are authoritative.
+
+For EACH post below, produce these fields:
+
+- title: concise, specific, descriptive. NOT the caption. Max 80 chars.
+- summary: full-information prose covering everything on the slides + caption. Strip filler.
+    Use blank lines between distinct topic sections. If a Language line marks the post
+    non-English, translate to English and add a short note like "Original in Tamil." at the end.
+- externals: every external reference, grouped by category with a header on its own line:
+        [Tools]
+          Figma — design tool used for wireframing
+    Categories: Tools, Brands, Creators, Links, Techniques, Locations. Omit empty categories.
+    Include full URLs exactly as they appear. If nothing qualifies, use an empty string.
+- content_type: choose EXACTLY ONE from the CONTENT-TYPE list below.
+- topics: choose 0 to 3 from the TOPICS list below. Only values from the list — do not invent.
+
+{vocab_block}
+
+Write the results as a JSON array to tmp/enrich/results.json. One object per post:
+  {
+    "page_id": "<exact page_id>",
+    "source_id": "<exact source_id>",
+    "title": "<title>",
+    "summary": "<summary>",
+    "externals": "<grouped externals or empty string>",
+    "content_type": "<one content-type>",
+    "topics": ["<topic>", ...]
+  }
+Include ALL posts below — one result object each.

@@ -55,7 +55,6 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
 
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     post_type = item.get("type") or "Unknown"
-    threshold = run_extract_cfg.ocr_escalate_threshold
     results = {"extract_version": env.extract_version, "last_processed_at": now,
                "transcript": None, "transcript_language": None,
                "ocr_text": None, "carousel_slides": None, "ocr_frames": None}
@@ -68,17 +67,17 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
         results["transcript"] = t["transcript"]
         results["transcript_language"] = t.get("transcript_language")
         frames = extract_ocr_frames(ig_link=ig_link, shortcode=shortcode, tmp_dir=env.tmp_dir,
-                                    cookies_json=env.cookies_file, threshold=threshold)
+                                    cookies_json=env.cookies_file)
         results["ocr_text"] = frames["text"] or None
-        results["ocr_frames"] = frames  # {text, confidence, needs_vision} — kept for the deferred vision pass
+        results["ocr_frames"] = frames
     elif post_type == "Carousel":
         results["carousel_slides"] = extract_carousel(
             context=browser.context(), ig_link=ig_link, shortcode=shortcode,
-            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file, threshold=threshold)
+            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file)
     elif post_type == "Post":
         results["carousel_slides"] = extract_post(
             context=browser.context(), ig_link=ig_link, shortcode=shortcode,
-            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file, threshold=threshold)
+            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file)
     else:
         log.warning("extract: %s unknown type %r — skipping", item.get("source_id"), post_type)
 

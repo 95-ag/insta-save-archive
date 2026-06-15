@@ -125,3 +125,17 @@ def test_write_deterministic_omits_empty_tags(monkeypatch):
     monkeypatch.setattr(notion, "validate_notion", lambda env: None)
     notion.write_deterministic(type("E", (), {"notion_token": "t"})(), "pg", "T", [], "v")
     assert "tags" not in captured["properties"]
+
+
+def test_slide_images_from_raw_resolves_paths():
+    raw = {"v2.0-base-tuned": {"carousel_slides": [
+        {"slide": 1, "text": "A", "ocr_confidence": 0.9, "image": "slides/ab/slide1.jpg"},
+        {"slide": 2, "text": None, "ocr_confidence": None, "image": "slides/ab/slide2.jpg"},
+        {"slide": 3, "text": "C", "ocr_confidence": 0.8, "image": None},
+    ]}}
+    out = notion._slide_images_from_raw(raw, tmp_dir="tmp", extract_version="v2.0-base-tuned")
+    assert out == ["tmp/slides/ab/slide1.jpg", "tmp/slides/ab/slide2.jpg"]
+
+
+def test_slide_images_from_raw_empty_when_no_slides():
+    assert notion._slide_images_from_raw({"v": {"transcript": "x"}}, "tmp", "v") == []

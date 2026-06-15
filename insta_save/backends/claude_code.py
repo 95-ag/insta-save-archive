@@ -13,6 +13,16 @@ from insta_save.config.tags import allowed_topics
 
 PROMPT_VERSION = "enrich_v2.0"
 
+# Conservative per-slide image-token estimate. Anthropic vision bills images as input
+# tokens ~ (w*h)/750 capped; a typical ~1080-wide IG portrait slide lands ~1600-1950
+# tokens. 1600 is a representative figure used only for batch sizing — cost is flat on a
+# Claude Max session, and #5's api/local backends reuse this for their cost/batch budget.
+PER_SLIDE_IMAGE_TOKENS = 1600
+
+
+def image_token_estimate(item) -> int:
+    return len(item.get("slide_images") or []) * PER_SLIDE_IMAGE_TOKENS
+
 
 def _vocab_block(group, vocab) -> str:
     """Human-readable vocab the session must choose from: content-types (pick 1),
@@ -48,6 +58,11 @@ def _item_block(item) -> str:
         lines.append(f"Transcript: {item['transcript']}")
     if item.get("ocr_text"):
         lines.append(f"OCR text:   {item['ocr_text']}")
+    images = item.get("slide_images")
+    if images:
+        lines.append("Slides (Read each image and extract ALL information shown):")
+        for path in images:
+            lines.append(f"  {path}")
     return "\n".join(lines)
 
 
