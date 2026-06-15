@@ -13,25 +13,14 @@ def test_ocr_score_empty():
     assert ocr.ocr_score([]) == ("", None)
 
 
-def test_needs_vision_on_empty_text():
-    assert ocr.needs_vision("", 0.99, threshold=0.6) is True
-
-
-def test_needs_vision_on_missing_confidence():
-    assert ocr.needs_vision("text", None, threshold=0.6) is True
-
-
-def test_needs_vision_below_threshold():
-    assert ocr.needs_vision("text", 0.5, threshold=0.6) is True
-
-
-def test_needs_vision_ok_above_threshold():
-    assert ocr.needs_vision("text", 0.7, threshold=0.6) is False
-
-
 def test_slide_record_shape():
-    rec = ocr.slide_record(2, "txt", 0.5, threshold=0.6)
-    assert rec == {"slide": 2, "text": "txt", "ocr_confidence": 0.5, "needs_vision": True}
+    rec = ocr.slide_record(2, "txt", 0.5, image="slides/ab/slide2.jpg")
+    assert rec == {"slide": 2, "text": "txt", "ocr_confidence": 0.5,
+                   "image": "slides/ab/slide2.jpg"}
+
+
+def test_slide_record_empty_text_is_none():
+    assert ocr.slide_record(1, "", None)["text"] is None
 
 
 def test_ocr_score_text_without_scores():
