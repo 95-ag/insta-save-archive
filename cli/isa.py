@@ -232,6 +232,46 @@ def dispatch_run(args) -> None:
         ensure_schema(env)
         from insta_save.stages import deterministic as det
         if run_cfg.deterministic_title_mode == "llm":
+            # Deterministic titling reuses the enrich backend config — the user runs ONE
+            # backend per run. Automated backends (local/api) fill the title batch
+            # in-process via the enrich fill (which over-produces summary/tags fields the
+            # deterministic apply ignores — harmless; det.apply consumes only `title`).
+            from insta_save.backends import base
+            backend = base.get_backend(run_cfg.enrich.backend)
+            template = Path(f"prompts/{det.PROMPT_VERSION}.txt").read_text(encoding="utf-8")
+
+            if backend.AUTOMATED:
+                # local/api fill results.json in-process, so one invocation DRAINS the group:
+                # prepare -> fill -> apply, looped until prepare batches no LLM-title items.
+                if not args.group:
+                    raise SystemExit("isa run --stage deterministic: --group is required for the "
+                                     f"{backend.NAME!r} backend (drains the group in one run)")
+                log_path = setup_logging("deterministic")
+                print(f"Logging to {log_path}")
+                det_dir = Path(env.tmp_dir) / "deterministic"
+                while True:
+                    with StageProgress("Deterministic prepare") as progress:
+                        r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
+                                        language=run_cfg.output_language, prompt_template=template,
+                                        max_items=run_cfg.max_items, progress=progress)
+                    if r["batched"] == 0:
+                        print(f"DETERMINISTIC_DRAINED group={args.group}")
+                        break
+                    backend.fill(env, run_cfg, det_dir)
+                    with StageProgress("Deterministic apply") as progress:
+                        counts = det.apply(env, progress=progress)
+                    print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+                    # No-progress guard: prepare batched items but apply wrote none, so those
+                    # items stay Imported and the next prepare re-selects them — would spin
+                    # forever. Stop instead.
+                    if counts["written"] == 0:
+                        print(f"deterministic: no items applied for group {args.group} — "
+                              f"stopping to avoid a no-progress loop.")
+                        break
+                return
+
+            # agent-filled backends (claude-code/cowork): one prepare or apply step; the
+            # driving session (or Cowork loop) runs the fill and re-invokes.
             if not (args.prepare or args.apply):
                 raise SystemExit("isa run --stage deterministic: title_mode=llm requires "
                                  "--prepare or --apply")
@@ -246,7 +286,6 @@ def dispatch_run(args) -> None:
                 raise SystemExit("isa run --stage deterministic --prepare: --group is required")
             log_path = setup_logging("deterministic-prepare")
             print(f"Logging to {log_path}")
-            template = Path(f"prompts/{det.PROMPT_VERSION}.txt").read_text(encoding="utf-8")
             with StageProgress("Deterministic prepare") as progress:
                 r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
                                 language=run_cfg.output_language, prompt_template=template,

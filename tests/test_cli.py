@@ -190,29 +190,49 @@ def test_deterministic_template_dispatches(monkeypatch):
     assert seen["kw"] == {"limit": 5, "group": "Lifestyle"}
 
 
+def _llm_run_obj(backend="claude-code"):
+    import types
+    return types.SimpleNamespace(
+        deterministic_title_mode="llm", output_language="english", max_items=None,
+        enrich=types.SimpleNamespace(backend=backend, model="m"))
+
+
 def test_deterministic_llm_requires_prepare_or_apply(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    # agent-filled backend (claude-code): a step flag is required
+    _det_common(monkeypatch, _llm_run_obj())
     with pytest.raises(SystemExit):
         isa.dispatch_run(_det_args())
 
 
 def test_deterministic_llm_apply_dispatches(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    _det_common(monkeypatch, _llm_run_obj())
     import insta_save.stages.deterministic as det
     monkeypatch.setattr(det, "apply", lambda env, progress=None: {"written": 3, "failed": 0})
     isa.dispatch_run(_det_args(apply=True))  # no SystemExit = dispatched
 
 
 def test_deterministic_llm_prepare_requires_group(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    _det_common(monkeypatch, _llm_run_obj())
     with pytest.raises(SystemExit):
         isa.dispatch_run(_det_args(prepare=True))  # --prepare without --group
+
+
+def test_deterministic_llm_automated_backend_drains(monkeypatch, capsys):
+    import insta_save.stages.deterministic as det
+    from insta_save.backends import local_ollama
+    _det_common(monkeypatch, _llm_run_obj("local"))
+    monkeypatch.setattr(isa, "_load_env", lambda: type("E", (), {"tmp_dir": "tmp"})())
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+    batched = iter([1, 0])  # batch once, then drained
+    monkeypatch.setattr(det, "prepare", lambda *a, **k: calls.__setitem__("prepare", calls["prepare"] + 1)
+                        or {"batched": next(batched), "finalized_template": 0})
+    monkeypatch.setattr(local_ollama, "fill",
+                        lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1))
+    monkeypatch.setattr(det, "apply", lambda env, progress=None: calls.__setitem__("apply", calls["apply"] + 1)
+                        or {"written": 1, "failed": 0})
+    isa.dispatch_run(_det_args(group="Lifestyle"))
+    assert calls == {"prepare": 2, "fill": 1, "apply": 1}
+    assert "DETERMINISTIC_DRAINED group=Lifestyle" in capsys.readouterr().out
 
 
 def _fake_run_backend(backend):

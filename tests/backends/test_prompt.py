@@ -23,6 +23,11 @@ def test_translate_directive_mentions_language_and_translate():
     assert "english" in block.lower() and "translate" in block.lower()
 
 
+def test_translate_directive_fields_param():
+    block = prompt.translate_directive("english", fields="the title")
+    assert "the title" in block and "summary" not in block
+
+
 def test_build_prompt_includes_output_language_directive():
     items = [{"page_id": "p1", "source_id": "s1", "type": "Reel",
               "caption": "c", "transcript": "t", "transcript_language": "ta"}]

@@ -2,8 +2,9 @@
 with no transcript/OCR and no semantic LLM. Tags are the slugified union of the item's
 collection names; title is either a pure template ({collection} — {author}) or, in
 `llm` mode, generated from caption+collection+author via a thin parallel prepare/apply
-that copies the claude-code file contract (it does NOT reuse enrich's vocab-coupled
-prepare/apply). summary/externals stay None (Data Integrity)."""
+on the formal Backend protocol (results parsed via backends.base.parse_results; the
+translate directive is shared with enrich). It does NOT reuse enrich's vocab-coupled
+prepare/apply. summary/externals stay None (Data Integrity)."""
 
 import json
 import logging
@@ -13,7 +14,8 @@ from pathlib import Path
 
 from insta_save.adapters import notion
 from insta_save.adapters.notion import get_page_content, write_deterministic
-from insta_save.backends import claude_code as backend
+from insta_save.backends import prompt
+from insta_save.backends.base import parse_results
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS, run_priority_stage
 
 log = logging.getLogger(__name__)
@@ -66,8 +68,8 @@ def run_deterministic_stage(env, collections_cfg, progress, *, limit=None, group
 
 
 # ---------------------------------------------------------------------------
-# llm title mode — thin prepare/apply copying the claude-code file contract
-# (does NOT reuse enrich's vocab-coupled code)
+# llm title mode — thin prepare/apply on the Backend protocol (results via
+# backends.base.parse_results); does NOT reuse enrich's vocab-coupled code
 # ---------------------------------------------------------------------------
 
 def _det_dir(env) -> Path:
@@ -88,8 +90,9 @@ def _title_item_block(item) -> str:
 
 
 def build_title_prompt(items, template, language) -> str:
-    """Title-only prompt: header (with {language} filled) + per-item content. No vocab."""
-    lines = [template.replace("{language}", language), "=" * 60, ""]
+    """Title-only prompt: header + shared translate directive (narrowed to the title) +
+    per-item content. No vocab."""
+    lines = [template, prompt.translate_directive(language, fields="the title"), "=" * 60, ""]
     for item in items:
         lines.append(_title_item_block(item))
         lines.append("")
@@ -159,7 +162,7 @@ def apply(env, *, progress=None) -> dict:
         raise FileNotFoundError(
             f"{batch_file} not found — run --prepare first to build the batch")
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
-    results_by_id = {r.get("page_id"): r for r in backend.parse_results(results_file)}
+    results_by_id = {r.get("page_id"): r for r in parse_results(results_file)}
     counts = {"written": 0, "failed": 0}
     bar = progress.add_bar(f"Deterministic → Tagged · {batch.get('group')}",
                            total=len(batch["items"])) if progress else None

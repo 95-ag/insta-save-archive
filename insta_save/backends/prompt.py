@@ -34,14 +34,14 @@ def _vocab_block(group, vocab) -> str:
     return "\n".join(lines)
 
 
-def translate_directive(output_language: str) -> str:
-    """A single instruction (shared by enrich + deterministic-title) telling the model
-    to emit the OUTPUT fields in output_language and translate non-English source.
-    Raw transcript/OCR are NOT rewritten (Data Integrity) — only title/summary/tags."""
+def translate_directive(output_language: str, fields: str = "the title, summary, and tags") -> str:
+    """Shared by enrich + deterministic-title: emit the output fields in output_language
+    and translate non-English source. Raw transcript/OCR are NOT rewritten (Data Integrity).
+    `fields` lets the title-only path narrow the wording to just the title."""
     lang = output_language or "english"
-    return (f"OUTPUT LANGUAGE: Write the title, summary, and tags in {lang}. "
+    return (f"OUTPUT LANGUAGE: Write {fields} in {lang}. "
             f"If the caption, transcript, or OCR text is in another language, translate "
-            f"the meaning into {lang} and note the original language at the end of the summary. "
+            f"the meaning into {lang} and note the original language. "
             f"Do not rewrite the raw transcript/OCR — only the output fields are in {lang}.")
 
 
