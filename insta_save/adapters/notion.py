@@ -5,6 +5,7 @@ to EnvConfig and extract_version. ensure_schema is additive + idempotent (never 
 
 import json
 import logging
+import os
 
 from notion_client import Client
 from notion_client.errors import APIResponseError
@@ -105,6 +106,23 @@ def _transcript_language_from_raw(raw: dict, extract_version: str):
         if isinstance(payload, dict) and payload.get("transcript_language"):
             return payload["transcript_language"]
     return None
+
+
+def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> list[str]:
+    """Resolve carousel/post slide image paths (recorded relative-to-tmp_dir at
+    extract) to paths a vision enrich can Read. Prefer the slot matching
+    extract_version, else any slot carrying carousel_slides."""
+    slot = raw.get(extract_version) or {}
+    slides = slot.get("carousel_slides")
+    if not isinstance(slides, list):
+        for payload in raw.values():
+            if isinstance(payload, dict) and isinstance(payload.get("carousel_slides"), list):
+                slides = payload["carousel_slides"]
+                break
+    if not isinstance(slides, list):
+        return []
+    return [os.path.join(tmp_dir, s["image"]) for s in slides
+            if isinstance(s, dict) and s.get("image")]
 
 
 def _enrich_props(title, summary, externals, tags, version) -> dict:
@@ -309,6 +327,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
         raw = {}
     extract_version = _text("extract_version") or ""
     transcript_language = _transcript_language_from_raw(raw, extract_version)
+    slide_images = _slide_images_from_raw(raw, env.tmp_dir, extract_version)
 
     # Collapse near-duplicate frame-OCR at enrich-read so enrich/calibrate read (and budget on)
     # the cleaned text, while raw_extraction keeps the full OCR (D13: durable/reprocessable).
@@ -326,6 +345,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
         "transcript": _text("transcript"),
         "ocr_text": ocr_text,
         "transcript_language": transcript_language,
+        "slide_images": slide_images,
     }
 
 

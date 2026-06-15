@@ -22,7 +22,7 @@ def test_get_page_content_applies_ocr_cleaner(monkeypatch):
     fake_pages = types.SimpleNamespace(retrieve=lambda page_id: page)
     monkeypatch.setattr(notion, "validate_notion", lambda env: None)
     monkeypatch.setattr(notion, "Client", lambda auth=None: types.SimpleNamespace(pages=fake_pages))
-    env = types.SimpleNamespace(notion_token="x", notion_database_id="db")
+    env = types.SimpleNamespace(notion_token="x", notion_database_id="db", tmp_dir="tmp")
 
     out = notion.get_page_content(env, "pid")
     assert out["ocr_text"] == "dup frame line\nunique tail line"
