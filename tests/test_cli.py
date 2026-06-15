@@ -71,7 +71,7 @@ def _fake_run():
     import types
     return types.SimpleNamespace(
         enrich=types.SimpleNamespace(backend="claude-code", model="claude-sonnet", effort="medium"),
-        char_budget=80000, max_items=15, image_token_budget=120000)
+        output_language="english", char_budget=80000, max_items=15, image_token_budget=120000)
 
 
 def test_enrich_prepare_requires_group(monkeypatch, capsys):
@@ -220,7 +220,7 @@ def _fake_run_backend(backend):
     return types.SimpleNamespace(
         enrich=types.SimpleNamespace(backend=backend, model="m", effort="medium",
                                      api_mode="sync"),
-        char_budget=80000, max_items=15, image_token_budget=120000)
+        output_language="english", char_budget=80000, max_items=15, image_token_budget=120000)
 
 
 def test_enrich_vision_lane_rejects_non_vision_backend(monkeypatch):

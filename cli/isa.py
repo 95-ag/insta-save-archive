@@ -140,7 +140,8 @@ def dispatch_run(args) -> None:
                                        vocab=vocab, char_budget=budgets.char_budget,
                                        max_items=budgets.max_items, statuses=statuses,
                                        prompt_template=template, kinds=kinds,
-                                       image_token_budget=image_budget, progress=progress)
+                                       image_token_budget=image_budget,
+                                       output_language=run_cfg.output_language, progress=progress)
                 if n == 0:
                     print(f"ENRICH_DRAINED group={args.group} lane={args.lane}")
                     break
@@ -179,7 +180,8 @@ def dispatch_run(args) -> None:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
                                char_budget=budgets.char_budget, max_items=budgets.max_items,
                                statuses=statuses, prompt_template=template,
-                               kinds=kinds, image_token_budget=image_budget, progress=progress)
+                               kinds=kinds, image_token_budget=image_budget,
+                               output_language=run_cfg.output_language, progress=progress)
         if n == 0:
             print(f"No items left to enrich in group {args.group} (lane={args.lane}).")
             # Stable machine token so an unattended prepare->fill->apply loop can detect

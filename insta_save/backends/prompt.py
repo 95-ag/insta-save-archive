@@ -34,9 +34,20 @@ def _vocab_block(group, vocab) -> str:
     return "\n".join(lines)
 
 
-def _header_lines(group, vocab, template) -> list[str]:
+def translate_directive(output_language: str) -> str:
+    """A single instruction (shared by enrich + deterministic-title) telling the model
+    to emit the OUTPUT fields in output_language and translate non-English source.
+    Raw transcript/OCR are NOT rewritten (Data Integrity) — only title/summary/tags."""
+    lang = output_language or "english"
+    return (f"OUTPUT LANGUAGE: Write the title, summary, and tags in {lang}. "
+            f"If the caption, transcript, or OCR text is in another language, translate "
+            f"the meaning into {lang} and note the original language at the end of the summary. "
+            f"Do not rewrite the raw transcript/OCR — only the output fields are in {lang}.")
+
+
+def _header_lines(group, vocab, template, output_language="english") -> list[str]:
     header = template.replace("{vocab_block}", _vocab_block(group, vocab))
-    return [header, "", f"Group: {group}", "=" * 60, ""]
+    return [header, "", translate_directive(output_language), "", f"Group: {group}", "=" * 60, ""]
 
 
 def _item_block(item) -> str:
@@ -63,19 +74,19 @@ def _item_block(item) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(group, items, vocab, template) -> str:
+def build_prompt(group, items, vocab, template, output_language="english") -> str:
     """Assemble the full prompt: instruction header (template, with {vocab_block}
-    filled) + a per-item content section."""
-    lines = _header_lines(group, vocab, template)
+    filled, plus the output-language directive) + a per-item content section."""
+    lines = _header_lines(group, vocab, template, output_language)
     for item in items:
         lines.append(_item_block(item))
         lines.append("")
     return "\n".join(lines)
 
 
-def header_len(group, vocab, template) -> int:
+def header_len(group, vocab, template, output_language="english") -> int:
     """Rendered length of the fixed prompt header (instructions + vocab + group line)."""
-    return len("\n".join(_header_lines(group, vocab, template)))
+    return len("\n".join(_header_lines(group, vocab, template, output_language)))
 
 
 def item_len(item) -> int:
