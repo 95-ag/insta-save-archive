@@ -71,7 +71,7 @@ def _fake_run():
     import types
     return types.SimpleNamespace(
         enrich=types.SimpleNamespace(backend="claude-code", model="claude-sonnet", effort="medium"),
-        char_budget=80000, max_items=15)
+        char_budget=80000, max_items=15, image_token_budget=120000)
 
 
 def test_enrich_prepare_requires_group(monkeypatch, capsys):
@@ -119,7 +119,8 @@ def test_enrich_prepare_prints_drained_sentinel_when_empty(monkeypatch, capsys):
     args = isa.build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--group", "Hustling"])
     isa.dispatch_run(args)
-    assert "ENRICH_DRAINED group=Hustling" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "ENRICH_DRAINED group=Hustling lane=text" in out
 
 
 def test_enrich_prepare_no_sentinel_when_items_left(monkeypatch, capsys):
@@ -212,3 +213,12 @@ def test_deterministic_llm_prepare_requires_group(monkeypatch):
     _det_common(monkeypatch, run_obj)
     with pytest.raises(SystemExit):
         isa.dispatch_run(_det_args(prepare=True))  # --prepare without --group
+
+
+def test_enrich_lane_arg_defaults_text():
+    from cli.isa import build_parser
+    args = build_parser().parse_args(["run", "--stage", "enrich", "--prepare", "--group", "G"])
+    assert args.lane == "text"
+    args2 = build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare", "--group", "G", "--lane", "vision"])
+    assert args2.lane == "vision"
