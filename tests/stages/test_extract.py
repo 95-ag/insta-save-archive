@@ -86,8 +86,7 @@ def _env():
 
 def _run():
     from insta_save.config.run import ExtractConfig
-    return ExtractConfig(transcript_model="base", transcript_vad=True,
-                         ocr_mode="escalate", ocr_escalate_threshold=0.6)
+    return ExtractConfig(transcript_model="base", transcript_vad=True, ocr_mode="rapidocr")
 
 class _Holder:
     def __init__(self, ctx=None): self._ctx = ctx; self.opened = False

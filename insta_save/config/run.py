@@ -6,7 +6,7 @@ from pathlib import Path
 
 VALID_MODES = {"first-time", "incremental"}
 VALID_BACKENDS = {"local", "api", "claude-code", "cowork"}
-VALID_OCR_MODES = {"none", "rapidocr", "local_vlm", "claude_vlm", "escalate"}
+VALID_OCR_MODES = {"none", "rapidocr"}
 VALID_TITLE_MODES = {"template", "llm"}
 
 _DEFAULT_RUN = Path("config") / "run.json"
@@ -24,7 +24,6 @@ class ExtractConfig:
     transcript_model: str
     transcript_vad: bool
     ocr_mode: str
-    ocr_escalate_threshold: float
 
 
 @dataclass(frozen=True)
@@ -34,6 +33,7 @@ class RunConfig:
     extract: ExtractConfig
     max_items: int | None
     char_budget: int
+    image_token_budget: int
     guardrails_max_items_per_run: int | None
     guardrails_max_spend_usd: float | None
     deterministic_title_mode: str = "template"
@@ -62,8 +62,7 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
     extract = ExtractConfig(
         transcript_model=transcript_raw.get("model", "base"),
         transcript_vad=bool(transcript_raw.get("vad", True)),
-        ocr_mode=_require(ocr_raw.get("mode", "escalate"), VALID_OCR_MODES, "extract.ocr.mode"),
-        ocr_escalate_threshold=float(ocr_raw.get("escalate_threshold", 0.6)),
+        ocr_mode=_require(ocr_raw.get("mode", "rapidocr"), VALID_OCR_MODES, "extract.ocr.mode"),
     )
     batch = data.get("batch", {})
     guard = data.get("guardrails", {})
@@ -77,6 +76,7 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         extract=extract,
         max_items=batch.get("max_items"),
         char_budget=int(batch.get("max_char_budget", 80000)),
+        image_token_budget=int(batch.get("max_image_tokens", 120000)),
         guardrails_max_items_per_run=guard.get("max_items_per_run"),
         guardrails_max_spend_usd=guard.get("max_spend_usd"),
         deterministic_title_mode=title_mode,
