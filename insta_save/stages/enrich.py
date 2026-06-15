@@ -27,36 +27,53 @@ def _enrich_dir(env) -> Path:
     return d
 
 
-def _ordered_group_stubs(env, statuses, group, collections_cfg):
-    """Stubs across input statuses, priority order, filtered to the group."""
+def _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=None):
+    """Stubs across input statuses, priority order, filtered to the group.
+
+    kinds: optional set of type strings (e.g. {"Carousel", "Post"}) — when set,
+    only stubs whose `type` is in the set are yielded. None admits all types."""
     for status in statuses:
         for bucket in PRIORITY_BUCKETS:
             for stub in query_by_status_and_priority(env, status, bucket):
+                if kinds is not None and stub.get("type") not in kinds:
+                    continue
                 if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
                     yield stub
 
 
 def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statuses,
-            prompt_template, progress=None) -> int:
+            prompt_template, kinds=None, image_token_budget=None, progress=None) -> int:
     """Build batch.json + prompt.txt for the highest-priority budget-worth of the
     group's items. Returns the batch size (0 = nothing left). Optional `progress`
     (StageProgress) shows a live per-item fetch bar.
 
     char_budget bounds the RENDERED prompt length (header + vocab + per-item
     scaffolding + content) — i.e. what the session actually reads — not just raw
-    content. The first matching item is always admitted even if it alone is large."""
+    content. The first matching item is always admitted even if it alone is large.
+
+    kinds: optional set of type strings — restricts which post types are admitted
+    (useful to separate text-only and vision lanes in the same group).
+
+    image_token_budget: optional cap on the total estimated image tokens in the batch
+    (sum of slide_images * PER_SLIDE_IMAGE_TOKENS). The first item is always admitted;
+    subsequent items break the loop when this budget would be exceeded."""
     items = []
     total = backend.header_len(group, vocab, prompt_template)
+    img_total = 0
     bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
-    for stub in _ordered_group_stubs(env, statuses, group, collections_cfg):
+    for stub in _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=kinds):
         if max_items is not None and len(items) >= max_items:
             break
         content = get_page_content(env, stub["page_id"])
         block = backend.item_len(content)
-        if items and total + block > char_budget:
+        img = backend.image_token_estimate(content)
+        over_chars = total + block > char_budget
+        over_images = image_token_budget is not None and img_total + img > image_token_budget
+        if items and (over_chars or over_images):
             break
         items.append(content)
         total += block
+        img_total += img
         if progress:
             progress.set_current("fetch", content.get("source_id") or content["page_id"])
             progress.bump("fetched"); progress.advance(bar)

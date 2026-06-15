@@ -114,3 +114,44 @@ def test_apply_errors_when_results_missing(tmp_path):
         assert False, "expected FileNotFoundError"
     except FileNotFoundError:
         pass
+
+
+def test_ordered_stubs_filters_by_kind(monkeypatch):
+    from insta_save.config.collections import CollectionsConfig
+    cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
+    stubs = [
+        {"page_id": "r", "type": "Reel", "collections": ["c"]},
+        {"page_id": "k", "type": "Carousel", "collections": ["c"]},
+        {"page_id": "p", "type": "Post", "collections": ["c"]},
+    ]
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, bucket: stubs if bucket is None else [])
+    got = [s["page_id"] for s in enrich._ordered_group_stubs(
+        None, ["Extracted"], "G", cfg, kinds={"Carousel", "Post"})]
+    assert got == ["k", "p"]
+
+
+def test_prepare_vision_lane_breaks_on_image_budget(monkeypatch, tmp_path):
+    from insta_save.config.collections import CollectionsConfig
+    cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
+    stubs = [{"page_id": f"k{i}", "type": "Carousel", "collections": ["c"]} for i in range(3)]
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "get_page_content", lambda env, pid: {
+        "page_id": pid, "source_id": pid, "type": "Carousel", "author": "a", "caption": "c",
+        "slide_images": ["a.jpg", "b.jpg"], "transcript": None, "ocr_text": None,
+        "transcript_language": "en"})
+
+    class _Env:
+        tmp_dir = str(tmp_path)
+
+    # vocab must include group "G" so header_len doesn't blow up on the vocab block
+    vocab_g = Vocab(content_types=["tool"], cross_group_topics=["ai"],
+                    _group_topics={"G": ["seo"]},
+                    definitions={"tool": "x", "ai": "y", "seo": "z"})
+    # 2 slides/item * 1600 = 3200 tokens/item; budget 5000 -> first admitted, second exceeds
+    n = enrich.prepare(_Env(), group="G", collections_cfg=cfg, vocab=vocab_g,
+                       char_budget=10**9, max_items=None, statuses=["Extracted"],
+                       prompt_template="H {vocab_block} E", kinds={"Carousel", "Post"},
+                       image_token_budget=5000)
+    assert n == 1
