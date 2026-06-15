@@ -269,6 +269,41 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
     assert "ENRICH_DRAINED group=Hustling lane=text" in capsys.readouterr().out
 
 
+def test_enrich_automated_backend_stops_on_no_progress(monkeypatch, capsys):
+    import types
+    import cli.isa as isa
+    from insta_save.backends import base, local_ollama
+
+    env = types.SimpleNamespace(tmp_dir="tmp")
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return 2  # never drains: items stay Extracted because apply writes nothing
+    monkeypatch.setattr(isa.enrich, "prepare", _prepare)
+    monkeypatch.setattr(local_ollama, "fill",
+                        lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1)
+                        or base.FillResult(filled=0, failed=2))
+    monkeypatch.setattr(isa.enrich, "apply",
+                        lambda env, **k: calls.__setitem__("apply", calls["apply"] + 1)
+                        or {"written": 0, "failed": 2})
+
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--group", "Hustling"])
+    isa.dispatch_run(args)
+
+    # The guard breaks after one zero-progress apply: prepare runs exactly once.
+    assert calls == {"prepare": 1, "fill": 1, "apply": 1}
+    assert "no items applied for group Hustling" in capsys.readouterr().out
+
+
 def test_enrich_status_prints_remaining(monkeypatch, capsys):
     import cli.isa as isa
     from insta_save.backends import cowork

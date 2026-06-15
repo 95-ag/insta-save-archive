@@ -149,6 +149,14 @@ def dispatch_run(args) -> None:
                     counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
                                           progress=progress)
                 print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+                # No-progress guard: prepare batched items but apply wrote none (every item
+                # failed, or fill produced no usable results). Those items stay Extracted, so
+                # the next prepare re-selects them and the loop spins forever. Stop instead.
+                if counts["written"] == 0:
+                    print(f"enrich: no items applied for group {args.group} (lane={args.lane}) — "
+                          f"stopping to avoid a no-progress loop. Check logs; resolve failures, "
+                          f"then re-run.")
+                    break
             return
 
         # agent-filled backends (claude-code/cowork): one prepare or apply step; the driving
