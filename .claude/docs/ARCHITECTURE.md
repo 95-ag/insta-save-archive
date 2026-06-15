@@ -2,7 +2,7 @@
 
 > **Status:** target architecture, in build. The running v1 lives in `legacy/`.
 > Supersedes `.claude/docs/archive/PROJECT.md` and `.claude/docs/archive/IMPLEMENTATION_PLAN.md`.
-> Last updated: 2026-06-09.
+> Last updated: 2026-06-15.
 
 A personal knowledge pipeline that ingests Instagram saves into Notion, extracts
 their content, enriches it with an LLM into titles/summaries/externals/tags, and
@@ -34,17 +34,23 @@ source; the design stays source-agnostic.
         │                                              │
    extract = YES                                  extract = NO
         ▼                                              ▼
-3. EXTRACT (local engines: transcript + OCR/vision) ─► Extracted
-        │                                              │
-   [first-time, per group]                             │
-3.5 CALIBRATE ─ sample caption/OCR/transcript →        │
-     LLM proposes tag vocab → you refine → lock         │
-        ▼                                              ▼
+3. EXTRACT (local engines: transcript + OCR)  ──► Extracted
+     Carousel/Post: RapidOCR + persist slide      │
+     images (tmp/slides/<shortcode>/).             │
+     Reels: transcript + frame-OCR (frames         │
+     ephemeral).                                   │
+        │                                          │
+   [first-time, per group]                         │
+3.5 CALIBRATE ─ sample caption/OCR/transcript →    │
+     LLM proposes tag vocab → you refine → lock     │
+        ▼                                          ▼
 4. ENRICH ── BACKEND (local | api | claude-code | cowork)   5. DETERMINISTIC
-     one pass: title + summary + externals + tags             tags ◄ collection
-        │  ─► Tagged                                          title ◄ collection/
-        │                                                            caption/author
-        │                                                     │ ─► Tagged
+     two modality lanes per group:                            tags ◄ collection
+       text lane  (Reels/IGTV): caption+transcript+OCR        title ◄ collection/
+       vision lane (Carousels/Posts): caption+OCR+            caption/author
+                   slide images (fill-subagent Reads them)    │ ─► Tagged
+     → title + summary + externals + tags
+        │  ─► Tagged
         └───────────────────────────┬─────────────────────────┘
                                      ▼
 6. ROUTE (optional, deterministic) ─ route_target ◄ tags/collection/group ─► Routed
@@ -83,9 +89,9 @@ calibration has content to sample).
 | 0 | Discover + config | `list_collections` (Playwright) + config loaders | no | — |
 | 1 | Ingest | Playwright (session/crawler/extractor) | no | `Imported` |
 | 2 | Select | `collections.json` (group/extract) | no | `Queued` or → branch |
-| 3 | Extract | transcript + OCR/vision engines | engine-tiered | `Extracted` |
+| 3 | Extract | transcript + OCR engines; persists carousel/post slide images | engine-tiered | `Extracted` |
 | 3.5 | Calibrate | sample + chosen backend proposes vocab | yes | locks vocab |
-| 4 | Enrich | one-shot LLM | **yes** | `Tagged` |
+| 4 | Enrich | one-shot LLM; **two modality lanes**: text (Reels/IGTV) + vision (Carousels/Posts) | **yes** | `Tagged` |
 | 5 | Deterministic | slug-tag union + title (template default, opt-in llm) | title only (opt-in) | `Tagged` |
 | 6 | Route | pure Python (`routes.json`) | no | `Routed` (optional) |
 
@@ -102,12 +108,12 @@ calibration has content to sample).
 **One file contract, four implementations.** Every backend reads `tmp/enrich/batch.json`
 and writes `tmp/enrich/results.json` against `enrich_schema`. Only *who fills results* differs:
 
-| Backend | Fills results by | Automated? | Quality | Cost |
-|---|---|---|---|---|
-| `local` | Ollama call inline (qwen2.5) | yes | title-only (D8, spike-confirmed) | free |
-| `api` | Anthropic SDK call inline | yes | high | $ per token |
-| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | yes¹ | high | subscription |
-| `cowork` | a self-paced Cowork loop (one kickoff msg) | semi | high | subscription |
+| Backend | Fills results by | Automated? | Quality | Cost | Vision-capable |
+|---|---|---|---|---|---|
+| `local` | Ollama call inline (qwen2.5) | yes | title-only (D8, spike-confirmed) | free | no |
+| `api` | Anthropic SDK call inline | yes | high | $ per token | yes (future #5) |
+| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | yes¹ | high | subscription | **yes** |
+| `cowork` | a self-paced Cowork loop (one kickoff msg) | semi | high | subscription | yes (future #5) |
 
 The pipeline core (build batch → hand to backend → apply results → write Notion) is identical
 across all four. `enrich.backend` in run config selects one. Each backend also carries
@@ -117,10 +123,17 @@ both at run start.** (v1 observation: a Sonnet+low session fills context and nee
 sooner than Opus+high, so the safe `char_budget`/`max_items` ceiling scales with model+effort, not
 a single fixed number.)
 
+**Enrich is no longer strictly text-only.** For the vision lane (Carousels/Posts), the per-item
+block in `prompt.txt` lists the slide image paths (absolute, under `tmp/slides/<shortcode>/`) so
+the fill-subagent can `Read` each image directly. The file contract itself is unchanged
+(`batch.json`/`results.json`); the image references live in the prompt text. `#4` built this thin
+on `claude-code`; `#5` generalises it via the formal `Backend` protocol.
+
 ¹ **`claude-code` runs fully hands-off today with no new code** — a single session loops `--prepare`
-→ dispatch a fresh **fill-subagent** (reads `prompt.txt`, writes `results.json`) → `--apply`, until
-drained. The per-batch subagent keeps the driver session's context clean. This *is* the cowork loop
-below, done by hand; **`cowork` is the durable, compaction-safe productization** of it.
+→ dispatch a fresh **fill-subagent** (reads `prompt.txt`, including image paths for vision items,
+writes `results.json`) → `--apply`, until drained. The per-batch subagent keeps the driver
+session's context clean. This *is* the cowork loop below, done by hand; **`cowork` is the durable,
+compaction-safe productization** of it.
 
 **Cowork loop design (the friction-killer):** all state lives in Notion + `tmp/` files, never
 in conversation. So the loop is: `--prepare` next batch → read prompt → write results → `--apply`
@@ -137,6 +150,16 @@ batch). One kickoff message; idempotent; resumable.
 | `local` | `single` (sequential, checkpoint every ~25) | 1 GPU, no batch gain |
 | `api` | `token_budget` + parallelism, or **Message Batches API** for bulk | ~50% cheaper async for first-time |
 | `claude-code` / `cowork` | `char_budget` + `max_items` (~15) | fit one session pass before compaction (ceiling scales with model+effort); small = resumable |
+
+**Vision lane batching.** The vision lane additionally budgets on an **image-token estimate**
+(`PER_SLIDE_IMAGE_TOKENS` ≈ 1600/slide, a conservative figure for a ~1080-wide IG portrait slide).
+`image_token_budget` (`batch.max_image_tokens` in `run.json`, default 120 000) caps the total
+estimated image tokens in a single batch, independently of `char_budget`. The first item is always
+admitted; subsequent items break early if either budget would be exceeded.
+
+Enrich runs **two modality lanes per group** — text (Reels/IGTV) is drained first, then vision
+(Carousels/Posts). Each lane calls `--prepare`/`--apply` independently with its own budgets and
+prompt template (`enrich_v2.0.txt` for text, `enrich_vision_v2.0.txt` for vision).
 
 ---
 
@@ -159,10 +182,13 @@ On-device benchmark over 4 speech-heavy Reels (500–600 words each):
 - Language auto-detect stays ON. Revisit `small`/`distil` only if non-English or noisy content later shows `base` is insufficient (evidence-driven).
 
 ### 6.2 OCR / vision (`ocr.mode`)
-Configurable: `none | rapidocr | local_vlm | claude_vlm | escalate`.
-- **`escalate` (recommended):** RapidOCR runs and scores its own confidence/coverage; only sub-threshold slides are passed **on top** to Claude vision and merged. `escalate_threshold` is configurable.
-- **No local VLM on 4 GB** — only tiny models (Moondream2 ~2 GB, Qwen2-VL-2B int4 ~3 GB) fit, weak on dense slide text, and can't co-reside with whisper. Local-VLM remains a selectable option for larger machines.
-- **Claude vision** has zero local memory cost; per-image token cost is small (≈ cents/carousel). *(Exact current pricing: confirm via the `claude-api` reference before budgeting a large run.)*
+Configurable: `none | rapidocr`. (`local_vlm`, `claude_vlm`, and `escalate` are **retired** — see D15/D23.)
+
+- **`rapidocr` (default):** RapidOCR runs on every carousel/post slide and every sampled reel frame. For carousel/Post slides, the image is **persisted** under `tmp/slides/<shortcode>/` (not deleted after OCR) so the vision enrich lane can read it later. `ocr_confidence` (mean RapidOCR per-detection score, 0–1) is stored as a diagnostic but **no longer gates anything** — every slide goes to the vision lane regardless of confidence, because confidence is a poor proxy for information capture (D15/D23).
+- **Reels** stay text-only: transcript + frame-OCR text (frame images are ephemeral, cleaned up after OCR). No vision pass on reels.
+- **`none`:** skips OCR entirely (transcript-only items).
+- **`needs_vision` flag is retired.** It was removed from `slide_record` and `extract_ocr_frames` in #4. There is no longer an escalate threshold in config or code.
+- **Slide image cache** lives at `tmp/slides/<shortcode>/slide<N>.jpg` (relative path stored in `carousel_slides[N].image` within `raw_extraction`). This is a local disk cache, NOT a new Notion property.
 
 ---
 
@@ -236,6 +262,12 @@ Issues found:
 **`raw_extraction` decision:** keep it. It holds per-slide arrays/methods that the flat
 `transcript`/`ocr_text` fields don't, and it's the only durable record enabling re-OCR/re-parse
 without re-scraping. It is never versioned internally — `extract_version` carries the version.
+
+**`carousel_slides` per-slide record shape (v2, post-#4):** `{slide, text, ocr_confidence, image}`.
+`needs_vision` is **removed**. `image` is the slide image path relative to `tmp_dir`
+(e.g. `slides/<shortcode>/slide1.jpg`). Slide images live in a local disk cache
+(`tmp/slides/<shortcode>/`) — this is **not** a new Notion property; it is a local artefact
+referenced by the vision enrich lane.
 
 ---
 
@@ -311,7 +343,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D12 | Split `extract_version` / `enrich_version` | Independent reprocessing of extract vs enrich | One `processing_version` (conflated, ambiguous) |
 | D13 | Keep `raw_extraction`, unversioned | Durable per-slice payload; re-parse without re-scraping | Drop it (lose reprocessing record) |
 | D14 | Transcript: base int8 (CPU) + tuned params | On-device spike: small/distil gave ~identical content at 3–7× cost; tuned params are faster + as accurate | small/distil (cost, no gain); GPU (no cuBLAS) |
-| D15 | OCR: RapidOCR + escalate-to-Claude-vision | 4 GB can't run a good local VLM; escalate only weak slides | Always-VLM (memory/cost) or OCR-only (misses graphic slides) |
+| D15 | OCR: RapidOCR for text baseline + **vision-at-enrich** for carousel/post slides (all slides, not escalate) | Live DB showed 0% of slides were flagged by the old confidence gate, and OCR confidence ≠ information capture. Images are effectively free on a Claude Max subscription session, so per-slide confidence gating has no value. Escalate path retired. | Escalate-to-Claude-vision at extract time (was D15 v1); OCR-only (misses graphic slides) |
 | D16 | Routing deterministic + optional | Collection encodes destination; 100% reliable, no model | AI-chosen routing (cost, unreliable) |
 | D17 | Fresh `insta_save/` + `legacy/` fallback | Clean v2 boundaries; v1 runnable during migration | In-place rewrite (risky, no fallback) |
 | D18 | LLM proposes vocab, human refines | Faster than authoring cold; human keeps control | Pure-manual (slow) or pure-LLM (uncurated) |
@@ -319,10 +351,12 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D20 | Group-level ordering (not per-collection) | ~6 groups to order, not ~44 folders; group names move to the private config | Per-collection `order` (tedious; leaks group names in code) |
 | D21 | Ingest metadata yt-dlp-first, browser fallback, wall guard | More 429-resilient; works on image posts; v1-proven | Browser-first (fragile, rate-limited) |
 | D22 | Consolidate v1's two collection scrapers/mergers into one discover stage | v1 had divergent duplicates (`crawler.py` vs `list_collections.py`) | Keep both (maintenance trap) |
+| D23 | Vision as an enrich input modality; two lanes per group (text/vision) | Carousel/post slides contain information that transcript/OCR alone can miss; feeding raw images into the enrich lane is simpler and more complete than a separate post-OCR vision pass. Reel-vision deferred: reel frames carry little unique information vs transcript + frame-OCR text, and a per-frame vision pass is not content-completeness-gated. | Single lane (would need complex image-text merge logic); per-frame confidence gate at extract time (wrong signal) |
 
 ---
 
 ## 14. Out of scope / later
 - **Phase 4 reorg** — audit/merge/rename collections once items are enriched; re-tag stale-vocab items via `enrich_version`.
 - **Downstream route pipelines** — per-`route_target` extraction + writes to target DBs (separate project).
-- **Exact API/vision pricing** — confirm via `claude-api` reference before a large `api`-backend run.
+- **Vision API pricing** — moot on the current Claude Max subscription session (images are effectively free). Per-image token cost (`PER_SLIDE_IMAGE_TOKENS` ≈ 1600) matters only for a future `api`-backend vision path; confirm via the `claude-api` reference before budgeting that run.
+- **Reel vision** — deferred; not content-completeness-gated (transcript + frame-OCR text is already adequate for reels). Revisit only if evidence shows reels carry meaningful on-screen information not captured by text extraction.

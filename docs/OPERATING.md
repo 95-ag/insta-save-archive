@@ -47,16 +47,17 @@ All live in `config/`. Private ones are gitignored.
   "enrich": { "backend": "cowork", "model": "claude-sonnet", "effort": "medium" },
   "extract": {
     "transcript": { "model": "small", "vad": true },
-    "ocr": { "mode": "escalate", "escalate_threshold": 0.6 }
+    "ocr": { "mode": "rapidocr" }
   },
-  "batch": { "max_items": 15, "max_char_budget": 80000 },
+  "batch": { "max_items": 15, "max_char_budget": 80000, "max_image_tokens": 120000 },
   "guardrails": { "max_items_per_run": null, "max_spend_usd": null }
 }
 ```
 
 - **`enrich.backend`** — `local | api | claude-code | cowork`. **`model`/`effort`** — effort maps to thinking budget (`api`), model size (`local`), advisory (sessions).
 - **`extract.transcript`** — `model`: `base | small | distil-large-v3`; `vad`: Silero voice-activity filter (recommended on).
-- **`extract.ocr.mode`** — `none | rapidocr | local_vlm | claude_vlm | escalate`. `escalate` runs RapidOCR and only sends sub-`escalate_threshold` slides to Claude vision.
+- **`extract.ocr.mode`** — `none | rapidocr`. RapidOCR runs on every carousel/post slide (images persisted to `tmp/slides/<shortcode>/` for the vision enrich lane) and on sampled reel frames (ephemeral). The old `escalate` / `escalate_threshold` mode is retired.
+- **`batch.max_image_tokens`** — cap on total estimated image tokens per vision-lane batch (≈ 1600 tokens/slide). Applies only to the vision enrich lane; text lane uses `max_char_budget` only.
 - **`batch`** — backend picks its own strategy; these are the caps for char/item-budget backends.
 - **`guardrails`** — hard caps; a run stops before exceeding them. Set `max_spend_usd` for the `api` backend.
 
@@ -117,6 +118,7 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route}
           --group <name>        # restrict to one group (e.g. calibrate a single group)
           --limit <N>           # cap items processed this run
+          --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
           --reextract           # re-run extract on already-Extracted items (e.g. new engine)
           --reenrich            # re-tag already-Tagged items (e.g. new vocab)
           --retry-failed        # reprocess items currently in Failed
@@ -158,16 +160,22 @@ vocab and are enriched once, when the **last** of their groups runs.
 ## 5. The enrich loop (session backends)
 
 For `claude-code` / `cowork`, enrichment runs as a review-friendly loop. All state lives in
-Notion + `tmp/enrich/`, so it is **crash-resumable and compaction-safe**:
+Notion + `tmp/enrich/`, so it is **crash-resumable and compaction-safe**.
 
-1. `isa run --stage enrich` prepares the next batch → `tmp/enrich/prompt.txt`.
-2. The session reads the prompt, writes `tmp/enrich/results.json` (title + summary + externals + tags).
-3. Results are applied to Notion (`Tagged`); the loop advances to the next batch.
+Enrich runs **two modality lanes per group** — drain text first, then vision:
 
-In **Cowork**, one kickoff message drives the whole loop ("run until `isa status` shows zero;
-compact freely between batches — all state is in Notion"). If the session dies, restart with
-the same message: Notion status resumes exactly where it left off. `local`/`api` backends do
-steps 1–3 automatically with no session.
+**Text lane** (`--lane text`, default) — Reels/IGTV; prompt is text-only:
+1. `isa run --stage enrich --lane text` prepares the next batch → `tmp/enrich/prompt.txt`.
+2. The session reads the prompt, writes `tmp/enrich/results.json`.
+3. Results are applied to Notion (`Tagged`); repeat until drained.
+
+**Vision lane** (`--lane vision`) — Carousels/Posts; prompt lists slide image paths for the fill-subagent to `Read`:
+1. `isa run --stage enrich --lane vision` prepares the next batch → `tmp/enrich/prompt.txt` (includes `IMAGES:` blocks with absolute slide paths).
+2. The session reads the prompt and each image, writes `tmp/enrich/results.json`.
+3. Results are applied to Notion; repeat until drained.
+
+In **Cowork**, one kickoff message per lane drives the whole loop. If the session dies, restart:
+Notion status resumes exactly where it left off. `local`/`api` backends do steps 1–3 automatically.
 
 ---
 

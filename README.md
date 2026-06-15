@@ -40,7 +40,7 @@ Choose how LLM enrichment runs — set once in config; the pipeline works with a
 | `claude-code` | a Claude Code session | semi | subscription |
 | `cowork` | a self-paced Claude Cowork loop | semi | subscription |
 
-Extraction (transcript/OCR) always runs locally; OCR can escalate hard slides to Claude vision.
+Extraction (transcript/OCR) always runs locally. Carousel/Post slide images are persisted and fed directly to the vision enrich lane (claude-code); reels stay text-only.
 
 ## Quickstart *(v2 target interface)*
 
