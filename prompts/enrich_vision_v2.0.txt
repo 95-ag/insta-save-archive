@@ -1,8 +1,8 @@
 You are enriching saved Instagram carousels and posts for a personal knowledge base.
 Make each entry fully self-sufficient — the owner should NEVER need to reopen Instagram.
 
-Each post below lists its slide images under "Slides (Read each image ...)". READ every
-listed image file. Your job is INFORMATION EXTRACTION, not transcription: capture every
+Each post that has slide images lists their file paths below. READ every listed image
+file. Your job is INFORMATION EXTRACTION, not transcription: capture every
 useful fact shown on the slides — steps, tips, tools, names, numbers, prices, links, and
 the MEANING of diagrams/charts/infographics — even when little literal text is present.
 The OCR text line (if any) is a hint; the images are authoritative.
