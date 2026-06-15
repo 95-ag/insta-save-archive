@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--headed", action="store_true")
     run.add_argument("--confirm-removed", action="append", default=None)
     run.add_argument("--lane", choices=["text", "vision"], default="text")
+    run.add_argument("--status", action="store_true")
 
     sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
@@ -87,13 +88,73 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "enrich":
-        # validate args BEFORE loading config/vocab (fail fast; --apply reads the group
-        # from batch.json, so it needs no --group). load_vocab() must not run for a
+        from insta_save.backends import base
+        # validate args BEFORE loading config/vocab (fail fast; agent-filled --apply reads
+        # the group from batch.json, so it needs no --group). load_vocab() must not run for a
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
-        if not args.apply and not args.group:
-            raise SystemExit("isa run --stage enrich --prepare: --group is required")
         env = _load_env()
         run_cfg = _load_run()
+        backend = base.get_backend(run_cfg.enrich.backend)
+        budgets = backend.batch_budgets(run_cfg)
+
+        # Vision preflight: a backend that can't see images must never run the vision lane.
+        if args.lane == "vision" and not backend.VISION_CAPABLE:
+            raise SystemExit(f"enrich backend {backend.NAME!r} is not vision-capable; "
+                             "the vision lane requires a vision-capable backend")
+
+        # --status: backend-agnostic remaining-enrichable count (a Notion query via cowork).
+        if args.status:
+            if not args.group:
+                raise SystemExit("isa run --stage enrich --status: --group is required")
+            from insta_save.backends import cowork
+            collections_cfg = _load_collections()
+            print(f"{args.group}: {cowork.status(env, collections_cfg, args.group)} "
+                  f"enrichable remaining")
+            return
+
+        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
+        if args.lane == "vision":
+            kinds = {"Carousel", "Post"}
+            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = budgets.image_token_budget
+        else:
+            kinds = {"Reel", "IGTV"}
+            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = None
+
+        if backend.AUTOMATED:
+            # local/api fill results.json in-process, so one invocation DRAINS the group:
+            # prepare -> fill -> apply, looped until prepare batches nothing. --prepare/--apply
+            # are ignored here (the loop does both). --group is required (prepare needs it).
+            if not args.group:
+                raise SystemExit("isa run --stage enrich: --group is required for the "
+                                 f"{backend.NAME!r} backend (drains the group in one run)")
+            vocab = load_vocab()
+            collections_cfg = _load_collections()
+            log_path = setup_logging("enrich")
+            print(f"Logging to {log_path}")
+            enrich_dir = Path(env.tmp_dir) / "enrich"
+            while True:
+                with StageProgress("Enrich prepare") as progress:
+                    n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg,
+                                       vocab=vocab, char_budget=budgets.char_budget,
+                                       max_items=budgets.max_items, statuses=statuses,
+                                       prompt_template=template, kinds=kinds,
+                                       image_token_budget=image_budget, progress=progress)
+                if n == 0:
+                    print(f"ENRICH_DRAINED group={args.group} lane={args.lane}")
+                    break
+                backend.fill(env, run_cfg, enrich_dir)
+                with StageProgress("Enrich apply") as progress:
+                    counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                                          progress=progress)
+                print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+            return
+
+        # agent-filled backends (claude-code/cowork): one prepare or apply step; the driving
+        # session (or Cowork loop) runs the fill and re-invokes. --apply reads group from batch.json.
+        if not args.apply and not args.group:
+            raise SystemExit("isa run --stage enrich --prepare: --group is required")
         vocab = load_vocab()
         if args.apply:
             log_path = setup_logging("enrich-apply")
@@ -106,18 +167,9 @@ def dispatch_run(args) -> None:
         log_path = setup_logging("enrich-prepare")
         print(f"Logging to {log_path}")
         collections_cfg = _load_collections()
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
-        if args.lane == "vision":
-            kinds = {"Carousel", "Post"}
-            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
-            image_budget = run_cfg.image_token_budget
-        else:
-            kinds = {"Reel", "IGTV"}
-            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
-            image_budget = None
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
-                               char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
+                               char_budget=budgets.char_budget, max_items=budgets.max_items,
                                statuses=statuses, prompt_template=template,
                                kinds=kinds, image_token_budget=image_budget, progress=progress)
         if n == 0:
