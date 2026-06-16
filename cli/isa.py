@@ -179,7 +179,7 @@ def dispatch_run(args) -> None:
                 backend.fill(env, run_cfg, enrich_dir)
                 with StageProgress("Enrich apply") as progress:
                     counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
-                                          progress=progress)
+                                          collections_cfg=collections_cfg, progress=progress)
                 print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
                 # No-progress guard: prepare batched items but apply wrote none (every item
                 # failed, or fill produced no usable results). Those items stay Extracted, so
@@ -199,8 +199,10 @@ def dispatch_run(args) -> None:
         if args.apply:
             log_path = setup_logging("enrich-apply")
             print(f"Logging to {log_path}")
+            collections_cfg = _load_collections()
             with StageProgress("Enrich apply") as progress:
-                counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model, progress=progress)
+                counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                                      collections_cfg=collections_cfg, progress=progress)
             print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
             return
         # prepare (group guaranteed present by the guard above)

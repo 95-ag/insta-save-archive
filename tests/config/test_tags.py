@@ -46,3 +46,46 @@ def test_has_group(tmp_path):
     # contrast: group_topics still raises for uncalibrated groups
     with pytest.raises(KeyError):
         v.group_topics("Nope")
+
+
+# union_topics tests
+FIXTURE_TWO_GROUPS = {
+    "content_type": {"tool": "a thing to use"},
+    "groups": {
+        "Hustling": {"seo": "search ranking", "web-dev": "coding sites"},
+        "Biz": {"sales": "selling", "marketing": "outreach"},
+    },
+    "cross_group": {"ai": "applied ai"},
+}
+
+
+def _load_two(tmp_path):
+    p = tmp_path / "tags2.json"
+    p.write_text(json.dumps(FIXTURE_TWO_GROUPS), encoding="utf-8")
+    return tagcfg.load_vocab(p)
+
+
+def test_union_topics_single_group_equals_allowed_topics(tmp_path):
+    """Critical backward-compat: union_topics([G]) == allowed_topics(G)."""
+    v = _load(tmp_path)
+    assert tagcfg.union_topics(v, ["Hustling"]) == tagcfg.allowed_topics(v, "Hustling")
+
+
+def test_union_topics_two_groups_union_deduped(tmp_path):
+    v = _load_two(tmp_path)
+    result = tagcfg.union_topics(v, ["Hustling", "Biz"])
+    # Hustling granular first, then Biz granular, then cross_group; no dupes
+    assert result == ["seo", "web-dev", "sales", "marketing", "ai"]
+
+
+def test_union_topics_cross_group_not_duplicated(tmp_path):
+    """cross_group topics must appear exactly once even when both groups share them."""
+    v = _load_two(tmp_path)
+    result = tagcfg.union_topics(v, ["Hustling", "Biz"])
+    assert result.count("ai") == 1
+
+
+def test_union_topics_uncalibrated_group_raises(tmp_path):
+    v = _load(tmp_path)
+    with pytest.raises((KeyError, RuntimeError)):
+        tagcfg.union_topics(v, ["Nope"])

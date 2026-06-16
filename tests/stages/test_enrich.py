@@ -2,12 +2,27 @@
 import json
 import types
 from insta_save.stages import enrich
+from insta_save.config.collections import CollectionsConfig
 from insta_save.config.tags import Vocab
 
 
 class _Cols:
+    groups = ("Hustling", "Other")
+
     def group_of(self, c):
         return {"hust-a": "Hustling", "other": "Other"}.get(c)
+
+    def enrich_group(self, names):
+        # single-group: Hustling only; cross-group unsupported in this stub
+        groups = {self.group_of(c) for c in names if self.group_of(c) is not None}
+        order = ["Hustling", "Other"]
+        extract = [g for g in order if g in groups]
+        return extract[-1] if extract else None
+
+    def extract_groups_of(self, names):
+        order = ["Hustling", "Other"]
+        groups = {self.group_of(c) for c in names if self.group_of(c) is not None}
+        return [g for g in order if g in groups]
 
 
 def _vocab():
@@ -88,7 +103,8 @@ def test_prepare_budgets_on_rendered_prompt(tmp_path, monkeypatch):
 def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     (tmp_path / "enrich").mkdir()
     (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
-        {"group": "Hustling", "items": [{"page_id": "p1", "source_id": "s1"}]}))
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}))
     (tmp_path / "enrich" / "results.json").write_text(json.dumps([
         {"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S", "externals": "",
          "content_type": "tool", "topics": ["seo", "bogus", "ai"]}]))
@@ -96,7 +112,8 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(enrich, "write_enrichment",
                         lambda env, pid, fields, version: written.update({pid: (fields, version)}))
 
-    counts = enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet")
+    counts = enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet",
+                          collections_cfg=_Cols())
     fields, version = written["p1"]
     assert fields["tags"] == ["tool", "seo", "ai"]   # bogus dropped, content_type first
     assert version == "claude-sonnet/v2.0-enrich/Hustling"
@@ -128,7 +145,7 @@ def test_prepare_excludes_other_group(tmp_path, monkeypatch):
 def test_apply_errors_when_results_missing(tmp_path):
     (tmp_path / "enrich").mkdir()
     try:
-        enrich.apply(_env(tmp_path), vocab=_vocab(), model="m")
+        enrich.apply(_env(tmp_path), vocab=_vocab(), model="m", collections_cfg=_Cols())
         assert False, "expected FileNotFoundError"
     except FileNotFoundError:
         pass
@@ -173,3 +190,114 @@ def test_prepare_vision_lane_breaks_on_image_budget(monkeypatch, tmp_path):
                        prompt_template="H {vocab_block} E", kinds={"Carousel", "Post"},
                        image_token_budget=5000)
     assert n == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-group tests (Part 1: selection at last extract group; Part 2: union vocab)
+# ---------------------------------------------------------------------------
+
+def _cross_cfg():
+    """Two extract groups F (first) and G (second/last), plus a non-extract group N."""
+    return CollectionsConfig(
+        groups=("F", "G", "N"),
+        collections={
+            "col-f": {"group": "F", "extract": True},
+            "col-g": {"group": "G", "extract": True},
+            "col-n": {"group": "N", "extract": False},
+        },
+    )
+
+
+def _cross_vocab():
+    return Vocab(
+        content_types=["tool"],
+        cross_group_topics=["ai"],
+        _group_topics={"F": ["f-topic"], "G": ["g-topic"]},
+        definitions={"tool": "x", "ai": "y", "f-topic": "ff", "g-topic": "gg"},
+    )
+
+
+def test_ordered_stubs_cross_group_excluded_from_first_group(monkeypatch):
+    """A cross-group stub (F+G) must NOT be yielded when draining group F — it will
+    be enriched at G (its last extract group)."""
+    cfg = _cross_cfg()
+    # cross_stub is in both F and G collections
+    stubs = [
+        {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
+        {"page_id": "pure-f", "type": "Reel", "collections": ["col-f"]},
+    ]
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, bucket: stubs if bucket is None else [])
+    got = [s["page_id"] for s in enrich._ordered_group_stubs(
+        None, ["Extracted"], "F", cfg)]
+    # cross item's last extract group is G, not F -> excluded from F's drain
+    assert got == ["pure-f"]
+
+
+def test_ordered_stubs_cross_group_included_at_last_group(monkeypatch):
+    """The same cross-group stub IS yielded when draining its last extract group G."""
+    cfg = _cross_cfg()
+    stubs = [
+        {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
+        {"page_id": "pure-g", "type": "Reel", "collections": ["col-g"]},
+    ]
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, bucket: stubs if bucket is None else [])
+    got = [s["page_id"] for s in enrich._ordered_group_stubs(
+        None, ["Extracted"], "G", cfg)]
+    assert set(got) == {"cross", "pure-g"}
+
+
+def test_apply_cross_group_union_vocab_survives(tmp_path, monkeypatch):
+    """A cross-group result item's F-granular AND G-granular topics must both survive
+    validation — the old single-group allowed_topics(G) would strip F's granular tags."""
+    cfg = _cross_cfg()
+    vocab = _cross_vocab()
+    (tmp_path / "enrich").mkdir()
+    # batch.json: cross-group item that lives in both F and G collections
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps({
+        "group": "G",
+        "items": [{"page_id": "p1", "source_id": "s1", "collections": ["col-f", "col-g"]}],
+    }))
+    # result claims both f-topic (F-granular) and g-topic (G-granular) + cross-group ai
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([{
+        "page_id": "p1", "source_id": "s1",
+        "title": "T", "summary": "S", "externals": "",
+        "content_type": "tool", "topics": ["f-topic", "g-topic", "ai"],
+    }]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: (fields, version)}))
+    env = _env(tmp_path)
+    counts = enrich.apply(env, vocab=vocab, model="m", collections_cfg=cfg)
+    assert counts["written"] == 1
+    tags = written["p1"][0]["tags"]
+    assert "f-topic" in tags, "F-granular tag stripped — union_topics not applied"
+    assert "g-topic" in tags, "G-granular tag stripped"
+    assert "ai" in tags, "cross-group tag stripped"
+
+
+def test_prepare_cross_group_prompt_contains_union_vocab(tmp_path, monkeypatch):
+    """prepare() for group G with a cross-group item must render BOTH F and G granular
+    topics in the prompt vocab block."""
+    cfg = _cross_cfg()
+    vocab = _cross_vocab()
+    stubs = [{"page_id": "p1", "type": "Reel", "collections": ["col-f", "col-g"]}]
+    monkeypatch.setattr(enrich, "query_by_status_and_priority",
+                        lambda env, status, pr: stubs if pr is None else [])
+    monkeypatch.setattr(enrich, "get_page_content",
+                        lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
+                                          "transcript": "", "ocr_text": "", "type": "Reel",
+                                          "author": "a", "transcript_language": "en",
+                                          "collections": ["col-f", "col-g"]})
+
+    class _Env:
+        tmp_dir = str(tmp_path)
+
+    n = enrich.prepare(_Env(), group="G", collections_cfg=cfg, vocab=vocab,
+                       char_budget=10**9, max_items=10, statuses=["Extracted"],
+                       prompt_template="H {vocab_block} E")
+    assert n == 1
+    rendered = (tmp_path / "enrich" / "prompt.txt").read_text()
+    assert "f-topic" in rendered, "F-granular topic missing from union vocab block"
+    assert "g-topic" in rendered, "G-granular topic missing from union vocab block"

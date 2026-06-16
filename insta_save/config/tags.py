@@ -52,3 +52,26 @@ def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
 def allowed_topics(vocab: Vocab, group: str) -> list[str]:
     """Topic enum for a group: its granular topics first, then cross-group."""
     return vocab.group_topics(group) + vocab.cross_group_topics
+
+
+def union_topics(vocab: Vocab, groups: list[str]) -> list[str]:
+    """Union of granular topics across all groups (in groups order, deduped, first-occurrence
+    wins), followed by cross_group_topics. Raises KeyError/RuntimeError for uncalibrated groups —
+    §7.3 guarantees all enrich groups are locked by enrich time; failing loud is correct.
+
+    Single-group equivalence: union_topics(vocab, [G]) == allowed_topics(vocab, G).
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for g in groups:
+        if g not in vocab._group_topics:
+            raise KeyError(f"tags: no topics for group {g!r} (uncalibrated — lock vocab before enrich)")
+        for t in vocab.group_topics(g):
+            if t not in seen:
+                seen.add(t)
+                result.append(t)
+    for t in vocab.cross_group_topics:
+        if t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result

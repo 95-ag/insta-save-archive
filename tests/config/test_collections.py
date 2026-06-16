@@ -52,6 +52,18 @@ def test_enrich_group_is_last_extract_group(tmp_path):
     assert c.enrich_group(["Makeup"]) is None
 
 
+def test_extract_groups_of(tmp_path):
+    c = _load(tmp_path)
+    # cross-group item spanning Hustling (extract) + Biz (extract) -> both, in groups order
+    assert c.extract_groups_of(["Coding", "Hustle Ideas"]) == ["Hustling", "Biz"]
+    # single-group item
+    assert c.extract_groups_of(["Coding"]) == ["Hustling"]
+    # non-extract-only item (Lifestyle extract=False) -> []
+    assert c.extract_groups_of(["Makeup"]) == []
+    # enrich_group is still the last element (backward-compat)
+    assert c.enrich_group(["Coding", "Hustle Ideas"]) == "Biz"
+
+
 def test_legacy_flat_shape_raises(tmp_path):
     # v1 flat shape (top-level name -> {slug, group, ...}, no "collections" key)
     # must fail loudly, not silently yield an empty collections map.

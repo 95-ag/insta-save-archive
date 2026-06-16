@@ -137,15 +137,16 @@ def test_enrich_apply_calls_stage(monkeypatch):
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
     monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
-    def _fake_apply(env, *, vocab, model, progress=None):
-        calls["apply"] = (vocab, model, progress is not None)
+    def _fake_apply(env, *, vocab, model, collections_cfg, progress=None):
+        calls["apply"] = (vocab, model, collections_cfg, progress is not None)
         return {"written": 1, "failed": 0}
     monkeypatch.setattr(isa.enrich, "apply", _fake_apply)
     args = isa.build_parser().parse_args(["run", "--stage", "enrich", "--apply"])
     isa.dispatch_run(args)
-    assert calls["apply"] == ("VOCAB", "claude-sonnet", True)  # progress passed through
+    assert calls["apply"] == ("VOCAB", "claude-sonnet", "COLS", True)  # collections_cfg + progress passed through
 
 
 def test_discover_parser_accepts_flags():

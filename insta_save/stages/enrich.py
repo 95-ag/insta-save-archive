@@ -16,7 +16,7 @@ from insta_save.adapters.notion import (get_page_content, query_by_status_and_pr
                                         write_enrichment)
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
-from insta_save.config.tags import allowed_topics
+from insta_save.config.tags import allowed_topics, union_topics
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=None):
             for stub in query_by_status_and_priority(env, status, bucket):
                 if kinds is not None and stub.get("type") not in kinds:
                     continue
-                if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
+                if collections_cfg.enrich_group(stub.get("collections", [])) == group:
                     yield stub
 
 
@@ -60,9 +60,15 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
     (sum of slide_images * PER_SLIDE_IMAGE_TOKENS). The first item is always admitted;
     subsequent items break the loop when this budget would be exceeded."""
     items = []
-    total = prompt.header_len(group, vocab, prompt_template, output_language)
+    # batch_groups is computed incrementally as items are admitted; used for union vocab.
+    # Start with a placeholder — header_len is re-computed once items are known.
     img_total = 0
     bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
+
+    # Seed header length using single-group vocab (conservative starting estimate).
+    # Will be recalculated with the actual batch_groups once all items are collected.
+    total = prompt.header_len(group, vocab, prompt_template, output_language)
+
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=kinds):
         if max_items is not None and len(items) >= max_items:
             break
@@ -84,21 +90,39 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
         log.info("enrich.prepare: no items left for group %s", group)
         return 0
 
+    # Compute the ordered union of extract groups across all admitted items (§7.3).
+    # This drives the union vocab in the prompt. For a single-group batch this equals [group].
+    seen_groups: set[str] = set()
+    batch_groups: list[str] = []
+    for g in collections_cfg.groups:
+        for item in items:
+            item_groups = collections_cfg.extract_groups_of(item.get("collections", []))
+            if g in item_groups and g not in seen_groups:
+                seen_groups.add(g)
+                batch_groups.append(g)
+
     d = _enrich_dir(env)
     (d / "batch.json").write_text(
         json.dumps({"group": group, "items": items}, ensure_ascii=False, indent=2),
         encoding="utf-8")
     (d / "prompt.txt").write_text(
-        prompt.build_prompt(group, items, vocab, prompt_template, output_language), encoding="utf-8")
-    log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s", len(items), total, group)
+        prompt.build_prompt(group, items, vocab, prompt_template, output_language,
+                            groups=batch_groups),
+        encoding="utf-8")
+    log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s (batch_groups=%s)",
+             len(items), total, group, batch_groups)
     return len(items)
 
 
-def apply(env, *, vocab, model, progress=None) -> dict:
+def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
     """Read results.json, validate tags vs the locked vocab, write each to Notion.
     Reads batch.json for the group (-> vocab axis + enrich_version). Cleans tmp on
     full success. Returns {written, failed}. Optional `progress` (StageProgress)
-    shows a live per-item bar."""
+    shows a live per-item bar.
+
+    collections_cfg: used to resolve each result item's extract groups for per-item
+    union-vocab validation (§7.3). Cross-group items carry topics from multiple groups;
+    validating only against the batch group's allowed_topics would strip valid tags."""
     d = _enrich_dir(env)
     batch_file, results_file = d / "batch.json", d / "results.json"
     if not results_file.exists():
@@ -108,7 +132,12 @@ def apply(env, *, vocab, model, progress=None) -> dict:
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     group = batch["group"]
     version = f"{model}/{env.enrich_version}/{group}"
-    topics_allowed = allowed_topics(vocab, group)
+
+    # Build a page_id -> collections lookup from the batch so apply can resolve
+    # each item's groups without an extra Notion read.
+    batch_collections: dict[str, list[str]] = {
+        i["page_id"]: i.get("collections", []) for i in batch.get("items", [])
+    }
 
     results = parse_results(results_file)
     counts = {"written": 0, "failed": 0}
@@ -124,6 +153,17 @@ def apply(env, *, vocab, model, progress=None) -> dict:
             if progress:
                 progress.bump("failed"); progress.advance(bar)
             continue
+
+        # Per-item union vocab: a cross-group item's granular topics span multiple groups.
+        # Fall back to single-group allowed_topics when the item isn't in the batch map
+        # (defensive; shouldn't happen in normal operation).
+        item_collections = batch_collections.get(page_id)
+        if item_collections is not None:
+            item_groups = collections_cfg.extract_groups_of(item_collections)
+            topics_allowed = union_topics(vocab, item_groups) if item_groups else allowed_topics(vocab, group)
+        else:
+            topics_allowed = allowed_topics(vocab, group)
+
         content_type, topics = enrich_schema.validate_item(
             item, vocab.content_types, topics_allowed)
         fields = {
