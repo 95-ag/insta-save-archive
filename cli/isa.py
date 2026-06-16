@@ -311,6 +311,22 @@ def dispatch_run(args) -> None:
               f"{r.get('skipped_extract_path', 0)} skipped (extract path).")
         return
 
+    if args.stage == "route":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        ensure_schema(env)
+        from insta_save.config.routes import load_routes
+        from insta_save.stages.route import run_route_stage
+        routes = load_routes()
+        log_path = setup_logging("route")
+        print(f"Logging to {log_path}")
+        with StageProgress("Route") as progress:
+            r = run_route_stage(env, routes, collections_cfg, progress,
+                                limit=args.limit, group=args.group, dry_run=args.dry_run)
+        print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
+              f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
+        return
+
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 

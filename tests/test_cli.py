@@ -60,7 +60,7 @@ def test_run_extract_dispatches(monkeypatch):
 def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
-            "mode": "incremental", "stage": "route", "group": None,
+            "mode": "incremental", "stage": "discover", "group": None,
             "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
             "confirm_removed": None, "apply": False, "prepare": False,
@@ -344,3 +344,51 @@ def test_enrich_lane_arg_defaults_text():
     args2 = build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--group", "G", "--lane", "vision"])
     assert args2.lane == "vision"
+
+
+class _FakeProgress2:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def _route_common(monkeypatch):
+    """Patch everything dispatch_run needs for the route branch except run_route_stage."""
+    import insta_save.stages.route as route_mod
+    monkeypatch.setattr(isa, "_load_env", lambda: "ENV")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress2())
+    # Patch load_routes at the import site used by dispatch_run (cli.isa local import)
+    import insta_save.config.routes as routes_mod
+    monkeypatch.setattr(routes_mod, "load_routes", lambda: [])
+    return route_mod
+
+
+def test_route_dispatches_with_group(monkeypatch):
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None, dry_run=False):
+        calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
+        return {"routed": 3, "unrouted": 1, "failed": 0}
+    monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--group", "Biz"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["group"] == "Biz"
+    assert calls["kwargs"]["dry_run"] is False
+
+
+def test_route_dispatches_dry_run(monkeypatch):
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None, dry_run=False):
+        calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
+        return {"routed": 0, "unrouted": 2, "failed": 0}
+    monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--dry-run"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["dry_run"] is True
