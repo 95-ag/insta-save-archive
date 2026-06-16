@@ -208,6 +208,7 @@ def _row(page: dict) -> dict:
     author_blocks = props.get("author", {}).get("rich_text", [])
     type_select = props.get("type", {}).get("select") or {}
     collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
+    tags = [t["name"] for t in props.get("tags", {}).get("multi_select", [])]
     return {
         "page_id": page["id"],
         "source_id": sid_blocks[0]["text"]["content"] if sid_blocks else None,
@@ -215,6 +216,7 @@ def _row(page: dict) -> dict:
         "ig_link": props.get("ig_link", {}).get("url"),
         "type": type_select.get("name"),
         "collections": collections,
+        "tags": tags,
     }
 
 
@@ -380,6 +382,21 @@ def write_deterministic(env: EnvConfig, page_id: str, title: str, tags: list, ve
         log.info("notion: wrote deterministic %s for page %s", version, page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: failed to write deterministic for {page_id}: {e}") from e
+
+
+def write_route(env: EnvConfig, page_id: str, route_target: str) -> None:
+    """Route a Tagged item -> Routed: set route_target (select) + status. Idempotent."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Routed"),
+        "route_target": _select(route_target),
+    }
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: routed page %s -> %s", page_id, route_target)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to route {page_id}: {e}") from e
 
 
 def create_page(env: EnvConfig, metadata: dict) -> str:

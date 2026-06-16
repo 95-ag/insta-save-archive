@@ -139,3 +139,45 @@ def test_slide_images_from_raw_resolves_paths():
 
 def test_slide_images_from_raw_empty_when_no_slides():
     assert notion._slide_images_from_raw({"v": {"transcript": "x"}}, "tmp", "v") == []
+
+
+def test_write_route_sets_routed_status_and_route_target(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.write_route(env, "pg42", "ToolsDB")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg42"
+    assert props["status"]["select"]["name"] == "Routed"
+    assert props["route_target"]["select"]["name"] == "ToolsDB"
+    # write_route must NOT touch title/summary/externals/tags
+    assert "title" not in props and "summary" not in props
+    assert "tags" not in props and "externals" not in props
+
+
+def test_row_includes_tags():
+    page = {"id": "p3", "properties": {
+        "source_id": {"rich_text": [{"text": {"content": "abc"}}]},
+        "tags": {"multi_select": [{"name": "clothing"}, {"name": "inspo"}]},
+        "collection": {"multi_select": []},
+    }}
+    row = notion._row(page)
+    assert row["tags"] == ["clothing", "inspo"]
+
+
+def test_row_tags_defaults_to_empty_list():
+    page = {"id": "p4", "properties": {}}
+    assert notion._row(page)["tags"] == []
