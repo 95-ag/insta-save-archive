@@ -757,3 +757,124 @@ def test_mode_usage_reminder_not_printed_when_none(monkeypatch, capsys):
     isa._dispatch_mode(args)
     out = capsys.readouterr().out
     assert "usage" not in out.lower() and "reminder" not in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Item 1: --prepare / --apply mutual exclusivity
+# ---------------------------------------------------------------------------
+
+def test_enrich_both_prepare_and_apply_raises(monkeypatch):
+    """Passing both --prepare and --apply on the agent-filled enrich path must raise SystemExit."""
+    import cli.isa as isa
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare", "--apply", "--group", "Hustling"])
+    with pytest.raises(SystemExit) as exc_info:
+        isa.dispatch_run(args)
+    assert "exactly one" in str(exc_info.value)
+
+
+def test_deterministic_llm_both_prepare_and_apply_raises(monkeypatch):
+    """Passing both --prepare and --apply on the deterministic llm agent-filled path must raise SystemExit."""
+    import cli.isa as isa
+    _det_common(monkeypatch, _llm_run_obj())
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "deterministic", "--prepare", "--apply"])
+    with pytest.raises(SystemExit) as exc_info:
+        isa.dispatch_run(args)
+    assert "exactly one" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Item 2: Relative log path in printed output
+# ---------------------------------------------------------------------------
+
+def test_select_prints_relative_log_path(monkeypatch, capsys):
+    """The 'Logging to ...' line should print a relative path, not an absolute one."""
+    import os
+    import types
+    import cli.isa as isa
+    from insta_save.stages import select as select_mod
+
+    abs_log = os.path.join(os.getcwd(), "logs", "select-20260616_120000.log")
+    monkeypatch.setattr(isa, "_load_env",
+                        lambda: types.SimpleNamespace(notion_write_delay=0.0))
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: abs_log)
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+    monkeypatch.setattr(select_mod, "run_select_stage",
+                        lambda env, cols, progress, **kw: {"queued": 1, "deterministic_pending": 0})
+
+    args = isa.build_parser().parse_args(["run", "--stage", "select"])
+    isa.dispatch_run(args)
+
+    out = capsys.readouterr().out
+    log_line = next(l for l in out.splitlines() if "Logging to" in l)
+    # Must be relative (not starting with /)
+    logged_path = log_line.split("Logging to ", 1)[1].strip()
+    assert not os.path.isabs(logged_path), f"Expected relative path, got: {logged_path}"
+
+
+# ---------------------------------------------------------------------------
+# Item 3: Route dry-run forces write_delay=0; non-dry forwards env.notion_write_delay
+# ---------------------------------------------------------------------------
+
+def test_route_dry_run_forces_write_delay_zero(monkeypatch):
+    """run_route_stage must receive write_delay=0 when dry_run=True."""
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                        dry_run=False, write_delay=0.0):
+        calls["write_delay"] = write_delay
+        return {"routed": 0, "unrouted": 1, "failed": 0}
+
+    monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--dry-run"])
+    isa.dispatch_run(args)
+
+    assert calls["write_delay"] == 0
+
+
+def test_route_non_dry_forwards_notion_write_delay(monkeypatch):
+    """run_route_stage must receive write_delay=env.notion_write_delay on a normal (non-dry) run."""
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                        dry_run=False, write_delay=0.0):
+        calls["write_delay"] = write_delay
+        return {"routed": 2, "unrouted": 0, "failed": 0}
+
+    monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
+    # _route_common patches notion_write_delay=0.4 via _load_env
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+
+    assert calls["write_delay"] == 0.4
+
+
+# ---------------------------------------------------------------------------
+# Item 4: Dry-run label on gate messages in _print_plan
+# ---------------------------------------------------------------------------
+
+def test_mode_calibrate_gate_prints_dry_run_label(monkeypatch, capsys):
+    """When dry_run=True and the next_action is a calibrate gate, the gate message should contain '(dry-run)'."""
+    plan = _make_plan("calibrate", automated=False)
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
+    isa._dispatch_mode(args)
+    out = capsys.readouterr().out
+    assert "NEXT (manual)" in out
+    assert "(dry-run)" in out
+
+
+def test_mode_agent_enrich_gate_prints_dry_run_label(monkeypatch, capsys):
+    """When dry_run=True and the next_action is a non-automated enrich step, the gate message should contain '(dry-run)'."""
+    plan = _make_plan("enrich", automated=False)
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
+    isa._dispatch_mode(args)
+    out = capsys.readouterr().out
+    assert "NEXT (manual)" in out
+    assert "(dry-run)" in out

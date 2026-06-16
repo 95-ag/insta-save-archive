@@ -1,6 +1,7 @@
 """isa — Insta-Save v2 CLI entrypoint. Arg surface only; stages are stubbed until built."""
 
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +23,11 @@ from insta_save.orchestrator.sequence import run_first_time, run_incremental
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+
+
+def _rel(p: str) -> str:
+    """Return a relative form of an absolute log path for readable console output."""
+    return os.path.relpath(str(p))
 
 _STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed", "remaining")
 
@@ -92,7 +98,7 @@ def dispatch_run(args) -> None:
         collections_cfg = _load_collections()
         ensure_schema(env)
         log_path = setup_logging("extract")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         with StageProgress("Extract") as progress:
             run_extract_stage(
                 env, run_cfg.extract, progress,
@@ -106,7 +112,7 @@ def dispatch_run(args) -> None:
             raise SystemExit("isa run --stage calibrate: --group is required")
         env = _load_env()
         log_path = setup_logging("calibrate")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         collections_cfg = _load_collections()
         statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
         template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
@@ -168,7 +174,7 @@ def dispatch_run(args) -> None:
             vocab = load_vocab()
             collections_cfg = _load_collections()
             log_path = setup_logging("enrich")
-            print(f"Logging to {log_path}")
+            print(f"Logging to {_rel(log_path)}")
             totals = enrich.drain_enrich_group(
                 env, run_cfg, collections_cfg, vocab, backend, args.group,
                 lanes=[args.lane],
@@ -184,12 +190,14 @@ def dispatch_run(args) -> None:
 
         # agent-filled backends (claude-code/cowork): one prepare or apply step; the driving
         # session (or Cowork loop) runs the fill and re-invokes. --apply reads group from batch.json.
+        if args.prepare and args.apply:
+            raise SystemExit("isa run --stage enrich: pass exactly one of --prepare/--apply")
         if not args.apply and not args.group:
             raise SystemExit("isa run --stage enrich --prepare: --group is required")
         vocab = load_vocab()
         if args.apply:
             log_path = setup_logging("enrich-apply")
-            print(f"Logging to {log_path}")
+            print(f"Logging to {_rel(log_path)}")
             collections_cfg = _load_collections()
             with StageProgress("Enrich apply") as progress:
                 counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
@@ -198,7 +206,7 @@ def dispatch_run(args) -> None:
             return
         # prepare (group guaranteed present by the guard above)
         log_path = setup_logging("enrich-prepare")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         collections_cfg = _load_collections()
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
@@ -222,7 +230,7 @@ def dispatch_run(args) -> None:
         collections_cfg = _load_collections()
         ensure_schema(env)
         log_path = setup_logging("ingest")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.ingest import run_ingest
         names = [args.collection] if getattr(args, "collection", None) else None
         confirmed = set(args.confirm_removed or [])
@@ -240,7 +248,7 @@ def dispatch_run(args) -> None:
         env = _load_env()
         collections_cfg = _load_collections()
         log_path = setup_logging("select")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.select import run_select_stage
         with StageProgress("Select") as progress:
             r = run_select_stage(env, collections_cfg, progress,
@@ -272,7 +280,7 @@ def dispatch_run(args) -> None:
                     raise SystemExit("isa run --stage deterministic: --group is required for the "
                                      f"{backend.NAME!r} backend (drains the group in one run)")
                 log_path = setup_logging("deterministic")
-                print(f"Logging to {log_path}")
+                print(f"Logging to {_rel(log_path)}")
                 det_dir = Path(env.tmp_dir) / "deterministic"
                 while True:
                     with StageProgress("Deterministic prepare") as progress:
@@ -300,9 +308,11 @@ def dispatch_run(args) -> None:
             if not (args.prepare or args.apply):
                 raise SystemExit("isa run --stage deterministic: title_mode=llm requires "
                                  "--prepare or --apply")
+            if args.prepare and args.apply:
+                raise SystemExit("isa run --stage deterministic: pass exactly one of --prepare/--apply")
             if args.apply:
                 log_path = setup_logging("deterministic-apply")
-                print(f"Logging to {log_path}")
+                print(f"Logging to {_rel(log_path)}")
                 with StageProgress("Deterministic apply") as progress:
                     counts = det.apply(env, progress=progress)
                 print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
@@ -310,7 +320,7 @@ def dispatch_run(args) -> None:
             if not args.group:
                 raise SystemExit("isa run --stage deterministic --prepare: --group is required")
             log_path = setup_logging("deterministic-prepare")
-            print(f"Logging to {log_path}")
+            print(f"Logging to {_rel(log_path)}")
             with StageProgress("Deterministic prepare") as progress:
                 r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
                                 language=run_cfg.output_language, prompt_template=template,
@@ -326,7 +336,7 @@ def dispatch_run(args) -> None:
             return
         # template mode (one-shot)
         log_path = setup_logging("deterministic")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         with StageProgress("Deterministic") as progress:
             r = det.run_deterministic_stage(env, collections_cfg, progress,
                                             limit=args.limit, group=args.group,
@@ -343,11 +353,11 @@ def dispatch_run(args) -> None:
         from insta_save.stages.route import run_route_stage
         routes = load_routes()
         log_path = setup_logging("route")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         with StageProgress("Route") as progress:
             r = run_route_stage(env, routes, collections_cfg, progress,
                                 limit=args.limit, group=args.group, dry_run=args.dry_run,
-                                write_delay=env.notion_write_delay)
+                                write_delay=0 if args.dry_run else env.notion_write_delay)
         print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
         return
@@ -365,9 +375,7 @@ def _dispatch_mode(args) -> None:
     routes = load_routes()
 
     log_path = setup_logging("run")
-    # Log path is relative for readability; Path(log_path).name gives just the filename.
-    rel = Path(log_path).name
-    print(f"Logging to logs/{rel}")
+    print(f"Logging to {_rel(log_path)}")
 
     # Preflight: backend reachable, Notion config present, engines importable, effort valid.
     preflight(env, run_cfg, stages={"extract", "enrich"})
@@ -411,7 +419,7 @@ def _print_plan(plan, dry_run: bool) -> None:
     if not na.automated:
         if na.action == "calibrate":
             print(
-                f"\nNEXT (manual): {na.group} — {na.detail}\n"
+                f"\nNEXT (manual){label}: {na.group} — {na.detail}\n"
                 f"  Run: isa run --stage calibrate --group {na.group!r}\n"
                 f"  Then review tmp/calibrate/proposed_tags.json, lock vocab in "
                 f"config/tags.json, and re-run isa run --mode first-time."
@@ -419,7 +427,7 @@ def _print_plan(plan, dry_run: bool) -> None:
         else:
             # agent-filled enrich gate
             print(
-                f"\nNEXT (manual): {na.group} — {na.detail}\n"
+                f"\nNEXT (manual){label}: {na.group} — {na.detail}\n"
                 f"  Run: isa run --stage enrich --prepare --group {na.group!r}\n"
                 f"  Then fill tmp/enrich/prompt.txt → tmp/enrich/results.json, "
                 f"and: isa run --stage enrich --apply"
@@ -441,7 +449,7 @@ def main() -> None:
         env = _load_env()
         ig_username = args.ig_username or env.ig_username
         log_path = setup_logging("discover")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.discover import run_discover
         names = [args.collection] if args.collection else None
         summary = run_discover(env, ig_username=ig_username,
@@ -455,7 +463,7 @@ def main() -> None:
         env = _load_env()
         collections_cfg = _load_collections()
         log_path = setup_logging("backup")
-        print(f"Logging to {log_path}")
+        print(f"Logging to {_rel(log_path)}")
         out_dir = Path(env.tmp_dir) / "backups"
         if args.restore_check:
             # Find the newest backup file (ts format sorts lexically = chronologically).

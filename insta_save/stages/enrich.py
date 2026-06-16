@@ -65,8 +65,10 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
     img_total = 0
     bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
 
-    # Seed header length using single-group vocab (conservative starting estimate).
-    # Will be recalculated with the actual batch_groups once all items are collected.
+    # Seed total with the single-group header length (conservative estimate).
+    # For a cross-group batch the actual prompt.txt uses the union vocab header, which is
+    # slightly longer — so total underestimates marginally (acceptable soft-cap; the rendered
+    # prompt may marginally exceed char_budget, but raw_extraction is unaffected).
     total = prompt.header_len(group, vocab, prompt_template, output_language)
 
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=kinds):

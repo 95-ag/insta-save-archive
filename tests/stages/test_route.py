@@ -1,5 +1,6 @@
 import insta_save.stages.route as route
 from insta_save.config.routes import Routes
+from insta_save.orchestrator import runner as runner_mod
 
 
 class _Cfg:
@@ -51,3 +52,40 @@ def test_route_item_tag_wins_over_collection(monkeypatch):
     routes = Routes(by_tag={"tool": "TagDB"}, by_collection={"a-coll": "CollDB"})
     assert route._route_item(None, _item(tags=["tool"], collections=["a-coll"]), routes, _Cfg()) == "routed"
     assert written == {"p1": "TagDB"}
+
+
+# ---------------------------------------------------------------------------
+# Item 3: dry_run=True forces write_delay=0 regardless of the caller's value
+# ---------------------------------------------------------------------------
+
+def test_run_route_stage_dry_run_forces_write_delay_zero(monkeypatch):
+    """When dry_run=True, run_route_stage must pass write_delay=0 to run_priority_stage
+    regardless of the write_delay argument supplied by the caller."""
+    captured = {}
+
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        captured["write_delay"] = write_delay
+        return {}
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    route.run_route_stage(None, Routes(), _Cfg(), None,
+                          dry_run=True, write_delay=0.5)
+    assert captured["write_delay"] == 0
+
+
+def test_run_route_stage_non_dry_passes_write_delay(monkeypatch):
+    """When dry_run=False, run_route_stage forwards the write_delay argument unchanged."""
+    captured = {}
+
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        captured["write_delay"] = write_delay
+        return {}
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    route.run_route_stage(None, Routes(), _Cfg(), None,
+                          dry_run=False, write_delay=0.7)
+    assert captured["write_delay"] == 0.7
