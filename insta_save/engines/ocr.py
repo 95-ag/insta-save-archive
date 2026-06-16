@@ -14,6 +14,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from insta_save.adapters.instagram.cookies import json_cookies_to_netscape
+
 log = logging.getLogger(__name__)
 
 CAROUSEL_NEXT_SEL = "button[aria-label='Next']"
@@ -53,24 +55,6 @@ def ocr_image(image_path: str) -> tuple[str, float | None]:
 
 
 # --- helpers ----------------------------------------------------------------
-def _netscape_cookies(json_path: str, txt_path: str) -> None:
-    """Convert session_cookies.json to Netscape format for yt-dlp."""
-    with open(json_path) as f:
-        cookies = json.load(f)
-    lines = ["# Netscape HTTP Cookie File"]
-    for c in cookies:
-        domain = c.get("domain", "")
-        flag = "TRUE" if domain.startswith(".") else "FALSE"
-        path = c.get("path", "/")
-        secure = "TRUE" if c.get("secure") else "FALSE"
-        expiry = str(int(c.get("expirationDate", 0)))
-        name = c.get("name", "")
-        value = c.get("value", "")
-        lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
-    with open(txt_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-
-
 def _load_session_cookies(json_path: str) -> str:
     """Return a Cookie header value built from session_cookies.json."""
     with open(json_path) as f:
@@ -240,7 +224,7 @@ def extract_ocr_frames(
     tmp.mkdir(exist_ok=True)
 
     cookies_txt = str(tmp / "cookies.txt")
-    _netscape_cookies(cookies_json, cookies_txt)
+    json_cookies_to_netscape(cookies_json, cookies_txt)
 
     video_path = str(tmp / f"{shortcode}_ocr.mp4")
     frames_dir = tmp / f"{shortcode}_frames"

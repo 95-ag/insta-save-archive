@@ -26,3 +26,49 @@ def test_slide_record_empty_text_is_none():
 def test_ocr_score_text_without_scores():
     # boxes have text but no confidence score -> text returned, confidence None
     assert ocr.ocr_score([[None, "hello", None]]) == ("hello", None)
+
+
+def test_ocr_cookies_reads_expires_not_expirationDate(tmp_path):
+    """extract_ocr_frames must produce a Netscape cookies file that carries the
+    real `expires` timestamp, not 0.  The old private _netscape_cookies read
+    `expirationDate` which is absent in session_cookies.json and always yielded 0.
+    After the refactor, ocr.py calls the canonical json_cookies_to_netscape which
+    reads `expires` — so the produced file must contain 1893456000."""
+    import json
+
+    cookies = [
+        {
+            "name": "sessionid",
+            "value": "abc123",
+            "domain": ".instagram.com",
+            "path": "/",
+            "secure": True,
+            "expires": 1893456000,
+        }
+    ]
+    json_path = tmp_path / "session_cookies.json"
+    json_path.write_text(json.dumps(cookies))
+
+    out_path = tmp_path / "cookies.txt"
+
+    # ocr.py must no longer have a private _netscape_cookies helper — it must
+    # delegate to the canonical converter from adapters.instagram.cookies.
+    assert not hasattr(ocr, "_netscape_cookies"), (
+        "_netscape_cookies should have been removed from ocr.py; "
+        "use json_cookies_to_netscape from adapters.instagram.cookies instead"
+    )
+
+    # Verify the canonical converter (which ocr.py now calls) reads `expires`
+    from insta_save.adapters.instagram.cookies import json_cookies_to_netscape
+    json_cookies_to_netscape(str(json_path), str(out_path))
+    content = out_path.read_text()
+    assert "1893456000" in content, (
+        "Canonical converter must preserve the `expires` timestamp; got:\n" + content
+    )
+    # Confirm the old bug is absent: expirationDate-reading code produced 0
+    lines = [ln for ln in content.splitlines() if "sessionid" in ln]
+    assert lines, "Expected a sessionid cookie line"
+    assert "\t0\t" not in lines[0], (
+        "Expires field is 0 — converter is still reading `expirationDate`; "
+        "should read `expires`"
+    )
