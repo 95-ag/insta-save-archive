@@ -500,3 +500,23 @@ def mark_queued(env: EnvConfig, page_id: str) -> None:
         log.info("notion: marked %s Queued", page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: mark_queued failed on {page_id}: {e}") from e
+
+
+def requeue(env: EnvConfig, page_id: str, status: str) -> None:
+    """Reset a Failed item to the given status and clear its failure_notes.
+
+    Used by retry_failed to send items back to Queued or Extracted.
+    failure_notes is cleared by passing an empty rich_text array — passing
+    _rich_text("") would leave a block with empty content; {"rich_text": []}
+    removes all blocks and reads back as empty/None."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        client.pages.update(page_id=page_id, properties={
+            "status": _select(status),
+            "failure_notes": {"rich_text": []},
+        })
+        log.info("notion: requeued %s → %s (failure_notes cleared)", page_id, status)
+    except APIResponseError as e:
+        log.error("notion: could not requeue %s: %s", page_id, e)
+        raise

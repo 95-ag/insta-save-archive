@@ -511,6 +511,82 @@ def test_backup_command_restore_check_mismatch(monkeypatch, tmp_path, capsys):
     assert "mismatch" in out.lower() or "delta" in out.lower() or "2" in out
 
 
+# ---------------------------------------------------------------------------
+# status CLI tests
+# ---------------------------------------------------------------------------
+
+def _fake_status_rows():
+    return [
+        {"group": "Hustling", "Imported": 2, "Queued": 0, "Extracted": 1,
+         "Tagged": 3, "Routed": 0, "Failed": 0, "remaining": 3},
+        {"group": "Biz", "Imported": 1, "Queued": 1, "Extracted": 0,
+         "Tagged": 0, "Routed": 0, "Failed": 1, "remaining": 2},
+        {"group": "TOTAL", "Imported": 3, "Queued": 1, "Extracted": 1,
+         "Tagged": 3, "Routed": 0, "Failed": 1, "remaining": 5},
+    ]
+
+
+def _patch_status_common(monkeypatch):
+    import types
+    env = types.SimpleNamespace()
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    return env
+
+
+def test_status_command_calls_build_status_and_prints_table(monkeypatch, capsys):
+    _patch_status_common(monkeypatch)
+    monkeypatch.setattr(isa, "build_status", lambda env, cols: _fake_status_rows())
+
+    import types as _types
+    _args = _types.SimpleNamespace(command="status", retry_failed=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "Hustling" in out
+    assert "Biz" in out
+    assert "TOTAL" in out
+
+
+def test_status_retry_failed_calls_retry_and_prints_summary(monkeypatch, capsys):
+    _patch_status_common(monkeypatch)
+    monkeypatch.setattr(isa, "_retry_failed",
+                        lambda env: {"requeued": 3, "to_extracted": 2, "to_queued": 1})
+
+    import types as _types
+    _args = _types.SimpleNamespace(command="status", retry_failed=True)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "3" in out  # requeued count
+    assert "Extracted" in out
+    assert "Queued" in out
+
+
+def test_status_parser_accepts_retry_failed():
+    args = build_parser().parse_args(["status", "--retry-failed"])
+    assert args.command == "status"
+    assert args.retry_failed is True
+
+
+def test_status_parser_retry_failed_defaults_false():
+    args = build_parser().parse_args(["status"])
+    assert args.retry_failed is False
+
+
 def test_backup_command_restore_check_no_file(monkeypatch, tmp_path, capsys):
     """isa backup --restore-check with no backup file → prints clear message, no crash."""
     import insta_save.backup as backup_mod

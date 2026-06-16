@@ -183,6 +183,44 @@ def test_row_tags_defaults_to_empty_list():
     assert notion._row(page)["tags"] == []
 
 
+def test_requeue_sets_status_and_clears_failure_notes(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.requeue(env, "pg-fail-1", "Queued")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg-fail-1"
+    assert props["status"]["select"]["name"] == "Queued"
+    # failure_notes must be cleared: empty rich_text array (not a block with empty content)
+    assert props["failure_notes"] == {"rich_text": []}
+
+
+def test_requeue_to_extracted(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(notion, "Client",
+                        lambda auth: type("C", (), {"pages": type("P", (), {
+                            "update": lambda self, page_id, properties: captured.update(
+                                page_id=page_id, props=properties)})()})())
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    notion.requeue(type("E", (), {"notion_token": "t"})(), "pg-2", "Extracted")
+    assert captured["props"]["status"]["select"]["name"] == "Extracted"
+    assert captured["props"]["failure_notes"] == {"rich_text": []}
+
+
 def test_query_all_pages_paginates_and_returns_all(monkeypatch):
     """query_all_pages follows the cursor across two pages and returns every page dict."""
     page_a = {"id": "p1", "properties": {"source_id": {"rich_text": [{"text": {"content": "abc"}}]}}}

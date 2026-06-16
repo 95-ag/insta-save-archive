@@ -14,8 +14,33 @@ from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
 from insta_save.stages.calibrate import sample as calibrate_sample
 from insta_save.backup import backup, restore_check
+from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+
+_STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed", "remaining")
+
+
+def _print_status_table(rows: list[dict]) -> None:
+    """Render per-group pipeline counts using rich.Table."""
+    from rich.table import Table
+    from rich.console import Console
+
+    table = Table(title="Pipeline status", show_header=True, header_style="bold")
+    table.add_column("Group", style="cyan", no_wrap=True)
+    for col in _STATUS_COLS:
+        table.add_column(col, justify="right")
+
+    for row in rows:
+        is_total = row["group"] == "TOTAL"
+        style = "bold" if is_total else None
+        table.add_row(
+            row["group"],
+            *[str(row.get(c, 0)) for c in _STATUS_COLS],
+            style=style,
+        )
+
+    Console().print(table)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,7 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lane", choices=["text", "vision"], default="text")
     run.add_argument("--status", action="store_true")
 
-    sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
+    st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
+    st.add_argument("--retry-failed", action="store_true",
+                    help="Requeue all Failed items back to their inferred prior status.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
     bk.add_argument("--restore-check", action="store_true")
     return p
@@ -384,6 +411,18 @@ def main() -> None:
             import json as _json
             written_count = _json.loads(path.read_text(encoding="utf-8"))["count"]
             print(f"Backup: wrote {path} ({written_count} pages)")
+        return
+    if args.command == "status":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        setup_logging("status")
+        if args.retry_failed:
+            r = _retry_failed(env)
+            print(f"Retry: requeued {r['requeued']} Failed items "
+                  f"({r['to_extracted']}→Extracted, {r['to_queued']}→Queued).")
+            return
+        rows = build_status(env, collections_cfg)
+        _print_status_table(rows)
         return
     raise SystemExit(f"isa {args.command}: not implemented yet (v2 scaffold — see ARCHITECTURE.md)")
 
