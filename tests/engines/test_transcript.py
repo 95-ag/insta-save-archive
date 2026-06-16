@@ -1,4 +1,57 @@
+import json
+import tempfile
+from pathlib import Path
+
 from insta_save.engines import transcript as tr
+
+
+def _write_cookies_json(tmp_path: Path, expires: int) -> str:
+    """Write a minimal session_cookies.json with the given expires value."""
+    cookies = [
+        {
+            "name": "sessionid",
+            "value": "abc123",
+            "domain": ".instagram.com",
+            "path": "/",
+            "secure": True,
+            "expires": expires,
+        }
+    ]
+    p = tmp_path / "session_cookies.json"
+    p.write_text(json.dumps(cookies))
+    return str(p)
+
+
+def test_cookies_prep_reads_expires_key(tmp_path):
+    """Cookie prep must read the 'expires' key, not the absent 'expirationDate' key.
+
+    The buggy _netscape_cookies read 'expirationDate' which is never present in our
+    session_cookies.json — it always produced 0.  After the fix, extract_transcript
+    delegates to json_cookies_to_netscape which correctly reads 'expires'.
+
+    We verify this by patching json_cookies_to_netscape to observe whether it is called,
+    AND by directly asserting the produced Netscape file carries the real expiry value."""
+    from unittest.mock import patch, call
+    from insta_save.adapters.instagram.cookies import json_cookies_to_netscape as real_fn
+
+    cookies_json = _write_cookies_json(tmp_path, expires=1893456000)
+    cookies_txt = str(tmp_path / "cookies.txt")
+
+    # Wrap the real function so we can assert it was called while still producing output.
+    with patch(
+        "insta_save.engines.transcript.json_cookies_to_netscape",
+        wraps=real_fn,
+    ) as mock_convert:
+        tr._prepare_cookies(cookies_json, cookies_txt)
+        mock_convert.assert_called_once_with(cookies_json, cookies_txt)
+
+    content = Path(cookies_txt).read_text()
+    assert "1893456000" in content, (
+        f"Expected expiry 1893456000 in Netscape cookie file, got:\n{content}"
+    )
+    assert "\t0\t" not in content, (
+        "Found expiry=0, meaning 'expirationDate' (absent key) was read instead of 'expires'"
+    )
 
 
 def test_gate_rejects_empty():
