@@ -222,7 +222,8 @@ def dispatch_run(args) -> None:
         from insta_save.stages.select import run_select_stage
         with StageProgress("Select") as progress:
             r = run_select_stage(env, collections_cfg, progress,
-                                 limit=args.limit, group=args.group)
+                                 limit=args.limit, group=args.group,
+                                 write_delay=env.notion_write_delay)
         print(f"Select: {r.get('queued', 0)} → Queued, "
               f"{r.get('deterministic_pending', 0)} left Imported (deterministic branch).")
         return
@@ -306,7 +307,8 @@ def dispatch_run(args) -> None:
         print(f"Logging to {log_path}")
         with StageProgress("Deterministic") as progress:
             r = det.run_deterministic_stage(env, collections_cfg, progress,
-                                            limit=args.limit, group=args.group)
+                                            limit=args.limit, group=args.group,
+                                            write_delay=env.notion_write_delay)
         print(f"Deterministic: {r.get('tagged', 0)} → Tagged, "
               f"{r.get('skipped_extract_path', 0)} skipped (extract path).")
         return
@@ -322,7 +324,8 @@ def dispatch_run(args) -> None:
         print(f"Logging to {log_path}")
         with StageProgress("Route") as progress:
             r = run_route_stage(env, routes, collections_cfg, progress,
-                                limit=args.limit, group=args.group, dry_run=args.dry_run)
+                                limit=args.limit, group=args.group, dry_run=args.dry_run,
+                                write_delay=env.notion_write_delay)
         print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
         return

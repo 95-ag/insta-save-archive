@@ -23,6 +23,7 @@ progress bar total reflects the filtered set.
 """
 
 import logging
+import time
 
 from insta_save.adapters.notion import query_by_status_and_priority
 
@@ -52,6 +53,8 @@ def run_priority_stage(
     exclude_priorities: list | None = None,
     group: str | None = None,
     collections_cfg=None,
+    write_delay: float = 0.0,
+    delay_on: set | None = None,
 ) -> dict:
     """
     Drive a per-item stage over priority buckets, reporting into a StageProgress.
@@ -74,6 +77,11 @@ def run_priority_stage(
         group:           if set, restrict to items whose collections map to this group.
         collections_cfg: CollectionsConfig used to resolve group membership (required when
                          group is set; no-op if group is None).
+        write_delay:     seconds to sleep after a real Notion write. 0.0 disables the delay.
+        delay_on:        set of counter names that represent a real Notion write (e.g.
+                         {"tagged", "queued"}). sleep fires only when the counter returned
+                         by process_fn is in this set. None disables the delay regardless
+                         of write_delay.
 
     Returns:
         dict of counter-name → count. Always includes "failed".
@@ -112,6 +120,7 @@ def run_priority_stage(
             log.info("runner: bucket %s", _bucket_label(current_bucket))
         sid = item.get("source_id") or item["page_id"]
         progress.set_current(stage_key, sid)
+        counter = None
         try:
             counter = process_fn(env, item, ctx)
             counts[counter] = counts.get(counter, 0) + 1
@@ -126,6 +135,8 @@ def run_priority_stage(
             counts["failed"] = counts.get("failed", 0) + 1
             progress.bump("failed")
         progress.advance(bar)
+        if write_delay and delay_on and counter in delay_on:
+            time.sleep(write_delay)
 
     counts.setdefault("failed", 0)
     return counts

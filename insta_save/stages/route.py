@@ -21,10 +21,11 @@ def _route_item(env, item, routes, collections_cfg, *, dry_run=False) -> str:
 
 
 def run_route_stage(env, routes, collections_cfg, progress, *, limit=None, group=None,
-                    dry_run=False) -> dict:
+                    dry_run=False, write_delay: float = 0.0) -> dict:
     """Drive routing over Tagged items. Counters: routed / unrouted / failed."""
     return run_priority_stage(
         env, "Tagged",
         lambda e, it, ctx: _route_item(e, it, routes, collections_cfg, dry_run=dry_run),
         progress, limit=limit, group=group, collections_cfg=collections_cfg,
-        stage_key="route", bar_label="Route (Tagged)")
+        stage_key="route", bar_label="Route (Tagged)",
+        write_delay=write_delay, delay_on={"routed"})

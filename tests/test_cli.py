@@ -162,7 +162,7 @@ def _stub_progress(monkeypatch):
 
 
 def _det_common(monkeypatch, run_obj):
-    monkeypatch.setattr(isa, "_load_env", lambda: "ENV")
+    monkeypatch.setattr(isa, "_load_env", lambda: type("E", (), {"notion_write_delay": 0.4})())
     monkeypatch.setattr(isa, "_load_run", lambda: run_obj)
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
@@ -187,7 +187,7 @@ def test_deterministic_template_dispatches(monkeypatch):
     monkeypatch.setattr(det, "run_deterministic_stage",
                         lambda env, cols, progress, **kw: seen.setdefault("kw", kw) or {"tagged": 2, "skipped_extract_path": 1})
     isa.dispatch_run(_det_args(group="Lifestyle", limit=5))
-    assert seen["kw"] == {"limit": 5, "group": "Lifestyle"}
+    assert seen["kw"] == {"limit": 5, "group": "Lifestyle", "write_delay": 0.4}
 
 
 def _llm_run_obj(backend="claude-code"):
@@ -354,7 +354,7 @@ class _FakeProgress2:
 def _route_common(monkeypatch):
     """Patch everything dispatch_run needs for the route branch except run_route_stage."""
     import insta_save.stages.route as route_mod
-    monkeypatch.setattr(isa, "_load_env", lambda: "ENV")
+    monkeypatch.setattr(isa, "_load_env", lambda: type("E", (), {"notion_write_delay": 0.4})())
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
@@ -368,7 +368,8 @@ def _route_common(monkeypatch):
 def test_route_dispatches_with_group(monkeypatch):
     route_mod = _route_common(monkeypatch)
     calls = {}
-    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None, dry_run=False):
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                        dry_run=False, write_delay=0.0):
         calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
         return {"routed": 3, "unrouted": 1, "failed": 0}
     monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
@@ -383,7 +384,8 @@ def test_route_dispatches_with_group(monkeypatch):
 def test_route_dispatches_dry_run(monkeypatch):
     route_mod = _route_common(monkeypatch)
     calls = {}
-    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None, dry_run=False):
+    def _fake_run_route(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                        dry_run=False, write_delay=0.0):
         calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
         return {"routed": 0, "unrouted": 2, "failed": 0}
     monkeypatch.setattr(route_mod, "run_route_stage", _fake_run_route)
