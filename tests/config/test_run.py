@@ -63,3 +63,13 @@ def test_deterministic_title_mode_llm(tmp_path):
 def test_invalid_title_mode_rejected(tmp_path):
     with pytest.raises(ValueError):
         runcfg.load_run_config(_write(tmp_path, {"deterministic": {"title_mode": "bogus"}}))
+
+
+def test_api_mode_defaults_to_sync(tmp_path):
+    cfg = runcfg.load_run_config(_write(tmp_path, {}))
+    assert cfg.enrich.api_mode == "sync"
+
+
+def test_invalid_api_mode_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        runcfg.load_run_config(_write(tmp_path, {"enrich": {"api_mode": "telegram"}}))

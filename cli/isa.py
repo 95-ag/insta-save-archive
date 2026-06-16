@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--headed", action="store_true")
     run.add_argument("--confirm-removed", action="append", default=None)
     run.add_argument("--lane", choices=["text", "vision"], default="text")
+    run.add_argument("--status", action="store_true")
 
     sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     bk = sub.add_parser("backup", help="Snapshot Notion to JSON.")
@@ -65,6 +66,8 @@ def dispatch_run(args) -> None:
                 collections_cfg=collections_cfg, reextract=args.reextract)
         return
     if args.stage == "calibrate":
+        # Backend-independent: calibrate samples + a session proposes vocab; it does NOT
+        # read run_cfg.enrich.backend or call backend.fill (D18 human-reviewed gate).
         if not args.group:
             raise SystemExit("isa run --stage calibrate: --group is required")
         env = _load_env()
@@ -87,13 +90,82 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "enrich":
-        # validate args BEFORE loading config/vocab (fail fast; --apply reads the group
-        # from batch.json, so it needs no --group). load_vocab() must not run for a
+        from insta_save.backends import base
+        # validate args BEFORE loading config/vocab (fail fast; agent-filled --apply reads
+        # the group from batch.json, so it needs no --group). load_vocab() must not run for a
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
-        if not args.apply and not args.group:
-            raise SystemExit("isa run --stage enrich --prepare: --group is required")
         env = _load_env()
         run_cfg = _load_run()
+        backend = base.get_backend(run_cfg.enrich.backend)
+        budgets = backend.batch_budgets(run_cfg)
+
+        # Vision preflight: a backend that can't see images must never run the vision lane.
+        if args.lane == "vision" and not backend.VISION_CAPABLE:
+            raise SystemExit(f"enrich backend {backend.NAME!r} is not vision-capable; "
+                             "the vision lane requires a vision-capable backend")
+
+        # --status: backend-agnostic remaining-enrichable count (a Notion query via cowork).
+        if args.status:
+            if not args.group:
+                raise SystemExit("isa run --stage enrich --status: --group is required")
+            from insta_save.backends import cowork
+            collections_cfg = _load_collections()
+            print(f"{args.group}: {cowork.status(env, collections_cfg, args.group)} "
+                  f"enrichable remaining")
+            return
+
+        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
+        if args.lane == "vision":
+            kinds = {"Carousel", "Post"}
+            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = budgets.image_token_budget
+        else:
+            kinds = {"Reel", "IGTV"}
+            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+            image_budget = None
+
+        if backend.AUTOMATED:
+            # local/api fill results.json in-process, so one invocation DRAINS the group:
+            # prepare -> fill -> apply, looped until prepare batches nothing. --prepare/--apply
+            # are ignored here (the loop does both). --group is required (prepare needs it).
+            if not args.group:
+                raise SystemExit("isa run --stage enrich: --group is required for the "
+                                 f"{backend.NAME!r} backend (drains the group in one run)")
+            vocab = load_vocab()
+            collections_cfg = _load_collections()
+            log_path = setup_logging("enrich")
+            print(f"Logging to {log_path}")
+            enrich_dir = Path(env.tmp_dir) / "enrich"
+            while True:
+                with StageProgress("Enrich prepare") as progress:
+                    n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg,
+                                       vocab=vocab, char_budget=budgets.char_budget,
+                                       max_items=budgets.max_items, statuses=statuses,
+                                       prompt_template=template, kinds=kinds,
+                                       image_token_budget=image_budget,
+                                       output_language=run_cfg.output_language, progress=progress)
+                if n == 0:
+                    print(f"ENRICH_DRAINED group={args.group} lane={args.lane}")
+                    break
+                backend.fill(env, run_cfg, enrich_dir)
+                with StageProgress("Enrich apply") as progress:
+                    counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                                          progress=progress)
+                print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+                # No-progress guard: prepare batched items but apply wrote none (every item
+                # failed, or fill produced no usable results). Those items stay Extracted, so
+                # the next prepare re-selects them and the loop spins forever. Stop instead.
+                if counts["written"] == 0:
+                    print(f"enrich: no items applied for group {args.group} (lane={args.lane}) — "
+                          f"stopping to avoid a no-progress loop. Check logs; resolve failures, "
+                          f"then re-run.")
+                    break
+            return
+
+        # agent-filled backends (claude-code/cowork): one prepare or apply step; the driving
+        # session (or Cowork loop) runs the fill and re-invokes. --apply reads group from batch.json.
+        if not args.apply and not args.group:
+            raise SystemExit("isa run --stage enrich --prepare: --group is required")
         vocab = load_vocab()
         if args.apply:
             log_path = setup_logging("enrich-apply")
@@ -106,20 +178,12 @@ def dispatch_run(args) -> None:
         log_path = setup_logging("enrich-prepare")
         print(f"Logging to {log_path}")
         collections_cfg = _load_collections()
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
-        if args.lane == "vision":
-            kinds = {"Carousel", "Post"}
-            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
-            image_budget = run_cfg.image_token_budget
-        else:
-            kinds = {"Reel", "IGTV"}
-            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
-            image_budget = None
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
-                               char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
+                               char_budget=budgets.char_budget, max_items=budgets.max_items,
                                statuses=statuses, prompt_template=template,
-                               kinds=kinds, image_token_budget=image_budget, progress=progress)
+                               kinds=kinds, image_token_budget=image_budget,
+                               output_language=run_cfg.output_language, progress=progress)
         if n == 0:
             print(f"No items left to enrich in group {args.group} (lane={args.lane}).")
             # Stable machine token so an unattended prepare->fill->apply loop can detect
@@ -170,6 +234,46 @@ def dispatch_run(args) -> None:
         ensure_schema(env)
         from insta_save.stages import deterministic as det
         if run_cfg.deterministic_title_mode == "llm":
+            # Deterministic titling reuses the enrich backend config — the user runs ONE
+            # backend per run. Automated backends (local/api) fill the title batch
+            # in-process via the enrich fill (which over-produces summary/tags fields the
+            # deterministic apply ignores — harmless; det.apply consumes only `title`).
+            from insta_save.backends import base
+            backend = base.get_backend(run_cfg.enrich.backend)
+            template = Path(f"prompts/{det.PROMPT_VERSION}.txt").read_text(encoding="utf-8")
+
+            if backend.AUTOMATED:
+                # local/api fill results.json in-process, so one invocation DRAINS the group:
+                # prepare -> fill -> apply, looped until prepare batches no LLM-title items.
+                if not args.group:
+                    raise SystemExit("isa run --stage deterministic: --group is required for the "
+                                     f"{backend.NAME!r} backend (drains the group in one run)")
+                log_path = setup_logging("deterministic")
+                print(f"Logging to {log_path}")
+                det_dir = Path(env.tmp_dir) / "deterministic"
+                while True:
+                    with StageProgress("Deterministic prepare") as progress:
+                        r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
+                                        language=run_cfg.output_language, prompt_template=template,
+                                        max_items=run_cfg.max_items, progress=progress)
+                    if r["batched"] == 0:
+                        print(f"DETERMINISTIC_DRAINED group={args.group}")
+                        break
+                    backend.fill(env, run_cfg, det_dir)
+                    with StageProgress("Deterministic apply") as progress:
+                        counts = det.apply(env, progress=progress)
+                    print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
+                    # No-progress guard: prepare batched items but apply wrote none, so those
+                    # items stay Imported and the next prepare re-selects them — would spin
+                    # forever. Stop instead.
+                    if counts["written"] == 0:
+                        print(f"deterministic: no items applied for group {args.group} — "
+                              f"stopping to avoid a no-progress loop.")
+                        break
+                return
+
+            # agent-filled backends (claude-code/cowork): one prepare or apply step; the
+            # driving session (or Cowork loop) runs the fill and re-invokes.
             if not (args.prepare or args.apply):
                 raise SystemExit("isa run --stage deterministic: title_mode=llm requires "
                                  "--prepare or --apply")
@@ -184,7 +288,6 @@ def dispatch_run(args) -> None:
                 raise SystemExit("isa run --stage deterministic --prepare: --group is required")
             log_path = setup_logging("deterministic-prepare")
             print(f"Logging to {log_path}")
-            template = Path(f"prompts/{det.PROMPT_VERSION}.txt").read_text(encoding="utf-8")
             with StageProgress("Deterministic prepare") as progress:
                 r = det.prepare(env, group=args.group, collections_cfg=collections_cfg,
                                 language=run_cfg.output_language, prompt_template=template,

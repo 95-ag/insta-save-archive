@@ -50,11 +50,12 @@ def test_tag_item_writes_tagged(monkeypatch):
     assert writes == [("p1", "Makeup — dinarakasko", ["makeup"], det.DETERMINISTIC_VERSION)]
 
 
-def test_build_title_prompt_includes_language_and_caption():
+def test_build_title_prompt_injects_translate_directive_and_caption():
     items = [{"page_id": "p1", "source_id": "s1", "author": "a",
               "collections": ["Makeup"], "caption": "glowy look"}]
-    out = det.build_title_prompt(items, "Write in {language}.", "english")
-    assert "Write in english." in out
+    out = det.build_title_prompt(items, "Title these posts.", "english")
+    assert "Title these posts." in out          # template passed through verbatim
+    assert "translate" in out.lower() and "english" in out.lower()  # shared directive injected
     assert "s1" in out and "glowy look" in out and "Makeup" in out
 
 

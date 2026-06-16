@@ -8,6 +8,7 @@ VALID_MODES = {"first-time", "incremental"}
 VALID_BACKENDS = {"local", "api", "claude-code", "cowork"}
 VALID_OCR_MODES = {"none", "rapidocr"}
 VALID_TITLE_MODES = {"template", "llm"}
+VALID_API_MODES = {"sync", "batches"}
 
 _DEFAULT_RUN = Path("config") / "run.json"
 
@@ -17,6 +18,7 @@ class EnrichConfig:
     backend: str
     model: str
     effort: str
+    api_mode: str = "sync"
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,7 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         backend=_require(enrich_raw.get("backend", "local"), VALID_BACKENDS, "enrich.backend"),
         model=enrich_raw.get("model", "qwen2.5:7b"),
         effort=enrich_raw.get("effort", "medium"),
+        api_mode=_require(enrich_raw.get("api_mode", "sync"), VALID_API_MODES, "enrich.api_mode"),
     )
     extract_raw = data.get("extract", {})
     transcript_raw = extract_raw.get("transcript", {})

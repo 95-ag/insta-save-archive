@@ -27,6 +27,7 @@ class EnvConfig:
     display_mode: str
     cookies_file: str
     ig_username: str = ""
+    anthropic_api_key: str = ""
 
 
 def _env_float(key: str, default: float) -> float:
@@ -62,6 +63,7 @@ def load_env() -> EnvConfig:
         display_mode=display_mode,
         cookies_file=os.getenv("COOKIES_FILE", "session_cookies.json").strip(),
         ig_username=os.getenv("IG_USERNAME", "").strip(),
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
     )
 
 

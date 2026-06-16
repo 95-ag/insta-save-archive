@@ -14,7 +14,8 @@ from pathlib import Path
 from insta_save import enrich_schema
 from insta_save.adapters.notion import (get_page_content, query_by_status_and_priority,
                                         write_enrichment)
-from insta_save.backends import claude_code as backend
+from insta_save.backends import prompt
+from insta_save.backends.base import parse_results
 from insta_save.config.tags import allowed_topics
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
@@ -42,7 +43,8 @@ def _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=None):
 
 
 def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statuses,
-            prompt_template, kinds=None, image_token_budget=None, progress=None) -> int:
+            prompt_template, kinds=None, image_token_budget=None, output_language="english",
+            progress=None) -> int:
     """Build batch.json + prompt.txt for the highest-priority budget-worth of the
     group's items. Returns the batch size (0 = nothing left). Optional `progress`
     (StageProgress) shows a live per-item fetch bar.
@@ -58,15 +60,15 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
     (sum of slide_images * PER_SLIDE_IMAGE_TOKENS). The first item is always admitted;
     subsequent items break the loop when this budget would be exceeded."""
     items = []
-    total = backend.header_len(group, vocab, prompt_template)
+    total = prompt.header_len(group, vocab, prompt_template, output_language)
     img_total = 0
     bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=kinds):
         if max_items is not None and len(items) >= max_items:
             break
         content = get_page_content(env, stub["page_id"])
-        block = backend.item_len(content)
-        img = backend.image_token_estimate(content)
+        block = prompt.item_len(content)
+        img = prompt.image_token_estimate(content)
         over_chars = total + block > char_budget
         over_images = image_token_budget is not None and img_total + img > image_token_budget
         if items and (over_chars or over_images):
@@ -87,7 +89,7 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
         json.dumps({"group": group, "items": items}, ensure_ascii=False, indent=2),
         encoding="utf-8")
     (d / "prompt.txt").write_text(
-        backend.build_prompt(group, items, vocab, prompt_template), encoding="utf-8")
+        prompt.build_prompt(group, items, vocab, prompt_template, output_language), encoding="utf-8")
     log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s", len(items), total, group)
     return len(items)
 
@@ -108,7 +110,7 @@ def apply(env, *, vocab, model, progress=None) -> dict:
     version = f"{model}/{env.enrich_version}/{group}"
     topics_allowed = allowed_topics(vocab, group)
 
-    results = backend.parse_results(results_file)
+    results = parse_results(results_file)
     counts = {"written": 0, "failed": 0}
     bar = progress.add_bar(f"Enrich → Tagged · {group}", total=len(results)) if progress else None
     for item in results:

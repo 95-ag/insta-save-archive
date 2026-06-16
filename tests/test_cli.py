@@ -71,7 +71,7 @@ def _fake_run():
     import types
     return types.SimpleNamespace(
         enrich=types.SimpleNamespace(backend="claude-code", model="claude-sonnet", effort="medium"),
-        char_budget=80000, max_items=15, image_token_budget=120000)
+        output_language="english", char_budget=80000, max_items=15, image_token_budget=120000)
 
 
 def test_enrich_prepare_requires_group(monkeypatch, capsys):
@@ -190,29 +190,151 @@ def test_deterministic_template_dispatches(monkeypatch):
     assert seen["kw"] == {"limit": 5, "group": "Lifestyle"}
 
 
+def _llm_run_obj(backend="claude-code"):
+    import types
+    return types.SimpleNamespace(
+        deterministic_title_mode="llm", output_language="english", max_items=None,
+        enrich=types.SimpleNamespace(backend=backend, model="m"))
+
+
 def test_deterministic_llm_requires_prepare_or_apply(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    # agent-filled backend (claude-code): a step flag is required
+    _det_common(monkeypatch, _llm_run_obj())
     with pytest.raises(SystemExit):
         isa.dispatch_run(_det_args())
 
 
 def test_deterministic_llm_apply_dispatches(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    _det_common(monkeypatch, _llm_run_obj())
     import insta_save.stages.deterministic as det
     monkeypatch.setattr(det, "apply", lambda env, progress=None: {"written": 3, "failed": 0})
     isa.dispatch_run(_det_args(apply=True))  # no SystemExit = dispatched
 
 
 def test_deterministic_llm_prepare_requires_group(monkeypatch):
-    run_obj = type("R", (), {"deterministic_title_mode": "llm",
-                             "output_language": "english", "max_items": None})()
-    _det_common(monkeypatch, run_obj)
+    _det_common(monkeypatch, _llm_run_obj())
     with pytest.raises(SystemExit):
         isa.dispatch_run(_det_args(prepare=True))  # --prepare without --group
+
+
+def test_deterministic_llm_automated_backend_drains(monkeypatch, capsys):
+    import insta_save.stages.deterministic as det
+    from insta_save.backends import local_ollama
+    _det_common(monkeypatch, _llm_run_obj("local"))
+    monkeypatch.setattr(isa, "_load_env", lambda: type("E", (), {"tmp_dir": "tmp"})())
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+    batched = iter([1, 0])  # batch once, then drained
+    monkeypatch.setattr(det, "prepare", lambda *a, **k: calls.__setitem__("prepare", calls["prepare"] + 1)
+                        or {"batched": next(batched), "finalized_template": 0})
+    monkeypatch.setattr(local_ollama, "fill",
+                        lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1))
+    monkeypatch.setattr(det, "apply", lambda env, progress=None: calls.__setitem__("apply", calls["apply"] + 1)
+                        or {"written": 1, "failed": 0})
+    isa.dispatch_run(_det_args(group="Lifestyle"))
+    assert calls == {"prepare": 2, "fill": 1, "apply": 1}
+    assert "DETERMINISTIC_DRAINED group=Lifestyle" in capsys.readouterr().out
+
+
+def _fake_run_backend(backend):
+    import types
+    return types.SimpleNamespace(
+        enrich=types.SimpleNamespace(backend=backend, model="m", effort="medium",
+                                     api_mode="sync"),
+        output_language="english", char_budget=80000, max_items=15, image_token_budget=120000)
+
+
+def test_enrich_vision_lane_rejects_non_vision_backend(monkeypatch):
+    import cli.isa as isa
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--prepare", "--group", "G", "--lane", "vision"])
+    with pytest.raises(SystemExit) as e:
+        isa.dispatch_run(args)
+    assert "vision-capable" in str(e.value)
+
+
+def test_enrich_automated_backend_drains(monkeypatch, capsys):
+    import types
+    import cli.isa as isa
+    from insta_save.backends import base, local_ollama
+
+    env = types.SimpleNamespace(tmp_dir="tmp")
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+    counts = iter([2, 0])  # batch once, then drained
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return next(counts)
+    monkeypatch.setattr(isa.enrich, "prepare", _prepare)
+    monkeypatch.setattr(local_ollama, "fill",
+                        lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1)
+                        or base.FillResult(filled=2, failed=0))
+    monkeypatch.setattr(isa.enrich, "apply",
+                        lambda env, **k: calls.__setitem__("apply", calls["apply"] + 1)
+                        or {"written": 2, "failed": 0})
+
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--group", "Hustling"])
+    isa.dispatch_run(args)
+
+    assert calls == {"prepare": 2, "fill": 1, "apply": 1}
+    assert "ENRICH_DRAINED group=Hustling lane=text" in capsys.readouterr().out
+
+
+def test_enrich_automated_backend_stops_on_no_progress(monkeypatch, capsys):
+    import types
+    import cli.isa as isa
+    from insta_save.backends import base, local_ollama
+
+    env = types.SimpleNamespace(tmp_dir="tmp")
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(isa, "StageProgress", lambda title: _FakeProgress())
+
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return 2  # never drains: items stay Extracted because apply writes nothing
+    monkeypatch.setattr(isa.enrich, "prepare", _prepare)
+    monkeypatch.setattr(local_ollama, "fill",
+                        lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1)
+                        or base.FillResult(filled=0, failed=2))
+    monkeypatch.setattr(isa.enrich, "apply",
+                        lambda env, **k: calls.__setitem__("apply", calls["apply"] + 1)
+                        or {"written": 0, "failed": 2})
+
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--group", "Hustling"])
+    isa.dispatch_run(args)
+
+    # The guard breaks after one zero-progress apply: prepare runs exactly once.
+    assert calls == {"prepare": 1, "fill": 1, "apply": 1}
+    assert "no items applied for group Hustling" in capsys.readouterr().out
+
+
+def test_enrich_status_prints_remaining(monkeypatch, capsys):
+    import cli.isa as isa
+    from insta_save.backends import cowork
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(cowork, "status", lambda env, cols, group: 7)
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "enrich", "--status", "--group", "Hustling"])
+    isa.dispatch_run(args)
+    assert "Hustling: 7 enrichable remaining" in capsys.readouterr().out
 
 
 def test_enrich_lane_arg_defaults_text():

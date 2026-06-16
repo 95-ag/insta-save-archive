@@ -90,7 +90,7 @@ calibration has content to sample).
 | 1 | Ingest | Playwright (session/crawler/extractor) | no | `Imported` |
 | 2 | Select | `collections.json` (group/extract) | no | `Queued` or → branch |
 | 3 | Extract | transcript + OCR engines; persists carousel/post slide images | engine-tiered | `Extracted` |
-| 3.5 | Calibrate | sample + chosen backend proposes vocab | yes | locks vocab |
+| 3.5 | Calibrate | sample + session proposes vocab (backend-independent, human-reviewed) | yes | locks vocab |
 | 4 | Enrich | one-shot LLM; **two modality lanes**: text (Reels/IGTV) + vision (Carousels/Posts) | **yes** | `Tagged` |
 | 5 | Deterministic | slug-tag union + title (template default, opt-in llm) | title only (opt-in) | `Tagged` |
 | 6 | Route | pure Python (`routes.json`) | no | `Routed` (optional) |
@@ -99,7 +99,7 @@ calibration has content to sample).
 - **Ingest** pulls metadata **yt-dlp `--dump-json` first** (more 429-resilient, works on image posts), browser render as fallback, with a **wall guard** (stop after 5 consecutive yt-dlp failures, defer to the next run).
 - **Select** fans items to the extract path (`Queued`) or the deterministic branch (`extract=no` collections — no deep content worth a transcript).
 - **Enrich** is one LLM pass producing all four fields from `title-seed + transcript + ocr_text + caption`. Replaces v1's separate `title` (Ollama) + `summarize` (Claude) passes for extracted items.
-- **Deterministic** branch (st.5) tags `extract=no` items from the **slugified union of their collection names** and titles them by a config mode — `template` (`{collection} — {author}`, default) or opt-in `llm` (title from caption+collection+author). No transcript/OCR/semantic-LLM; `summary`/`externals` stay `None`; status → `Tagged` (marker `enrich_version="deterministic-v2.0"`). The `llm` mode is a **thin parallel `--prepare`/`--apply`** reusing the claude-code file contract (`parse_results` + `get_page_content` + the batch/prompt/results pattern); its formal `Backend` protocol lands with #5. `output_language` (top-level run config) normalizes titles/summaries/tags to English — only raw transcript/OCR keep their original language.
+- **Deterministic** branch (st.5) tags `extract=no` items from the **slugified union of their collection names** and titles them by a config mode — `template` (`{collection} — {author}`, default) or opt-in `llm` (title from caption+collection+author). No transcript/OCR/semantic-LLM; `summary`/`externals` stay `None`; status → `Tagged` (marker `enrich_version="deterministic-v2.0"`). The `llm` mode is a **thin parallel `--prepare`/`--apply`** running on the formal `Backend` protocol (results parsed via `backends.base.parse_results`, backend selected via `get_backend`); automated backends (`local`/`api`) drain it in-process exactly like enrich, and it shares the multilingual `prompt.translate_directive` (narrowed to just the title). `output_language` (top-level run config) normalizes titles/summaries/tags to English — only raw transcript/OCR keep their original language.
 
 ---
 
@@ -108,26 +108,54 @@ calibration has content to sample).
 **One file contract, four implementations.** Every backend reads `tmp/enrich/batch.json`
 and writes `tmp/enrich/results.json` against `enrich_schema`. Only *who fills results* differs:
 
-| Backend | Fills results by | Automated? | Quality | Cost | Vision-capable |
+| Backend | Fills results by | Execution model | Quality | Cost | Vision-capable |
 |---|---|---|---|---|---|
-| `local` | Ollama call inline (qwen2.5) | yes | title-only (D8, spike-confirmed) | free | no |
-| `api` | Anthropic SDK call inline | yes | high | $ per token | yes (future #5) |
-| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | yes¹ | high | subscription | **yes** |
-| `cowork` | a self-paced Cowork loop (one kickoff msg) | semi | high | subscription | yes (future #5) |
+| `local` | Ollama call inline (qwen2.5) | **automated** | title-grade (D8, spike-confirmed) | free | no |
+| `api` | Anthropic SDK call inline | **automated** | high | $ per token | yes |
+| `claude-code` | a Claude Code session (`--prepare`/`--apply`) | **agent-filled**¹ | high | subscription | yes |
+| `cowork` | a self-paced Cowork loop (one kickoff msg) | **agent-filled** | high | subscription | yes |
 
-The pipeline core (build batch → hand to backend → apply results → write Notion) is identical
-across all four. `enrich.backend` in run config selects one. Each backend also carries
+The `AUTOMATED` flag splits the backends into two execution models. **Automated** backends
+(`local`, `api`) fill `results.json` in-process — the CLI drains the whole group in **one command**
+(prepare → fill → apply, looped). **Agent-filled** backends (`claude-code`, `cowork`) return
+`FillResult(external=True)`: the CLI does a single prepare or apply step and the driving Claude
+session / Cowork loop runs the fill and re-invokes. `VISION_CAPABLE` is a separate capability flag
+(everything but `local` can see images) — the vision lane is gated on it (§5.1 preflight).
+
+**Design layer (the `Backend` protocol, D5).** `backends.base` defines the `Backend` protocol —
+each backend is a module exposing `NAME` · `AUTOMATED` · `VISION_CAPABLE` ·
+`batch_budgets(run_cfg) -> Budgets` · `fill(env, run_cfg, enrich_dir) -> FillResult` — plus a
+`get_backend(name)` registry (lazy import, so a missing optional dep only fails when that backend is
+selected) and the shared `parse_results`. `Budgets(char_budget, max_items, image_token_budget)`
+sizes a batch; `FillResult(external, filled, failed)` reports what `fill` did. The automated drain
+loop stops on either a **DRAINED sentinel** (prepare batched nothing) or a **no-progress guard**
+(prepare batched items but apply wrote none — those items stay un-advanced and would re-select
+forever, so the loop breaks instead of spinning). **Automated fills normalize `page_id`/`source_id`
+from `batch.json`** — the model is never trusted for identity (fabricated ids are dropped).
+
+The file contract (`batch.json` → `results.json` under a backend-supplied directory) is identical
+across all four; the **driver** branches on `AUTOMATED` (drain vs single-step) and `VISION_CAPABLE`
+(lane preflight). `fill(env, run_cfg, enrich_dir)` is **dir-parameterized**, so the same backends
+also drive the deterministic-title path (`tmp/deterministic/`), not enrich only (`tmp/enrich/`).
+`enrich.backend` in run config selects one; `enrich.api_mode` (`sync` default | `batches`) picks the
+`api` backend's call shape, and that backend reads an Anthropic key from env (`anthropic_api_key`).
+`--status` (CLI flag → `cowork.status`) reports the remaining-enrichable count per group. Each backend also carries
 **`model`** and **`effort`** (effort → thinking budget on `api`, model-size on `local`, advisory
 on sessions). **On sessions, model+effort set the context capacity that caps batch size — confirm
 both at run start.** (v1 observation: a Sonnet+low session fills context and needs `/compact` far
 sooner than Opus+high, so the safe `char_budget`/`max_items` ceiling scales with model+effort, not
-a single fixed number.)
+a single fixed number.) The multilingual translate directive is centralized in
+`backends.prompt.translate_directive` (output fields emitted in `output_language`, non-English
+source translated + original language noted, raw transcript/OCR untouched) and is shared by enrich
+and the deterministic-title path.
 
 **Enrich is no longer strictly text-only.** For the vision lane (Carousels/Posts), the per-item
-block in `prompt.txt` lists the slide image paths (absolute, under `tmp/slides/<shortcode>/`) so
-the fill-subagent can `Read` each image directly. The file contract itself is unchanged
-(`batch.json`/`results.json`); the image references live in the prompt text. `#4` built this thin
-on `claude-code`; `#5` generalises it via the formal `Backend` protocol.
+block in `prompt.txt` lists the slide image paths (under `tmp/slides/<shortcode>/`). On agent-filled
+backends the fill-subagent `Read`s each image; the `api` backend attaches each slide as a base64
+image block so the model SEES it directly. The image-token budget (`PER_SLIDE_IMAGE_TOKENS` ≈ 1600,
+`image_token_estimate`, and `max_image_tokens` default 120 000) now lives in `backends.prompt`,
+shared by all backends — the #4→#5 generalization of the vision contract under the `Backend`
+protocol is **done** (the `VISION_CAPABLE` flag gates which backends may run the vision lane).
 
 ¹ **`claude-code` runs fully hands-off today with no new code** — a single session loops `--prepare`
 → dispatch a fresh **fill-subagent** (reads `prompt.txt`, including image paths for vision items,
@@ -143,13 +171,21 @@ batch). One kickoff message; idempotent; resumable.
 
 ### 5.1 Dynamic batching (per backend)
 
-`backend.plan_batches(candidates, run_config)` returns batches by a backend-appropriate strategy:
+Each backend exposes `batch_budgets(run_cfg) -> Budgets(char_budget, max_items, image_token_budget)`
+(`backends.base`). `enrich.prepare` then greedily fills **one** budget-bounded batch: the first
+item is always admitted, and subsequent items break early once either the `char_budget` (rendered
+prompt length) or the `image_token_budget` would be exceeded. For automated backends the CLI
+**drain loop** (§5) repeats prepare → fill → apply until prepare batches nothing.
 
-| Backend | Strategy | Why |
+| Backend | `batch_budgets` returns | Why |
 |---|---|---|
-| `local` | `single` (sequential, checkpoint every ~25) | 1 GPU, no batch gain |
-| `api` | `token_budget` + parallelism, or **Message Batches API** for bulk | ~50% cheaper async for first-time |
-| `claude-code` / `cowork` | `char_budget` + `max_items` (~15) | fit one session pass before compaction (ceiling scales with model+effort); small = resumable |
+| `local` | `Budgets(10**9, None, None)` — char/items uncapped, no image budget | per-item sequential `fill` (checkpoint every 25); 1 GPU, no batch gain, text-only |
+| `api` | run-config budgets (`char_budget`, `max_items`, `image_token_budget`) | one whole-batch request per fill (`sync`, or one Message Batches request when `api_mode="batches"`) — per-item parallelism / async fan-out is **not built yet**, so the cheaper-async win is not realized at item granularity |
+| `claude-code` / `cowork` | run-config budgets (`char_budget`, `max_items` ~15, `image_token_budget`) | fit one session pass before compaction (ceiling scales with model+effort); small = resumable |
+
+**Vision preflight.** A backend that is not `VISION_CAPABLE` (i.e. `local`) selected on the vision
+lane fails fast — the CLI raises `SystemExit` before any work, so an image-blind backend can never
+run the vision lane.
 
 **Vision lane batching.** The vision lane additionally budgets on an **image-token estimate**
 (`PER_SLIDE_IMAGE_TOKENS` ≈ 1600/slide, a conservative figure for a ~1080-wide IG portrait slide).
@@ -214,6 +250,13 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 2. **LLM proposes** a candidate vocab from the sample → **you refine** → lock into `tags.json`.
 3. Run enrich on the sample, eyeball tag quality, adjust vocab, repeat until good.
 4. Lock; run the full-group enrich loop.
+
+> **Backend-independent by design.** Calibration is **not** routed through the enrich `Backend`
+> protocol — `calibrate.sample` writes `tmp/calibrate/prompt.txt`, whatever session runs it
+> (claude-code, Cowork, or you) proposes `proposed_tags.json`, and you always review + lock (D18,
+> "LLM proposes, human disposes"). `enrich.backend` selects the *enrich* fill engine, not the
+> calibrate proposer; calibrate behaves identically under every backend. (No `backend.fill()` —
+> the vocab proposal is a one-shot, human-reviewed gate, not a per-item automated fill.)
 
 ### 7.3 Cross-group items
 An item in collections spanning groups gets the **union** of its groups' granular vocab + cross-group,
@@ -318,7 +361,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 
 | File | Committed? | Holds |
 |---|---|---|
-| `config/run.json` | yes (example) | mode · `enrich.backend/model/effort` · `ocr.mode/threshold` · ordering source · caps |
+| `config/run.json` | yes (example) | mode · `enrich.backend/model/effort/api_mode` · top-level `output_language` · `deterministic.title_mode` · `extract.ocr.mode` · `batch.max_char_budget/max_image_tokens` · guardrail caps |
 | `config/collections.json` | **no** (private) | ordered `groups` list (group names live here) + per-collection `{group, extract}` |
 | `config/tags.json` | **no** (private) | per-group + cross-group vocab with definitions |
 | `config/routes.json` | yes (example) | route map (optional) |
@@ -333,10 +376,10 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D2 | Fork: extract path vs deterministic branch | Thin/visual saves don't warrant transcription or an LLM | LLM-enrich everything (waste on no-content) |
 | D3 | One-shot enrich (title+summary+externals+tags) | Claude already loads the content; extra fields are ~free; coherent labels | Separate passes (re-reads content N times) |
 | D4 | Drop `Summarized` status | One-shot lands at `Tagged`; the intermediate stop no longer exists | Keep it (ghost status, friction) |
-| D5 | Backend file-contract (local/api/claude-code/cowork) | Subscription, API, and local must all work; user picks at start | Hardcode one engine; lose portability (Phase 6) |
+| D5 | Backend file-contract (local/api/claude-code/cowork) | Subscription, API, and local must all work; user picks at start. Realized as the `Backend` protocol + `get_backend` registry in `backends.base`, with `Budgets`/`FillResult` typing the contract | Hardcode one engine; lose portability (Phase 6) |
 | D6 | Cowork loop: state in Notion, not chat | Makes auto-compaction safe and the loop crash-resumable | State in conversation (breaks on compaction) |
-| D7 | Per-backend dynamic batching | Optimal chunk differs (single vs token-budget vs char-budget) | One fixed batch size |
-| D8 | Local LLM scope = title-from-caption + deterministic only | 7B is reliable for constrained/automated tasks, weak for semantic extraction. **Spike-confirmed 2026-06-10:** constrained `format=` fixes JSON compliance (the old reason is moot), but qwen2.5:7b summaries drop the high-value specifics (numbers, benchmarks, names) and externals come back empty or hallucinated — semantic *quality*, not compliance, is the wall | Local for tags/summary (compliance + quality issues) |
+| D7 | Per-backend dynamic batching | Optimal chunk differs per backend, expressed as `Budgets(char_budget, max_items, image_token_budget)`: `local` uncaps char/items and checkpoints per item; the others pass the run-config budgets through | One fixed batch size |
+| D8 | Local LLM is **structurally** full-enrich-capable; title-grade is the PRACTICAL quality ceiling on this box | The `local` backend withholds no field structurally (a stronger local model can do full enrich — portability). Title-grade is a quality ceiling of THIS box's qwen2.5:7b, NOT an architectural restriction. **Spike-confirmed 2026-06-10:** constrained `format=` fixes JSON compliance, but qwen2.5:7b summaries drop the high-value specifics (numbers, benchmarks, names) and externals come back empty or hallucinated — semantic *quality*, not compliance, is the wall | Hard-cap `local` to title-only (would block a stronger local model) |
 | D9 | Three-axis tags + per-group vocab | Granular within group, correct cross-tagging, content-type for search/downstream | Flat tag list (loses the kind-of-item axis) |
 | D10 | Calibration gate (sample → propose → refine → lock) | Tag correction is expensive; front-load it onto a sample per group | Tag the whole group then correct (huge correction load) |
 | D11 | Cross-group: union vocab, enrich at last extract group (calibrate by membership) | All vocabs locked before tagging; first-time-only concern | Earliest-order (tags before later vocabs exist) |

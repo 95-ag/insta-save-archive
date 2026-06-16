@@ -81,3 +81,20 @@ def test_item_block_no_images_section_for_text_item():
 def test_image_token_estimate_counts_slides():
     assert backend.image_token_estimate({"slide_images": ["a", "b", "c"]}) == 3 * backend.PER_SLIDE_IMAGE_TOKENS
     assert backend.image_token_estimate({"transcript": "x"}) == 0
+
+
+def test_claude_code_fill_is_external():
+    from insta_save.backends import claude_code as cc
+    from insta_save.backends.base import FillResult
+    r = cc.fill(env=None, run_cfg=None, enrich_dir=None)
+    assert isinstance(r, FillResult) and r.external is True
+
+
+def test_claude_code_batch_budgets_reads_run_cfg():
+    from insta_save.backends import claude_code as cc
+    class RC:  # minimal stand-in for RunConfig
+        char_budget = 80000
+        max_items = 15
+        image_token_budget = 120000
+    b = cc.batch_budgets(RC())
+    assert b.char_budget == 80000 and b.max_items == 15 and b.image_token_budget == 120000
