@@ -15,6 +15,11 @@ class Vocab:
     _group_topics: dict[str, list[str]]
     definitions: dict[str, str]
 
+    def has_group(self, group: str) -> bool:
+        """Non-raising calibrated-check. group_topics() raises for uncalibrated groups;
+        the sequencer must TEST, not catch."""
+        return group in self._group_topics
+
     def group_topics(self, group: str) -> list[str]:
         if group not in self._group_topics:
             raise KeyError(f"tags: no topics for group {group!r}")

@@ -37,3 +37,12 @@ def test_unknown_group_raises(tmp_path):
     v = _load(tmp_path)
     with pytest.raises(KeyError):
         tagcfg.allowed_topics(v, "Nope")
+
+
+def test_has_group(tmp_path):
+    v = _load(tmp_path)
+    assert v.has_group("Hustling") is True
+    assert v.has_group("Nope") is False
+    # contrast: group_topics still raises for uncalibrated groups
+    with pytest.raises(KeyError):
+        v.group_topics("Nope")
