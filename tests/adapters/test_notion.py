@@ -181,3 +181,43 @@ def test_row_includes_tags():
 def test_row_tags_defaults_to_empty_list():
     page = {"id": "p4", "properties": {}}
     assert notion._row(page)["tags"] == []
+
+
+def test_query_all_pages_paginates_and_returns_all(monkeypatch):
+    """query_all_pages follows the cursor across two pages and returns every page dict."""
+    page_a = {"id": "p1", "properties": {"source_id": {"rich_text": [{"text": {"content": "abc"}}]}}}
+    page_b = {"id": "p2", "properties": {"source_id": {"rich_text": [{"text": {"content": "def"}}]}}}
+
+    call_log = []
+
+    class _DataSources:
+        def query(self, data_source_id, **kwargs):
+            call_log.append(kwargs.get("start_cursor"))
+            if not kwargs.get("start_cursor"):
+                return {"results": [page_a], "has_more": True, "next_cursor": "cursor-1"}
+            return {"results": [page_b], "has_more": False, "next_cursor": None}
+
+    class _Databases:
+        def retrieve(self, database_id):
+            return {"data_sources": [{"id": "ds-test"}]}
+
+    class _Client:
+        def __init__(self, auth):
+            self.data_sources = _DataSources()
+            self.databases = _Databases()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t", "notion_database_id": "db-1"})()
+    result = notion.query_all_pages(env)
+
+    # followed the cursor
+    assert call_log == [None, "cursor-1"]
+    # returned both pages with expected shape
+    assert len(result) == 2
+    assert result[0]["page_id"] == "p1"
+    assert result[1]["page_id"] == "p2"
+    # raw properties preserved
+    assert "properties" in result[0]
+    assert "properties" in result[1]

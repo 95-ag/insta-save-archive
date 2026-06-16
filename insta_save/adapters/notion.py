@@ -472,6 +472,26 @@ def update_metadata(env: EnvConfig, page_id: str, metadata: dict) -> None:
         raise RuntimeError(f"notion: update_metadata failed on {page_id}: {e}") from e
 
 
+def query_all_pages(env: EnvConfig) -> list[dict]:
+    """Return every page in the DB with no status/priority filter (all statuses captured).
+    Each entry: {"page_id": <id>, "properties": <raw Notion properties dict>}.
+    Raw properties are kept as-is so the snapshot is complete and avoids field-mapping drift."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_database_id)
+    results, cursor = [], None
+    while True:
+        kwargs = {"start_cursor": cursor} if cursor else {}
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            results.append({"page_id": page["id"], "properties": page.get("properties", {})})
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    log.info("notion: query_all_pages returned %d pages", len(results))
+    return results
+
+
 def mark_queued(env: EnvConfig, page_id: str) -> None:
     validate_notion(env)
     client = Client(auth=env.notion_token)
