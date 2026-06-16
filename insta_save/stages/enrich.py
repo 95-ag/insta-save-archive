@@ -17,6 +17,7 @@ from insta_save.adapters.notion import (get_page_content, query_by_status_and_pr
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
 from insta_save.config.tags import allowed_topics, union_topics
+from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
@@ -275,6 +276,16 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 log.info("drain_enrich_group: %s lane=%s DRAINED", group, lane_name)
                 stop_reason = "drained"
                 break
+
+            # Per-batch spend gate: estimate cost from the rendered prompt before calling
+            # the model. Only reads prompt.txt when the api backend is active and a cap is
+            # set — no-op (and no file read) for all other backends. Gates EACH batch against
+            # the cap (conservative per-batch pre-fill estimate), not cumulative run spend —
+            # consistent with the soft-cap philosophy.
+            if (getattr(run_cfg.enrich, "backend", None) == "api"
+                    and getattr(run_cfg, "guardrails_max_spend_usd", None) is not None):
+                char_total = len((enrich_dir / "prompt.txt").read_text(encoding="utf-8"))
+                guardrails.check_spend_cap(char_total, run_cfg)
 
             backend.fill(env, run_cfg, enrich_dir)
 

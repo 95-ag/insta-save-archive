@@ -444,3 +444,122 @@ def test_drain_enrich_group_runs_vision_lane_when_capable(tmp_path, monkeypatch)
     assert frozenset({"Carousel", "Post"}) in seen_kinds
     assert "text" in result["lanes"]
     assert "vision" in result["lanes"]
+
+
+# ===========================================================================
+# Spend guardrail — check_spend_cap wired per batch before backend.fill
+# ===========================================================================
+
+def _api_run_cfg(max_spend_usd=None):
+    """run_cfg stub with api backend and optional spend cap."""
+    return _types.SimpleNamespace(
+        output_language="english",
+        enrich=_types.SimpleNamespace(model="test-model", backend="api"),
+        guardrails_max_spend_usd=max_spend_usd,
+    )
+
+
+def test_drain_enrich_group_api_raises_before_fill_when_over_cap(tmp_path, monkeypatch):
+    """For the api backend, check_spend_cap must be called and raise SystemExit BEFORE
+    backend.fill when the estimated spend exceeds the cap. fill must NOT be invoked."""
+    # Write a prompt.txt large enough that estimate_spend_usd exceeds a tiny cap.
+    # estimate: chars/4 tokens * $15/Mtok => 8000 chars / 4 = 2000 tok * $15/1e6 = $0.00003
+    # Use 10_000 chars so estimate = 10000/4/1e6*15 = $0.0000375; cap = $0.00001 -> exceeds.
+    enrich_dir = tmp_path / "enrich"
+    enrich_dir.mkdir(parents=True, exist_ok=True)
+    (enrich_dir / "prompt.txt").write_text("x" * 10_000, encoding="utf-8")
+
+    fill_called = []
+
+    prepare_calls = iter([1, 0])
+
+    def _fake_prepare(*a, **k):
+        n = next(prepare_calls)
+        # On the first call (n=1), prompt.txt already exists with the oversized content.
+        return n
+
+    class _ApiBacked(_fake_backend().__class__):
+        NAME = "api"
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            fill_called.append(1)
+
+    monkeypatch.setattr(enrich, "prepare", _fake_prepare)
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: {"written": 1, "failed": 0})
+
+    env = _env(tmp_path)
+    run_cfg = _api_run_cfg(max_spend_usd=0.00001)  # tiny cap; 10k-char prompt exceeds it
+
+    import pytest
+    with pytest.raises(SystemExit):
+        enrich.drain_enrich_group(env, run_cfg, _Cols(), _vocab(), _ApiBacked(), "Hustling")
+
+    assert fill_called == [], "fill must not be called when spend cap is exceeded"
+
+
+def test_drain_enrich_group_api_no_cap_proceeds_to_fill(tmp_path, monkeypatch):
+    """For the api backend with no spend cap set, drain proceeds normally to fill."""
+    enrich_dir = tmp_path / "enrich"
+    enrich_dir.mkdir(parents=True, exist_ok=True)
+    (enrich_dir / "prompt.txt").write_text("x" * 10_000, encoding="utf-8")
+
+    fill_called = []
+    prepare_calls = iter([1, 0])
+
+    def _fake_prepare(*a, **k):
+        n = next(prepare_calls)
+        return n
+
+    class _ApiBacked(_fake_backend().__class__):
+        NAME = "api"
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            fill_called.append(1)
+
+    monkeypatch.setattr(enrich, "prepare", _fake_prepare)
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: {"written": 1, "failed": 0})
+
+    env = _env(tmp_path)
+    run_cfg = _api_run_cfg(max_spend_usd=None)  # no cap -> no-op
+
+    enrich.drain_enrich_group(env, run_cfg, _Cols(), _vocab(), _ApiBacked(), "Hustling")
+    assert fill_called == [1], "fill must be called when no spend cap is set"
+
+
+def test_drain_enrich_group_non_api_ignores_spend_cap(tmp_path, monkeypatch):
+    """For a non-api backend (e.g. claude-code), check_spend_cap is a no-op even when
+    the prompt is large and a cap is set — fill proceeds normally."""
+    enrich_dir = tmp_path / "enrich"
+    enrich_dir.mkdir(parents=True, exist_ok=True)
+    (enrich_dir / "prompt.txt").write_text("x" * 10_000, encoding="utf-8")
+
+    fill_called = []
+    prepare_calls = iter([1, 0])
+
+    def _fake_prepare(*a, **k):
+        n = next(prepare_calls)
+        return n
+
+    class _NonApiBacked(_fake_backend().__class__):
+        NAME = "claude-code"
+
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            fill_called.append(1)
+
+    monkeypatch.setattr(enrich, "prepare", _fake_prepare)
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: {"written": 1, "failed": 0})
+
+    env = _env(tmp_path)
+    # run_cfg has a very tight spend cap but non-api backend -> must NOT raise
+    run_cfg = _types.SimpleNamespace(
+        output_language="english",
+        enrich=_types.SimpleNamespace(model="test-model", backend="claude-code"),
+        guardrails_max_spend_usd=0.00001,
+    )
+
+    enrich.drain_enrich_group(env, run_cfg, _Cols(), _vocab(), _NonApiBacked(), "Hustling")
+    assert fill_called == [1], "fill must be called for non-api backend regardless of spend cap"
