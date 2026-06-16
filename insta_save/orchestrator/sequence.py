@@ -17,9 +17,15 @@ Count semantics:
   tagged[g]     — Tagged items whose ANY collection maps to group g (membership)
 """
 
+import logging
 from dataclasses import dataclass
 
 from insta_save.adapters.notion import query_all_pages
+from insta_save.stages import enrich as _enrich_stage
+from insta_save.stages.extract import run_extract_stage
+from insta_save.stages.route import run_route_stage
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -169,3 +175,144 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
     done = next_action is None
 
     return Plan(steps=steps, next_action=next_action, done=done)
+
+
+# ---------------------------------------------------------------------------
+# Sequencer execution
+# ---------------------------------------------------------------------------
+
+def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+              progress_factory=None, reject_calibrate=False) -> Plan:
+    """Inner loop shared by run_first_time and run_incremental.
+
+    Repeatedly computes the plan, checks whether the next step can be executed
+    automatically, and drives the appropriate stage drain until the plan is done
+    or a gate (non-automated step) is reached.
+
+    Args:
+        reject_calibrate: when True (incremental mode), a calibrate step raises
+                          SystemExit instead of being returned as a gate.
+    """
+    executed: set[tuple[str, str]] = set()
+
+    while True:
+        plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+
+        if plan.done:
+            return plan
+
+        step = plan.next_action
+
+        if not step.automated:
+            if reject_calibrate and step.action == "calibrate":
+                raise SystemExit(
+                    f"incremental: group {step.group!r} is uncalibrated — "
+                    "run --mode first-time to calibrate it first"
+                )
+            # Human/agent gate: return the plan so the caller can report and stop.
+            return plan
+
+        key = (step.group, step.action)
+        if key in executed:
+            # No-progress guard: this (group, action) was already executed in this
+            # loop iteration but Notion state didn't advance enough to move past it.
+            # Returning prevents an infinite spin; caller/logs surface the issue.
+            log.warning(
+                "sequencer: no-progress guard triggered for group=%r action=%r — "
+                "the stage ran but state did not advance; returning current plan",
+                step.group, step.action,
+            )
+            return plan
+
+        executed.add(key)
+
+        _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
+                      step, progress_factory)
+
+
+def _null_progress(label):
+    """Minimal no-op progress context manager for use when progress_factory is None."""
+    class _N:
+        def __enter__(self): return None
+        def __exit__(self, *a): return False
+    return _N()
+
+
+def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
+                  step, progress_factory):
+    """Dispatch one automated step to the appropriate stage drain."""
+    pf = progress_factory or _null_progress
+
+    if step.action == "extract":
+        with pf(f"Extract · {step.group}") as progress:
+            run_extract_stage(env, run_cfg.extract, progress,
+                              group=step.group, collections_cfg=collections_cfg)
+
+    elif step.action == "enrich":
+        _enrich_stage.drain_enrich_group(
+            env, run_cfg, collections_cfg, vocab, backend, step.group,
+            progress_factory=progress_factory,
+        )
+
+    elif step.action == "route":
+        write_delay = getattr(env, "notion_write_delay", 0.0)
+        with pf(f"Route · {step.group}") as progress:
+            run_route_stage(env, routes, collections_cfg, progress,
+                            group=step.group, write_delay=write_delay)
+
+
+def run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+                   progress_factory=None, dry_run=False) -> Plan:
+    """Run the pipeline in first-time mode (calibrate is a human gate, not an error).
+
+    Executes automated steps — extract, enrich (automated backend), route — in the
+    order the plan prescribes, recomputing from Notion state after each step. Stops
+    when the plan is done, a non-automated step (calibrate, or agent-filled enrich)
+    is reached, or the no-progress guard fires.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig.
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab.
+        backend:         Backend module.
+        routes:          Routes.
+        progress_factory: Optional ``(label: str) -> context manager``.
+        dry_run:         If True, compute and return the plan without executing anything.
+
+    Returns:
+        The final Plan (done, or stopped at a gate / no-progress).
+    """
+    if dry_run:
+        return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+    return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
+                     progress_factory=progress_factory, reject_calibrate=False)
+
+
+def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+                    progress_factory=None, dry_run=False) -> Plan:
+    """Run the pipeline in incremental mode (locked vocab required for all groups).
+
+    Like run_first_time but raises SystemExit when a calibrate step is encountered,
+    because incremental mode requires all groups to already be calibrated.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig.
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab.
+        backend:         Backend module.
+        routes:          Routes.
+        progress_factory: Optional ``(label: str) -> context manager``.
+        dry_run:         If True, compute and return the plan without executing anything.
+
+    Returns:
+        The final Plan (done, or stopped at an agent-filled enrich gate / no-progress).
+
+    Raises:
+        SystemExit: if any group requires calibration.
+    """
+    if dry_run:
+        return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+    return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
+                     progress_factory=progress_factory, reject_calibrate=True)

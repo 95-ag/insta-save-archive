@@ -301,3 +301,146 @@ def test_prepare_cross_group_prompt_contains_union_vocab(tmp_path, monkeypatch):
     rendered = (tmp_path / "enrich" / "prompt.txt").read_text()
     assert "f-topic" in rendered, "F-granular topic missing from union vocab block"
     assert "g-topic" in rendered, "G-granular topic missing from union vocab block"
+
+
+# ===========================================================================
+# drain_enrich_group
+# ===========================================================================
+
+import types as _types
+
+
+def _fake_backend(automated=True, vision_capable=False):
+    """Minimal backend stub for drain tests."""
+    class _B:
+        AUTOMATED = automated
+        VISION_CAPABLE = vision_capable
+        NAME = "test"
+
+        @staticmethod
+        def batch_budgets(run_cfg):
+            return _types.SimpleNamespace(
+                char_budget=100000, max_items=10,
+                image_token_budget=50000,
+            )
+
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    return _B()
+
+
+def _fake_run_cfg():
+    return _types.SimpleNamespace(
+        output_language="english",
+        enrich=_types.SimpleNamespace(model="test-model"),
+    )
+
+
+def test_drain_enrich_group_text_lane_stops_on_drained(tmp_path, monkeypatch):
+    """Text lane: prepare returns 0 on first call -> DRAINED immediately, apply never called."""
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: (_ for _ in ()).throw(
+        # Use a side-effect counter instead
+        Exception()) if False else (calls.__setitem__("prepare", calls["prepare"] + 1) or 0))
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: calls.__setitem__("apply", calls["apply"] + 1) or {"written": 0, "failed": 0})
+
+    env = _env(tmp_path)
+    backend = _fake_backend(vision_capable=False)
+    result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling")
+
+    assert calls["prepare"] == 1
+    assert calls["apply"] == 0
+    assert result["written"] == 0
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+    assert "vision" not in result["lanes"]
+
+
+def test_drain_enrich_group_text_lane_loops_then_drains(tmp_path, monkeypatch):
+    """Text lane: prepare returns 2 once then 0; apply writes 2; loop runs once then drains."""
+    counts = iter([2, 0])
+    calls = {"prepare": 0, "fill": 0, "apply": 0}
+    monkeypatch.setattr(enrich, "prepare",
+                        lambda *a, **k: (calls.__setitem__("prepare", calls["prepare"] + 1)
+                                         or next(counts)))
+
+    fill_calls = []
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            fill_calls.append(1)
+
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: (calls.__setitem__("apply", calls["apply"] + 1)
+                                         or {"written": 2, "failed": 0}))
+
+    env = _env(tmp_path)
+    result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), _B(),
+                                       "Hustling")
+
+    assert calls["prepare"] == 2   # first call returns 2, second returns 0
+    assert calls["apply"] == 1
+    assert len(fill_calls) == 1
+    assert result["written"] == 2
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_enrich_group_stops_on_no_progress(tmp_path, monkeypatch):
+    """When apply writes 0 items, the no-progress guard must break the loop."""
+    calls = {"prepare": 0, "apply": 0}
+    monkeypatch.setattr(enrich, "prepare",
+                        lambda *a, **k: (calls.__setitem__("prepare", calls["prepare"] + 1) or 3))
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: (calls.__setitem__("apply", calls["apply"] + 1)
+                                         or {"written": 0, "failed": 3}))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    env = _env(tmp_path)
+    result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling")
+
+    assert calls["prepare"] == 1
+    assert calls["apply"] == 1
+    assert result["lanes"]["text"]["stop_reason"] == "no_progress"
+
+
+def test_drain_enrich_group_skips_vision_lane_when_not_capable(tmp_path, monkeypatch):
+    """Vision lane must not run when backend.VISION_CAPABLE is False."""
+    seen_kinds = []
+    monkeypatch.setattr(enrich, "prepare",
+                        lambda *a, **k: (seen_kinds.append(k.get("kinds")) or 0))
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: {"written": 0, "failed": 0})
+
+    env = _env(tmp_path)
+    backend = _fake_backend(vision_capable=False)
+    result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling")
+
+    # Only text lane ran — only {"Reel", "IGTV"} kinds seen
+    assert all(kinds == {"Reel", "IGTV"} for kinds in seen_kinds), seen_kinds
+    assert "vision" not in result["lanes"]
+
+
+def test_drain_enrich_group_runs_vision_lane_when_capable(tmp_path, monkeypatch):
+    """When backend.VISION_CAPABLE is True, the vision lane runs after the text lane."""
+    seen_kinds = []
+    monkeypatch.setattr(enrich, "prepare",
+                        lambda *a, **k: (seen_kinds.append(frozenset(k.get("kinds") or [])) or 0))
+    monkeypatch.setattr(enrich, "apply",
+                        lambda *a, **k: {"written": 0, "failed": 0})
+
+    env = _env(tmp_path)
+    backend = _fake_backend(vision_capable=True)
+    result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling")
+
+    # Both lanes triggered (both return 0 immediately — DRAINED on first call)
+    assert frozenset({"Reel", "IGTV"}) in seen_kinds
+    assert frozenset({"Carousel", "Post"}) in seen_kinds
+    assert "text" in result["lanes"]
+    assert "vision" in result["lanes"]

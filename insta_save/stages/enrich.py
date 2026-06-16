@@ -192,3 +192,110 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
                 f.unlink()
         log.info("enrich.apply: cleaned tmp files")
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Reusable automated drain — used by the sequencer (run_first_time/run_incremental)
+# ---------------------------------------------------------------------------
+
+def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
+                       progress_factory=None) -> dict:
+    """Drain a single group via the automated backend across BOTH lanes.
+
+    Loops prepare→fill→apply per lane until the lane is DRAINED (prepare returns 0)
+    or no-progress (apply writes nothing). Only runs the vision lane when
+    ``backend.VISION_CAPABLE`` is True.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig (used for budgets, model, output_language).
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab with locked topics for the group.
+        backend:         Backend module (must have .AUTOMATED True; callers should not
+                         call this for agent-filled backends).
+        group:           Group name to drain.
+        progress_factory: Optional callable ``(label: str) -> context manager`` returning
+                         a StageProgress. Pass None to skip live progress bars.
+
+    Returns:
+        dict with keys ``written`` (total items written), ``lanes`` (per-lane totals),
+        and ``stop_reason`` ("drained" | "no_progress") for each lane.
+    """
+    budgets = backend.batch_budgets(run_cfg)
+    enrich_dir = Path(env.tmp_dir) / "enrich"
+
+    text_template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+    vision_template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8") \
+        if backend.VISION_CAPABLE else None
+
+    lanes = [
+        {
+            "name": "text",
+            "kinds": {"Reel", "IGTV"},
+            "template": text_template,
+            "image_budget": None,
+        },
+    ]
+    if backend.VISION_CAPABLE:
+        lanes.append({
+            "name": "vision",
+            "kinds": {"Carousel", "Post"},
+            "template": vision_template,
+            "image_budget": budgets.image_token_budget,
+        })
+
+    totals: dict[str, object] = {"written": 0, "lanes": {}}
+
+    for lane in lanes:
+        lane_name = lane["name"]
+        lane_written = 0
+        stop_reason = "drained"
+
+        while True:
+            progress_ctx = progress_factory(f"Enrich prepare · {lane_name}") \
+                if progress_factory else _NullContext()
+            with progress_ctx as progress:
+                n = prepare(env, group=group, collections_cfg=collections_cfg, vocab=vocab,
+                            char_budget=budgets.char_budget, max_items=budgets.max_items,
+                            statuses=["Extracted"], prompt_template=lane["template"],
+                            kinds=lane["kinds"], image_token_budget=lane["image_budget"],
+                            output_language=run_cfg.output_language, progress=progress)
+            if n == 0:
+                log.info("drain_enrich_group: %s lane=%s DRAINED", group, lane_name)
+                stop_reason = "drained"
+                break
+
+            backend.fill(env, run_cfg, enrich_dir)
+
+            progress_ctx = progress_factory(f"Enrich apply · {lane_name}") \
+                if progress_factory else _NullContext()
+            with progress_ctx as progress:
+                counts = apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                               collections_cfg=collections_cfg, progress=progress)
+
+            lane_written += counts["written"]
+            totals["written"] = totals["written"] + counts["written"]
+
+            if counts["written"] == 0:
+                # No-progress guard: items stay Extracted, next prepare re-selects them.
+                # Break to avoid an infinite loop; caller/logs should surface the failure.
+                log.warning(
+                    "drain_enrich_group: no items applied for group %s lane=%s — "
+                    "stopping to avoid a no-progress loop (check logs; resolve failures, "
+                    "then re-run)",
+                    group, lane_name,
+                )
+                stop_reason = "no_progress"
+                break
+
+        totals["lanes"][lane_name] = {"written": lane_written, "stop_reason": stop_reason}
+
+    return totals
+
+
+class _NullContext:
+    """No-op context manager returned when progress_factory is None."""
+    def __enter__(self):
+        return None
+    def __exit__(self, *a):
+        return False
