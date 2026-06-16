@@ -24,6 +24,9 @@ _V2_PROPERTIES = {
 }
 _V2_STATUS_OPTIONS = ("Tagged", "Routed")
 
+OCR_MAX_CHARS = 12000  # enrich-read OCR safety cap: bounds pathological frame-OCR jitter
+                       # (raw_extraction keeps the full OCR; D13). ~typical cleaned text is far below.
+
 
 # --- property builders (PORT verbatim from legacy/pipeline/notion.py) -------
 def _notion_truncate(text: str, limit: int = 2000) -> str:
@@ -334,7 +337,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
     # Collapse near-duplicate frame-OCR at enrich-read so enrich/calibrate read (and budget on)
     # the cleaned text, while raw_extraction keeps the full OCR (D13: durable/reprocessable).
     ocr_raw = _text("ocr_text")
-    ocr_text = clean_ocr_text(ocr_raw) if ocr_raw else None
+    ocr_text = clean_ocr_text(ocr_raw, max_chars=OCR_MAX_CHARS) if ocr_raw else None
 
     return {
         "page_id": page_id,

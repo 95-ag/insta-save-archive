@@ -38,9 +38,13 @@ def _is_repeat(norm: str, recent_norms: list[str]) -> bool:
     return False
 
 
-def clean_ocr_text(text: str) -> str:
+def clean_ocr_text(text: str, max_chars: int | None = None) -> str:
     """Collapse near-duplicate frame-OCR lines and drop junk. Order-preserving; keeps the first
-    occurrence of each distinct line. `[Slide N]` markers are always preserved (carousel structure)."""
+    occurrence of each distinct line. `[Slide N]` markers are always preserved (carousel structure).
+
+    `max_chars` is an optional hard length cap applied as a final safety net AFTER dedup/junk
+    removal. When the cleaned result exceeds `max_chars`, trailing whole lines are dropped until
+    it fits — never cuts mid-line. `None` (default) disables the cap (behavior unchanged)."""
     if not text:
         return ""
     kept: list[str] = []
@@ -61,4 +65,13 @@ def clean_ocr_text(text: str) -> str:
             continue
         kept.append(line)
         kept_norms.append(norm)
-    return "\n".join(kept)
+    out = "\n".join(kept)
+    if max_chars is not None and len(out) > max_chars:
+        trimmed, size = [], 0
+        for line in kept:
+            if size + len(line) + 1 > max_chars:
+                break
+            trimmed.append(line)
+            size += len(line) + 1
+        out = "\n".join(trimmed)
+    return out
