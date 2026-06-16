@@ -123,3 +123,86 @@ def test_fill_normalizes_identity_from_batch(tmp_path, monkeypatch):
 def test_batch_budgets_forwards_run_cfg():
     b = api.batch_budgets(_FakeRun())
     assert b.char_budget == 80000 and b.max_items == 15 and b.image_token_budget == 120000
+
+
+# --- max_tokens truncation guard tests ---
+
+class _FakeRespWithStopReason:
+    """Like _FakeResp but carries a stop_reason (mimics a real Messages response)."""
+    def __init__(self, text, stop_reason="end_turn"):
+        self.content = [_FakeTextBlock(text)]
+        self.stop_reason = stop_reason
+
+
+class _FakeMessagesWithStopReason:
+    """Like _FakeMessages but uses _FakeRespWithStopReason so stop_reason is present."""
+    def __init__(self, text, stop_reason="end_turn"):
+        self.payload_text = text; self.stop_reason = stop_reason
+        self.calls = 0
+    def create(self, **kwargs):
+        self.calls += 1
+        return _FakeRespWithStopReason(self.payload_text, self.stop_reason)
+
+
+def test_sync_truncated_raises_runtime_error(tmp_path, monkeypatch):
+    """When the Messages API returns stop_reason='max_tokens', fill must raise RuntimeError."""
+    items = [{"page_id": "p1", "source_id": "s1", "caption": "c"}]
+    d = _enrich_dir(tmp_path, items)
+    # Partial text that was cut off — doesn't matter what it contains
+    fake = _FakeMessagesWithStopReason('{"page_id": "p1"', stop_reason="max_tokens")
+    monkeypatch.setattr(api, "_messages", lambda env, run_cfg: fake)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="max_tokens"):
+        api.fill(env=_FakeEnv(), run_cfg=_FakeRun("sync"), enrich_dir=d)
+
+
+def test_sync_end_turn_returns_normally(tmp_path, monkeypatch):
+    """When stop_reason='end_turn', fill continues normally and writes results."""
+    items = [{"page_id": "p1", "source_id": "s1", "caption": "c"}]
+    d = _enrich_dir(tmp_path, items)
+    payload = json.dumps([{"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S",
+                           "externals": "", "content_type": "tool", "topics": []}])
+    fake = _FakeMessagesWithStopReason(payload, stop_reason="end_turn")
+    monkeypatch.setattr(api, "_messages", lambda env, run_cfg: fake)
+    r = api.fill(env=_FakeEnv(), run_cfg=_FakeRun("sync"), enrich_dir=d)
+    assert r.filled == 1 and r.failed == 0
+
+
+class _FakeResultWithStopReason:
+    """Batch result whose inner message carries a stop_reason."""
+    def __init__(self, message):
+        self.result = type("R", (), {"message": message})
+
+
+class _FakeBatchesWithStopReason:
+    """Like _FakeBatches but supports configuring stop_reason on the message."""
+    def __init__(self, payload_text, stop_reason="end_turn"):
+        self.payload_text = payload_text; self.stop_reason = stop_reason
+    def create(self, requests): return _FakeBatch()
+    def retrieve(self, batch_id): return _FakeBatch()
+    def results(self, batch_id):
+        msg = _FakeRespWithStopReason(self.payload_text, self.stop_reason)
+        return [_FakeResultWithStopReason(msg)]
+
+
+def test_batches_truncated_raises_runtime_error(tmp_path, monkeypatch):
+    """When a batch result message has stop_reason='max_tokens', fill must raise RuntimeError."""
+    items = [{"page_id": "p1", "source_id": "s1", "caption": "c"}]
+    d = _enrich_dir(tmp_path, items)
+    fake = _FakeBatchesWithStopReason('{"page_id": "p1"', stop_reason="max_tokens")
+    monkeypatch.setattr(api, "_batches", lambda env, run_cfg: fake)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="max_tokens"):
+        api.fill(env=_FakeEnv(), run_cfg=_FakeRun("batches"), enrich_dir=d)
+
+
+def test_batches_end_turn_returns_normally(tmp_path, monkeypatch):
+    """When batch result stop_reason='end_turn', fill completes normally."""
+    items = [{"page_id": "p1", "source_id": "s1", "caption": "c"}]
+    d = _enrich_dir(tmp_path, items)
+    payload = json.dumps([{"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S",
+                           "externals": "", "content_type": "tool", "topics": []}])
+    fake = _FakeBatchesWithStopReason(payload, stop_reason="end_turn")
+    monkeypatch.setattr(api, "_batches", lambda env, run_cfg: fake)
+    r = api.fill(env=_FakeEnv(), run_cfg=_FakeRun("batches"), enrich_dir=d)
+    assert r.filled == 1 and r.failed == 0
