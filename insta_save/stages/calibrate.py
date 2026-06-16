@@ -1,7 +1,12 @@
 # insta_save/stages/calibrate.py
 """Calibrate stage (ARCHITECTURE §7.2) — per group, first-time. Sample the group's
 content so a Claude session can PROPOSE a tag vocabulary; the human refines and locks
-it into the private config/tags.json. LLM proposes, human disposes (D18)."""
+it into the private config/tags.json. LLM proposes, human disposes (D18).
+
+Backend-independent by design: calibrate does NOT use the enrich Backend protocol or
+backend.fill(). Whatever session runs it (claude-code, Cowork, or the operator) proposes
+the vocab — `run_cfg.enrich.backend` selects the enrich fill engine, not the calibrate
+proposer, so calibrate behaves identically under every backend."""
 
 import json
 import logging

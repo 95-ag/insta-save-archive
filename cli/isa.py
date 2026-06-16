@@ -66,6 +66,8 @@ def dispatch_run(args) -> None:
                 collections_cfg=collections_cfg, reextract=args.reextract)
         return
     if args.stage == "calibrate":
+        # Backend-independent: calibrate samples + a session proposes vocab; it does NOT
+        # read run_cfg.enrich.backend or call backend.fill (D18 human-reviewed gate).
         if not args.group:
             raise SystemExit("isa run --stage calibrate: --group is required")
         env = _load_env()

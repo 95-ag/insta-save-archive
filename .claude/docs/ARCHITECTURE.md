@@ -90,7 +90,7 @@ calibration has content to sample).
 | 1 | Ingest | Playwright (session/crawler/extractor) | no | `Imported` |
 | 2 | Select | `collections.json` (group/extract) | no | `Queued` or → branch |
 | 3 | Extract | transcript + OCR engines; persists carousel/post slide images | engine-tiered | `Extracted` |
-| 3.5 | Calibrate | sample + chosen backend proposes vocab | yes | locks vocab |
+| 3.5 | Calibrate | sample + session proposes vocab (backend-independent, human-reviewed) | yes | locks vocab |
 | 4 | Enrich | one-shot LLM; **two modality lanes**: text (Reels/IGTV) + vision (Carousels/Posts) | **yes** | `Tagged` |
 | 5 | Deterministic | slug-tag union + title (template default, opt-in llm) | title only (opt-in) | `Tagged` |
 | 6 | Route | pure Python (`routes.json`) | no | `Routed` (optional) |
@@ -250,6 +250,13 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 2. **LLM proposes** a candidate vocab from the sample → **you refine** → lock into `tags.json`.
 3. Run enrich on the sample, eyeball tag quality, adjust vocab, repeat until good.
 4. Lock; run the full-group enrich loop.
+
+> **Backend-independent by design.** Calibration is **not** routed through the enrich `Backend`
+> protocol — `calibrate.sample` writes `tmp/calibrate/prompt.txt`, whatever session runs it
+> (claude-code, Cowork, or you) proposes `proposed_tags.json`, and you always review + lock (D18,
+> "LLM proposes, human disposes"). `enrich.backend` selects the *enrich* fill engine, not the
+> calibrate proposer; calibrate behaves identically under every backend. (No `backend.fill()` —
+> the vocab proposal is a one-shot, human-reviewed gate, not a per-item automated fill.)
 
 ### 7.3 Cross-group items
 An item in collections spanning groups gets the **union** of its groups' granular vocab + cross-group,
