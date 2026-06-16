@@ -14,6 +14,11 @@ from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
 from insta_save.stages.calibrate import sample as calibrate_sample
 from insta_save.backup import backup, restore_check
+from insta_save.backends.base import get_backend
+from insta_save.config.routes import load_routes
+from insta_save.orchestrator import guardrails
+from insta_save.orchestrator.preflight import preflight
+from insta_save.orchestrator.sequence import run_first_time, run_incremental
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
@@ -155,8 +160,8 @@ def dispatch_run(args) -> None:
 
         if backend.AUTOMATED:
             # local/api fill results.json in-process, so one invocation DRAINS the group:
-            # prepare -> fill -> apply, looped until prepare batches nothing. --prepare/--apply
-            # are ignored here (the loop does both). --group is required (prepare needs it).
+            # drain_enrich_group loops prepare→fill→apply per lane until drained.
+            # --prepare/--apply are ignored here (drain handles both). --group is required.
             if not args.group:
                 raise SystemExit("isa run --stage enrich: --group is required for the "
                                  f"{backend.NAME!r} backend (drains the group in one run)")
@@ -164,31 +169,17 @@ def dispatch_run(args) -> None:
             collections_cfg = _load_collections()
             log_path = setup_logging("enrich")
             print(f"Logging to {log_path}")
-            enrich_dir = Path(env.tmp_dir) / "enrich"
-            while True:
-                with StageProgress("Enrich prepare") as progress:
-                    n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg,
-                                       vocab=vocab, char_budget=budgets.char_budget,
-                                       max_items=budgets.max_items, statuses=statuses,
-                                       prompt_template=template, kinds=kinds,
-                                       image_token_budget=image_budget,
-                                       output_language=run_cfg.output_language, progress=progress)
-                if n == 0:
-                    print(f"ENRICH_DRAINED group={args.group} lane={args.lane}")
-                    break
-                backend.fill(env, run_cfg, enrich_dir)
-                with StageProgress("Enrich apply") as progress:
-                    counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
-                                          collections_cfg=collections_cfg, progress=progress)
-                print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
-                # No-progress guard: prepare batched items but apply wrote none (every item
-                # failed, or fill produced no usable results). Those items stay Extracted, so
-                # the next prepare re-selects them and the loop spins forever. Stop instead.
-                if counts["written"] == 0:
-                    print(f"enrich: no items applied for group {args.group} (lane={args.lane}) — "
+            totals = enrich.drain_enrich_group(
+                env, run_cfg, collections_cfg, vocab, backend, args.group,
+                lanes=[args.lane],
+            )
+            for lane_name, lane_info in totals["lanes"].items():
+                if lane_info["stop_reason"] == "drained":
+                    print(f"ENRICH_DRAINED group={args.group} lane={lane_name}")
+                else:
+                    print(f"enrich: no items applied for group {args.group} (lane={lane_name}) — "
                           f"stopping to avoid a no-progress loop. Check logs; resolve failures, "
                           f"then re-run.")
-                    break
             return
 
         # agent-filled backends (claude-code/cowork): one prepare or apply step; the driving
@@ -364,11 +355,86 @@ def dispatch_run(args) -> None:
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
+def _dispatch_mode(args) -> None:
+    """Run the pipeline in first-time or incremental mode (no --stage given)."""
+    env = _load_env()
+    run_cfg = _load_run()
+    collections_cfg = _load_collections()
+    vocab = load_vocab()
+    backend = get_backend(run_cfg.enrich.backend)
+    routes = load_routes()
+
+    log_path = setup_logging("run")
+    # Log path is relative for readability; Path(log_path).name gives just the filename.
+    rel = Path(log_path).name
+    print(f"Logging to logs/{rel}")
+
+    # Preflight: backend reachable, Notion config present, engines importable, effort valid.
+    preflight(env, run_cfg, stages={"extract", "enrich"})
+
+    # Guardrail cap: sum remaining (Imported+Queued+Extracted) across all groups as a
+    # conservative pre-run planned count. Uses build_status (one query_all_pages pass) —
+    # same cost as compute_plan's own query; no extra Notion round-trip.
+    status_rows = build_status(env, collections_cfg)
+    total_row = next((r for r in status_rows if r["group"] == "TOTAL"), None)
+    planned = total_row["remaining"] if total_row else 0
+    guardrails.check_item_cap(planned, run_cfg)
+
+    reminder = guardrails.usage_reminder(run_cfg)
+    if reminder:
+        print(reminder)
+
+    if args.mode == "first-time":
+        plan = run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes,
+                              dry_run=args.dry_run)
+    else:
+        plan = run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes,
+                               dry_run=args.dry_run)
+
+    _print_plan(plan, args.dry_run)
+
+
+def _print_plan(plan, dry_run: bool) -> None:
+    """Print the returned plan: one line per GroupStep, then a gate or done message."""
+    label = " (dry-run)" if dry_run else ""
+    for step in plan.steps:
+        print(f"  {step.group}: {step.action} — {step.detail}")
+
+    if plan.done:
+        print(f"All groups complete.{label}")
+        return
+
+    na = plan.next_action
+    if na is None:
+        return
+
+    if not na.automated:
+        if na.action == "calibrate":
+            print(
+                f"\nNEXT (manual): {na.group} — {na.detail}\n"
+                f"  Run: isa run --stage calibrate --group {na.group!r}\n"
+                f"  Then review tmp/calibrate/proposed_tags.json, lock vocab in "
+                f"config/tags.json, and re-run isa run --mode first-time."
+            )
+        else:
+            # agent-filled enrich gate
+            print(
+                f"\nNEXT (manual): {na.group} — {na.detail}\n"
+                f"  Run: isa run --stage enrich --prepare --group {na.group!r}\n"
+                f"  Then fill tmp/enrich/prompt.txt → tmp/enrich/results.json, "
+                f"and: isa run --stage enrich --apply"
+            )
+    else:
+        # Should not normally reach here post-loop (no-progress guard fired)
+        print(f"\nNext: {na.group} — {na.detail}{label}")
+
+
 def main() -> None:
     args = build_parser().parse_args()
     if args.command == "run":
         if args.stage is None:
-            raise SystemExit("isa run: --stage is required for now (mode orchestration comes later)")
+            _dispatch_mode(args)
+            return
         dispatch_run(args)
         return
     if args.command == "discover":

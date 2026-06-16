@@ -199,8 +199,9 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
 # ---------------------------------------------------------------------------
 
 def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
+                       lanes: list | None = None,
                        progress_factory=None) -> dict:
-    """Drain a single group via the automated backend across BOTH lanes.
+    """Drain a single group via the automated backend.
 
     Loops prepare→fill→apply per lane until the lane is DRAINED (prepare returns 0)
     or no-progress (apply writes nothing). Only runs the vision lane when
@@ -214,6 +215,10 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
         backend:         Backend module (must have .AUTOMATED True; callers should not
                          call this for agent-filled backends).
         group:           Group name to drain.
+        lanes:           Optional list of lane names to run (e.g. ``["text"]``). None
+                         (default) runs all applicable lanes (text always; vision if
+                         ``backend.VISION_CAPABLE`` is True). Explicit list restricts
+                         which lanes execute — useful when the CLI runs a single lane.
         progress_factory: Optional callable ``(label: str) -> context manager`` returning
                          a StageProgress. Pass None to skip live progress bars.
 
@@ -228,7 +233,7 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
     vision_template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8") \
         if backend.VISION_CAPABLE else None
 
-    lanes = [
+    all_lanes = [
         {
             "name": "text",
             "kinds": {"Reel", "IGTV"},
@@ -237,16 +242,20 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
         },
     ]
     if backend.VISION_CAPABLE:
-        lanes.append({
+        all_lanes.append({
             "name": "vision",
             "kinds": {"Carousel", "Post"},
             "template": vision_template,
             "image_budget": budgets.image_token_budget,
         })
 
+    # Filter to the requested subset; None means "all applicable lanes" (default).
+    lane_filter = set(lanes) if lanes is not None else None
+    active_lanes = [l for l in all_lanes if lane_filter is None or l["name"] in lane_filter]
+
     totals: dict[str, object] = {"written": 0, "lanes": {}}
 
-    for lane in lanes:
+    for lane in active_lanes:
         lane_name = lane["name"]
         lane_written = 0
         stop_reason = "drained"

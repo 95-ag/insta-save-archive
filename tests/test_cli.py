@@ -610,3 +610,150 @@ def test_backup_command_restore_check_no_file(monkeypatch, tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "no backup" in out.lower() or "not found" in out.lower() or "backup" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Mode dispatch (isa run --mode first-time / incremental, no --stage)
+# ---------------------------------------------------------------------------
+
+import types as _types_mod
+from insta_save.orchestrator.sequence import GroupStep, Plan
+
+
+def _make_plan(action="done", automated=True, next_action_idx=None):
+    """Build a minimal Plan for testing."""
+    step = GroupStep(group="TestG", action=action, automated=automated,
+                     detail=f"{action} detail")
+    done = action == "done"
+    return Plan(steps=[step], next_action=None if done else step, done=done)
+
+
+def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
+    """Patch all I/O so _dispatch_mode runs without real Notion/FS calls.
+
+    Returns the calls dict (records which sequencer was called + dry_run value).
+    """
+    calls = {}
+
+    env = _types_mod.SimpleNamespace(tmp_dir="tmp", notion_write_delay=0.0)
+    run_cfg = _types_mod.SimpleNamespace(
+        enrich=_types_mod.SimpleNamespace(backend="claude-code", model="m", effort="medium"),
+        output_language="english", char_budget=80000, max_items=15,
+        guardrails_max_items_per_run=None, guardrails_max_spend_usd=None,
+    )
+    backend = _types_mod.SimpleNamespace(AUTOMATED=False, NAME="claude-code",
+                                         VISION_CAPABLE=False,
+                                         batch_budgets=lambda r: None)
+
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_run", lambda: run_cfg)
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "get_backend", lambda name: backend)
+    monkeypatch.setattr(isa, "load_routes", lambda: _types_mod.SimpleNamespace(
+        by_tag={}, by_collection={}, by_group={}))
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logs/run-20260101_000000.log")
+    monkeypatch.setattr(isa, "preflight", lambda env, run_cfg, stages: None)
+    monkeypatch.setattr(isa, "build_status",
+                        lambda env, cols: [{"group": "TOTAL", "remaining": 5}])
+    monkeypatch.setattr(isa, "run_first_time",
+                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
+                        calls.__setitem__("first_time_dry_run", dry_run) or plan)
+    monkeypatch.setattr(isa, "run_incremental",
+                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
+                        calls.__setitem__("incremental_dry_run", dry_run) or plan)
+
+    args = isa.build_parser().parse_args(
+        ["run", "--mode", mode] + (["--dry-run"] if dry_run else []))
+    return args, calls
+
+
+def test_mode_first_time_dispatches_run_first_time(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    isa.main.__wrapped__ if hasattr(isa.main, "__wrapped__") else None
+    isa._dispatch_mode(args)
+    assert "first_time_dry_run" in calls
+    assert "All groups complete" in capsys.readouterr().out
+
+
+def test_mode_incremental_dispatches_run_incremental(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+    isa._dispatch_mode(args)
+    assert "incremental_dry_run" in calls
+    assert "All groups complete" in capsys.readouterr().out
+
+
+def test_mode_dry_run_passes_through(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
+    isa._dispatch_mode(args)
+    assert calls.get("first_time_dry_run") is True
+
+
+def test_mode_prints_calibrate_gate(monkeypatch, capsys):
+    """When the plan next_action is a calibrate gate, prints the manual step hint."""
+    plan = _make_plan("calibrate", automated=False)
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    isa._dispatch_mode(args)
+    out = capsys.readouterr().out
+    assert "NEXT (manual)" in out
+    assert "calibrate" in out.lower()
+    assert "TestG" in out
+
+
+def test_mode_prints_agent_enrich_gate(monkeypatch, capsys):
+    """When the plan next_action is a non-automated enrich step, prints the prepare hint."""
+    plan = _make_plan("enrich", automated=False)
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    isa._dispatch_mode(args)
+    out = capsys.readouterr().out
+    assert "NEXT (manual)" in out
+    assert "enrich" in out.lower()
+    assert "TestG" in out
+
+
+def test_mode_calls_preflight(monkeypatch):
+    """preflight is called before the sequencer."""
+    plan = _make_plan("done")
+    calls = {}
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+    monkeypatch.setattr(isa, "preflight",
+                        lambda env, run_cfg, stages: calls.__setitem__("preflight", stages))
+    isa._dispatch_mode(args)
+    assert "preflight" in calls
+    assert "extract" in calls["preflight"]
+    assert "enrich" in calls["preflight"]
+
+
+def test_mode_calls_guardrail_check(monkeypatch):
+    """check_item_cap is called with the remaining count from build_status."""
+    plan = _make_plan("done")
+    calls = {}
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa.guardrails, "check_item_cap",
+                        lambda planned, run_cfg: calls.__setitem__("planned", planned))
+    isa._dispatch_mode(args)
+    # build_status mock returns remaining=5 for TOTAL
+    assert calls.get("planned") == 5
+
+
+def test_mode_usage_reminder_printed_for_session_backend(monkeypatch, capsys):
+    """usage_reminder output is printed when the backend is session-based."""
+    plan = _make_plan("done")
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa.guardrails, "usage_reminder",
+                        lambda run_cfg: "watch your Claude-Max usage")
+    isa._dispatch_mode(args)
+    assert "watch your Claude-Max usage" in capsys.readouterr().out
+
+
+def test_mode_usage_reminder_not_printed_when_none(monkeypatch, capsys):
+    """usage_reminder returns None for non-session backends — nothing extra printed."""
+    plan = _make_plan("done")
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa.guardrails, "usage_reminder", lambda run_cfg: None)
+    isa._dispatch_mode(args)
+    out = capsys.readouterr().out
+    assert "usage" not in out.lower() and "reminder" not in out.lower()

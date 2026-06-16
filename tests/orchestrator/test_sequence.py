@@ -37,7 +37,7 @@ def _fake_vocab(*calibrated_groups):
 
 
 def _backend(automated=True, name="test-backend"):
-    return SimpleNamespace(AUTOMATED=automated, NAME=name)
+    return SimpleNamespace(AUTOMATED=automated, NAME=name, VISION_CAPABLE=False)
 
 
 def _page(status, collections):
