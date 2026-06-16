@@ -349,7 +349,6 @@ def dispatch_run(args) -> None:
         env = _load_env()
         collections_cfg = _load_collections()
         ensure_schema(env)
-        from insta_save.config.routes import load_routes
         from insta_save.stages.route import run_route_stage
         routes = load_routes()
         log_path = setup_logging("route")
