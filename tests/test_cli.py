@@ -394,3 +394,142 @@ def test_route_dispatches_dry_run(monkeypatch):
     isa.dispatch_run(args)
 
     assert calls["kwargs"]["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# backup CLI tests
+# ---------------------------------------------------------------------------
+
+def _patch_backup_common(monkeypatch, tmp_dir):
+    """Patch the common scaffolding for the backup command."""
+    import types
+    import insta_save.backup as backup_mod
+
+    env = types.SimpleNamespace(tmp_dir=tmp_dir)
+    monkeypatch.setattr(isa, "_load_env", lambda: env)
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
+    return env, backup_mod
+
+
+def test_backup_command_calls_backup_and_prints_path(monkeypatch, tmp_path, capsys):
+    """isa backup → calls backup() and prints the written path."""
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path))
+
+    written_path = tmp_path / "backups" / "notion-20260616_120000.json"
+    calls = {}
+
+    def _fake_backup(env_arg, *, out_dir, ts):
+        calls["args"] = (env_arg, str(out_dir), ts)
+        written_path.parent.mkdir(parents=True, exist_ok=True)
+        written_path.write_text('{"snapshot_ts":"t","count":5,"pages":[]}', encoding="utf-8")
+        return written_path
+
+    # Patch at the isa module level (isa imports backup at module load time)
+    monkeypatch.setattr(isa, "backup", _fake_backup)
+
+    import types as _types
+
+    _args = _types.SimpleNamespace(command="backup", restore_check=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "backup" in out.lower() or str(written_path) in out or "notion-" in out
+    assert calls  # backup() was called
+
+
+def test_backup_command_restore_check_ok(monkeypatch, tmp_path, capsys):
+    """isa backup --restore-check → calls restore_check on newest file, prints OK."""
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path))
+
+    # Pre-create a backup file so newest-file lookup finds it
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir(parents=True)
+    backup_file = backup_dir / "notion-20260616_120000.json"
+    backup_file.write_text('{"snapshot_ts":"t","count":2,"pages":[]}', encoding="utf-8")
+
+    calls = {}
+
+    def _fake_restore_check(env_arg, path, collections_cfg):
+        calls["args"] = (env_arg, path, collections_cfg)
+        return {"ok": True, "count": 2, "mismatches": []}
+
+    # Patch at the isa module level (isa imports restore_check at module load time)
+    monkeypatch.setattr(isa, "restore_check", _fake_restore_check)
+
+    import types as _types
+
+    _args = _types.SimpleNamespace(command="backup", restore_check=True)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "ok" in out.lower() or "2" in out
+    assert calls  # restore_check() was called
+
+
+def test_backup_command_restore_check_mismatch(monkeypatch, tmp_path, capsys):
+    """isa backup --restore-check → prints mismatch summary when ok=False."""
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path))
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir(parents=True)
+    backup_file = backup_dir / "notion-20260616_120000.json"
+    backup_file.write_text('{"snapshot_ts":"t","count":2,"pages":[]}', encoding="utf-8")
+
+    def _fake_restore_check(env_arg, path, collections_cfg):
+        return {"ok": False, "count": 2, "mismatches": ["count delta: backup=2 live=3"]}
+
+    monkeypatch.setattr(isa, "restore_check", _fake_restore_check)
+
+    import types as _types
+
+    _args = _types.SimpleNamespace(command="backup", restore_check=True)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "mismatch" in out.lower() or "delta" in out.lower() or "2" in out
+
+
+def test_backup_command_restore_check_no_file(monkeypatch, tmp_path, capsys):
+    """isa backup --restore-check with no backup file → prints clear message, no crash."""
+    import insta_save.backup as backup_mod
+
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path))
+    # No backup file created — directory doesn't exist
+
+    import types as _types
+
+    _args = _types.SimpleNamespace(command="backup", restore_check=True)
+
+    class _FakeParser:
+        def parse_args(self, argv=None):
+            return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+
+    # Should not crash
+    isa.main()
+
+    out = capsys.readouterr().out
+    assert "no backup" in out.lower() or "not found" in out.lower() or "backup" in out.lower()

@@ -1,6 +1,7 @@
 """isa — Insta-Save v2 CLI entrypoint. Arg surface only; stages are stubbed until built."""
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from insta_save.config.env import load_env as _load_env
@@ -12,6 +13,7 @@ from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
 from insta_save.stages.calibrate import sample as calibrate_sample
+from insta_save.backup import backup, restore_check
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
 
@@ -353,6 +355,35 @@ def main() -> None:
                                fresh=args.fresh, names=names)
         print(f"Discover: {len(summary['new'])} new, {len(summary['missing'])} missing, "
               f"index_complete={summary['index_complete']}, skipped={summary['skipped']}")
+        return
+    if args.command == "backup":
+        env = _load_env()
+        collections_cfg = _load_collections()
+        log_path = setup_logging("backup")
+        print(f"Logging to {log_path}")
+        out_dir = Path(env.tmp_dir) / "backups"
+        if args.restore_check:
+            # Find the newest backup file (ts format sorts lexically = chronologically).
+            candidates = sorted(out_dir.glob("notion-*.json")) if out_dir.exists() else []
+            if not candidates:
+                print("Restore-check: no backup file found. Run `isa backup` first.")
+                return
+            newest = candidates[-1]
+            result = restore_check(env, newest, collections_cfg)
+            if result["ok"]:
+                print(f"Restore-check: OK ({result['count']} pages match)")
+            else:
+                print(f"Restore-check: MISMATCH ({len(result['mismatches'])} issue(s), "
+                      f"backup count={result['count']})")
+                for m in result["mismatches"]:
+                    print(f"  - {m}")
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = backup(env, out_dir=out_dir, ts=ts)
+            # Re-read count from the written file so we don't need backup() to return it.
+            import json as _json
+            written_count = _json.loads(path.read_text(encoding="utf-8"))["count"]
+            print(f"Backup: wrote {path} ({written_count} pages)")
         return
     raise SystemExit(f"isa {args.command}: not implemented yet (v2 scaffold — see ARCHITECTURE.md)")
 
