@@ -64,3 +64,83 @@ def test_on_error_counts_failed(monkeypatch):
                                        on_error=lambda e, i, exc: handled.append(i["page_id"]),
                                        stage_key="x", bar_label="X")
     assert counts["failed"] == 1 and handled == ["a"]
+
+
+def test_write_delay_fires_only_on_delay_on_counter(monkeypatch):
+    """sleep fires only for counters in delay_on, not for skips or failures."""
+    rows = [
+        {"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
+         "collections": [], "priority": "High"},  # returns "tagged"
+        {"page_id": "b", "source_id": "B", "ig_link": "y", "type": "Reel",
+         "collections": [], "priority": "High"},  # returns "skipped"
+    ]
+    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+
+    results = iter(["tagged", "skipped"])
+    def process(env, item, ctx):
+        return next(results)
+
+    sleep_calls = []
+    monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
+
+    counts = runner.run_priority_stage(
+        None, "Imported", process, _Progress(),
+        write_delay=0.05, delay_on={"tagged"},
+        stage_key="tag", bar_label="Tag")
+
+    assert counts["tagged"] == 1
+    assert counts["skipped"] == 1
+    # sleep must fire exactly once (for the "tagged" item only)
+    assert sleep_calls == [0.05]
+
+
+def test_write_delay_zero_never_sleeps(monkeypatch):
+    rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
+             "collections": [], "priority": "High"}]
+    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+
+    sleep_calls = []
+    monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
+
+    runner.run_priority_stage(
+        None, "Imported", lambda e, i, c: "tagged", _Progress(),
+        write_delay=0.0, delay_on={"tagged"},
+        stage_key="tag", bar_label="Tag")
+
+    assert sleep_calls == []
+
+
+def test_write_delay_none_delay_on_never_sleeps(monkeypatch):
+    rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
+             "collections": [], "priority": "High"}]
+    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+
+    sleep_calls = []
+    monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
+
+    runner.run_priority_stage(
+        None, "Imported", lambda e, i, c: "tagged", _Progress(),
+        write_delay=0.05, delay_on=None,
+        stage_key="tag", bar_label="Tag")
+
+    assert sleep_calls == []
+
+
+def test_write_delay_not_called_on_failure(monkeypatch):
+    """sleep must not fire for items that raise (counter never reaches delay_on check)."""
+    rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
+             "collections": [], "priority": "High"}]
+    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+
+    sleep_calls = []
+    monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
+
+    def boom(env, item, ctx): raise RuntimeError("fail")
+
+    counts = runner.run_priority_stage(
+        None, "Imported", boom, _Progress(),
+        write_delay=0.05, delay_on={"tagged"},
+        stage_key="tag", bar_label="Tag")
+
+    assert counts["failed"] == 1
+    assert sleep_calls == []

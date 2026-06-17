@@ -1,7 +1,4 @@
-"""JSON session cookies → Netscape format (yt-dlp's --cookies requires Netscape).
-
-NOTE: engines/transcript.py carries its own converter; consolidating the two is a
-later cleanup (out of scope for ingest)."""
+"""JSON session cookies → Netscape format (yt-dlp's --cookies requires Netscape)."""
 
 import json
 from pathlib import Path

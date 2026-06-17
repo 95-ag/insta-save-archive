@@ -1,8 +1,8 @@
 # Insta-Save — Architecture (v2)
 
-> **Status:** target architecture, in build. The running v1 lives in `legacy/`.
+> **Status:** fully built (stages 0–6 · all four enrich backends · orchestrator · safety layer). The capstone clean run (#7) is the only remaining sub-project. The running v1 lives in `legacy/`.
 > Supersedes `.claude/docs/archive/PROJECT.md` and `.claude/docs/archive/IMPLEMENTATION_PLAN.md`.
-> Last updated: 2026-06-15.
+> Last updated: 2026-06-17.
 
 A personal knowledge pipeline that ingests Instagram saves into Notion, extracts
 their content, enriches it with an LLM into titles/summaries/externals/tags, and
@@ -72,13 +72,32 @@ deterministic branch (stage 5) reaches `Tagged` without extract/enrich.
 | Granularity | **Stage-at-a-time per group**: drain Extract for the group → calibrate → drain Enrich | Small delta; group order still respected |
 | Ordering | Group order (position in the `groups` list) | Same ordering, applied to the delta |
 | Calibration (3.5) | **Yes** — per group, before its enrich loop | **No** — reuses the locked vocab |
-| Human-in-loop | Per-group: vocab refine + spot-check | Spot-check only |
+| Human-in-loop | Per-group: vocab refine + spot-check | Spot-check only (raises if a group is uncalibrated — run first-time first) |
 | Correction cost | Paid **once per group** | Near-zero |
 
 The calibration gate is what makes tagging tractable: the hard part (vocabulary + tag
 quality) is front-loaded onto a ~15–20 item sample per group, validated, then locked.
 Bulk runs **separate the extract loop from the enrich loop** (extract must finish first so
 calibration has content to sample).
+
+### 3.1 The sequencer (orchestrator)
+
+`orchestrator/sequence.py` provides `compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan`
+(a **pure read** of Notion state, no writes) and `run_first_time` / `run_incremental` (the guided,
+resumable loop). For each group in `groups` order, `compute_plan` emits the next `GroupStep` via a
+**5-rule decision table**: (1) Queued items → `extract`; (2) enrichable items + uncalibrated vocab →
+`calibrate` (a human gate); (3) enrichable + calibrated → `enrich` (automated iff `backend.AUTOMATED`,
+else an agent-filled gate); (4) routing enabled + Tagged items → `route`; (5) else `done`. Counts:
+`queued` / `tagged` by collection membership, `enrichable` by `enrich_group==group` (cross-group, §7.3).
+
+The runner **recomputes the plan from Notion after EACH automated step** — state lives in Notion, so
+the loop is crash/compaction-safe and resumable (D6) with no in-memory or file state. It **stops and
+returns at the first non-automated gate** (calibrate, or agent-filled enrich), and has a
+**no-progress guard**: a `(group, action)` that repeats without advancing returns instead of looping
+forever. `run_incremental` raises `SystemExit` on a calibrate step (vocab must already be locked —
+run first-time first). `dry_run=True` returns the plan without executing any step. CLI:
+`isa run --mode first-time|incremental [--dry-run]` runs preflight + the item-cap guardrail + a
+session usage reminder, then the sequencer, then prints the per-group plan and the next gate.
 
 ---
 
@@ -100,6 +119,7 @@ calibration has content to sample).
 - **Select** fans items to the extract path (`Queued`) or the deterministic branch (`extract=no` collections — no deep content worth a transcript).
 - **Enrich** is one LLM pass producing all four fields from `title-seed + transcript + ocr_text + caption`. Replaces v1's separate `title` (Ollama) + `summarize` (Claude) passes for extracted items.
 - **Deterministic** branch (st.5) tags `extract=no` items from the **slugified union of their collection names** and titles them by a config mode — `template` (`{collection} — {author}`, default) or opt-in `llm` (title from caption+collection+author). No transcript/OCR/semantic-LLM; `summary`/`externals` stay `None`; status → `Tagged` (marker `enrich_version="deterministic-v2.0"`). The `llm` mode is a **thin parallel `--prepare`/`--apply`** running on the formal `Backend` protocol (results parsed via `backends.base.parse_results`, backend selected via `get_backend`); automated backends (`local`/`api`) drain it in-process exactly like enrich, and it shares the multilingual `prompt.translate_directive` (narrowed to just the title). `output_language` (top-level run config) normalizes titles/summaries/tags to English — only raw transcript/OCR keep their original language.
+- **Route** (st.6) is deterministic — `config/routes.json` maps `tag > collection > group → route_target` (tag wins, else collection, else group). Disabled when `routes.json` is absent or empty (every item stays `Tagged`). `isa run --stage route` accepts `--dry-run` (previews, no writes).
 
 ---
 
@@ -120,7 +140,12 @@ The `AUTOMATED` flag splits the backends into two execution models. **Automated*
 (prepare → fill → apply, looped). **Agent-filled** backends (`claude-code`, `cowork`) return
 `FillResult(external=True)`: the CLI does a single prepare or apply step and the driving Claude
 session / Cowork loop runs the fill and re-invokes. `VISION_CAPABLE` is a separate capability flag
-(everything but `local` can see images) — the vision lane is gated on it (§5.1 preflight).
+(everything but `local` can see images) — the vision lane is gated on it (§5.1 preflight). For the
+`api` backend the per-run spend guardrail fires **per batch** inside `drain_enrich_group` — after
+`prepare` writes `prompt.txt`, before `backend.fill` — reading the rendered prompt length and raising
+if the estimate exceeds `guardrails_max_spend_usd`. `enrich.drain_enrich_group(lanes=None)` is the
+shared automated drain (both lanes; vision gated on `VISION_CAPABLE`) used by BOTH the sequencer and
+the CLI `--stage enrich` automated path (which passes a single `lanes=[lane]`).
 
 **Design layer (the `Backend` protocol, D5).** `backends.base` defines the `Backend` protocol —
 each backend is a module exposing `NAME` · `AUTOMATED` · `VISION_CAPABLE` ·
@@ -139,7 +164,7 @@ across all four; the **driver** branches on `AUTOMATED` (drain vs single-step) a
 also drive the deterministic-title path (`tmp/deterministic/`), not enrich only (`tmp/enrich/`).
 `enrich.backend` in run config selects one; `enrich.api_mode` (`sync` default | `batches`) picks the
 `api` backend's call shape, and that backend reads an Anthropic key from env (`anthropic_api_key`).
-`--status` (CLI flag → `cowork.status`) reports the remaining-enrichable count per group. Each backend also carries
+`--status` (on `isa run --stage enrich`) calls `cowork.status` for a single group's remaining-enrichable count. (The top-level `isa status` command — §10 — is separate: a per-group table of all status counts.) Each backend also carries
 **`model`** and **`effort`** (effort → thinking budget on `api`, model-size on `local`, advisory
 on sessions). **On sessions, model+effort set the context capacity that caps batch size — confirm
 both at run start.** (v1 observation: a Sonnet+low session fills context and needs `/compact` far
@@ -261,7 +286,9 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 ### 7.3 Cross-group items
 An item in collections spanning groups gets the **union** of its groups' granular vocab + cross-group,
 and is enriched **once, at its last-in-order group that has `extract`** — by then every vocab it needs is
-locked. **Calibrate by membership, enrich by that last group:** a group's vocab samples *any* item touching
+locked. Implemented via `collections.extract_groups_of` + `tags.union_topics`: `enrich.prepare`
+computes the batch's group-union to render the prompt vocab block (`prompt.build_prompt(groups=…)`),
+and `enrich.apply` validates EACH item against the union of ITS OWN groups' topics. **Calibrate by membership, enrich by that last group:** a group's vocab samples *any* item touching
 it, but enrich fires only on items whose last extract group is the current one. An item is on the extract
 path if **any** of its collections is `extract=yes` (richer wins); deterministic only if all are `extract=no`.
 This ordering only matters during **first-time bulk** — incremental already has every vocab locked.
@@ -274,6 +301,10 @@ Deterministic, no model: `config/routes.json` maps `tag > collection > group →
 Disable-able (items stay `Tagged`). Hands off to a per-route pipeline (separate project).
 Rationale: collection membership already encodes destination; a model adds cost and unreliability
 for a decision config makes 100% reliably.
+
+`routes.json` shape: `{"by_tag": {tag: target}, "by_collection": {collection: target}, "by_group": {group: target}}`
+(see `config/routes.example.json`). Disabled when absent or empty (`load_routes` → empty `Routes()` →
+`route_for` returns `None` for every item). `isa run --stage route` accepts `--dry-run`.
 
 ---
 
@@ -317,10 +348,10 @@ referenced by the vision enrich lane.
 ## 10. Cross-cutting
 
 - **Versioning / reprocessing:** `extract_version` and `enrich_version` are independent → re-extract (e.g. new whisper) without re-enriching, and re-tag (new vocab) without re-extracting. `raw_extraction` is never overwritten.
-- **Failure triage:** `--status` reports per-group counts of `Failed` + no-content + remaining; `Failed` items keep partial data + `failure_notes`; explicit retry path. In the **first full batch, no-content items are debugged (not auto-routed)** — only *true* no-content falls to the deterministic branch.
-- **Guardrails (important):** per-run caps — `max_items` and/or `max_spend` (api) — plus Claude-Max usage awareness for sessions. A bulk run cannot silently overrun budget.
-- **Preflight:** before a run, verify the chosen backend (Ollama up / API key valid / session files writable), Notion reachable, engines importable. Fail fast.
-- **Backup + restore-check:** snapshot the Notion DB to JSON before bulk re-runs; periodically run a restore-to-scratch check (a backup never restored isn't a backup).
+- **Failure triage:** `isa status` reports per-group + TOTAL counts across all statuses (Imported/Queued/Extracted/Tagged/Routed/Failed) plus `remaining` (= Imported+Queued+Extracted); an item spanning groups counts once per group. `isa status --retry-failed` requeues each `Failed` item to `Extracted` (if it has `raw_extraction`) or else `Queued`, clearing `failure_notes`. `Failed` items keep partial data + `failure_notes`.
+- **Guardrails (important):** per-run caps — `max_items` and/or `max_spend` (api) — plus Claude-Max usage awareness for sessions. A bulk run cannot silently overrun budget. Two wiring points: the item cap (`guardrails_max_items_per_run`) is checked once at run start in `isa run --mode` against the summed `remaining`; the spend cap (`guardrails_max_spend_usd`, api-only) is checked per batch inside `drain_enrich_group`.
+- **Preflight:** before a run, `preflight(env, run_cfg, stages=…)` fails fast on: invalid `enrich.effort` (must be low/medium/high); missing Notion config (credential presence check, not a live ping); backend unreachable (Ollama health-check for `local`; API-key presence for `api`; nothing for the session backends); and extract engines not importable (`faster_whisper`/`rapidocr_onnxruntime`, only when extract is in the run's stages).
+- **Backup + restore-check:** `isa backup` snapshots the whole Notion DB to `tmp/backups/notion-<ts>.json` (all statuses, no filter). `isa backup --restore-check` is a **dry structural verification** — it re-reads the JSON and diffs page count + per-status + per-group tallies against live Notion (no writes; no scratch DB). MUST exist before #7's wipe.
 - **Uncategorized:** items in no named collection (the IG "all-posts" view) fall into a default last group `uncategorized`.
 - **Terminal:** rich `StageProgress` is carried over and extended — per-group + per-stage bars, `isa status` as a summary table; all `logging` stays file-only and is never mixed with the live display.
 - **Carry-over:** v1's hard-won fixes (selectors, CDN domain, UTF-16 truncation, content guard, reconcile invariants, VcXsrv runbook…) are catalogued in [`CARRYOVER.md`](CARRYOVER.md) — consult it when reimplementing each stage.
@@ -336,13 +367,13 @@ insta-save-archive/
 │   └── README.md
 ├── insta_save/                  # v2 package (import name; distribution = insta-save)
 │   ├── config/                  # typed loaders: run · collections · tags · routes
-│   ├── orchestrator/            # runner (modes) · preflight · guardrails · batching
+│   ├── orchestrator/            # sequence (modes+plan) · runner · preflight · guardrails · status_report
 │   ├── stages/                  # discover · ingest · select · extract · calibrate · enrich · deterministic · route
 │   ├── engines/                 # transcript · ocr · vision  (extract plugins)
 │   ├── backends/                # base · local_ollama · api_anthropic · claude_code · cowork
 │   ├── adapters/                # notion (state) · instagram/ (session·display·harvest·crawl·extractor·cookies)
 │   ├── helpers/                 # observability (StageProgress, setup_logging)
-│   ├── enrich_schema.py · reconcile.py · snapshots.py · backup.py
+│   ├── enrich_schema.py · reconcile.py · snapshots.py (crawl) · backup.py (Notion→JSON)
 ├── cli/isa.py                   # single entrypoint: isa discover|run|status|backup
 ├── config/                      # gitignored DATA: collections.json · tags.json · routes.json · run.json
 ├── prompts/                     # versioned enrich · calibrate · deterministic-title prompts
@@ -364,7 +395,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | `config/run.json` | yes (example) | mode · `enrich.backend/model/effort/api_mode` · top-level `output_language` · `deterministic.title_mode` · `extract.ocr.mode` · `batch.max_char_budget/max_image_tokens` · guardrail caps |
 | `config/collections.json` | **no** (private) | ordered `groups` list (group names live here) + per-collection `{group, extract}` |
 | `config/tags.json` | **no** (private) | per-group + cross-group vocab with definitions |
-| `config/routes.json` | yes (example) | route map (optional) |
+| `config/routes.json` | yes (example) | route map (optional; absent/empty ⇒ routing disabled) |
 
 ---
 
@@ -390,11 +421,12 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D16 | Routing deterministic + optional | Collection encodes destination; 100% reliable, no model | AI-chosen routing (cost, unreliable) |
 | D17 | Fresh `insta_save/` + `legacy/` fallback | Clean v2 boundaries; v1 runnable during migration | In-place rewrite (risky, no fallback) |
 | D18 | LLM proposes vocab, human refines | Faster than authoring cold; human keeps control | Pure-manual (slow) or pure-LLM (uncurated) |
-| D19 | Guardrails + preflight + backup/restore | Bulk re-runs are high-blast-radius; fail fast, cap spend, be restorable | Trust the run (silent overruns, unrecoverable writes) |
+| D19 | Guardrails + preflight + backup/restore | Bulk re-runs are high-blast-radius; fail fast, cap spend, be restorable — built as preflight (effort/notion/backend/engines), item-cap (pre-run vs remaining), per-batch spend-cap, usage reminder, backup + dry restore-check | Trust the run (silent overruns, unrecoverable writes) |
 | D20 | Group-level ordering (not per-collection) | ~6 groups to order, not ~44 folders; group names move to the private config | Per-collection `order` (tedious; leaks group names in code) |
 | D21 | Ingest metadata yt-dlp-first, browser fallback, wall guard | More 429-resilient; works on image posts; v1-proven | Browser-first (fragile, rate-limited) |
 | D22 | Consolidate v1's two collection scrapers/mergers into one discover stage | v1 had divergent duplicates (`crawler.py` vs `list_collections.py`) | Keep both (maintenance trap) |
 | D23 | Vision as an enrich input modality; two lanes per group (text/vision) | Carousel/post slides contain information that transcript/OCR alone can miss; feeding raw images into the enrich lane is simpler and more complete than a separate post-OCR vision pass. Reel-vision deferred: reel frames carry little unique information vs transcript + frame-OCR text, and a per-frame vision pass is not content-completeness-gated. | Single lane (would need complex image-text merge logic); per-frame confidence gate at extract time (wrong signal) |
+| D24 | Sequencer: guided-resumable, state in Notion, 5-rule decision table | Re-reading Notion before each step makes the loop crash/compaction-safe with no in-memory/file state; sequencing is a pure function of DB state; stops at human/agent gates; a no-progress guard prevents infinite loops | State in memory (breaks on crash); single-pass planning (stale after each step) |
 
 ---
 

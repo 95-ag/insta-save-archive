@@ -1,0 +1,318 @@
+"""Guided resumable sequencer — pure plan computation (no execution).
+
+Reads all Notion pages once, tallies per-group counts, then maps each group
+to its next pipeline action according to the rule table in the module docstring.
+The result is a Plan whose `next_action` the orchestrator runs next.
+
+Rule table (first match wins, per group):
+  1. queued[g] > 0                          → extract   (automated)
+  2. enrichable[g] > 0, NOT calibrated      → calibrate (human gate)
+  3. enrichable[g] > 0, calibrated          → enrich    (automated iff backend.AUTOMATED)
+  4. routing_enabled AND tagged[g] > 0      → route     (automated)
+  5. else                                   → done
+
+Count semantics:
+  queued[g]     — Queued items whose ANY collection maps to group g (membership)
+  enrichable[g] — Extracted items whose enrich_group == g (cross-group: enriched at LAST group)
+  tagged[g]     — Tagged items whose ANY collection maps to group g (membership)
+"""
+
+import logging
+from dataclasses import dataclass
+
+from insta_save.adapters.notion import query_all_pages
+from insta_save.stages import enrich as _enrich_stage
+from insta_save.stages.extract import run_extract_stage
+from insta_save.stages.route import run_route_stage
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class GroupStep:
+    group: str
+    action: str    # "extract" | "calibrate" | "enrich" | "route" | "done"
+    automated: bool  # True if the sequencer can run it now; False = human/agent gate
+    detail: str    # human-facing one-liner
+
+
+@dataclass
+class Plan:
+    steps: list         # list[GroupStep], one per group, in collections_cfg.groups order
+    next_action: object # first GroupStep whose action != "done", or None
+    done: bool          # True iff every step's action == "done"
+
+
+def _parse_page(page: dict) -> tuple[str | None, list[str]]:
+    """Extract (status, collections) from a raw page dict, tolerantly."""
+    props = page.get("properties", {})
+    status_sel = props.get("status", {}).get("select")
+    status = status_sel.get("name") if status_sel else None
+    collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
+    return status, collections
+
+
+def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict]:
+    """Single-pass tally: queued[g], enrichable[g], tagged[g] for all groups.
+
+    queued and tagged use group membership (any collection in the group).
+    enrichable uses enrich_group (the LAST extract group — cross-group assignment).
+    """
+    queued: dict[str, int] = {}
+    enrichable: dict[str, int] = {}
+    tagged: dict[str, int] = {}
+
+    for page in pages:
+        status, collections = _parse_page(page)
+        if status is None:
+            continue
+
+        if status == "Queued":
+            seen_groups: set[str] = set()
+            for c in collections:
+                g = collections_cfg.group_of(c)
+                if g not in seen_groups:
+                    seen_groups.add(g)
+                    queued[g] = queued.get(g, 0) + 1
+
+        elif status == "Extracted":
+            eg = collections_cfg.enrich_group(collections)
+            if eg is not None:
+                enrichable[eg] = enrichable.get(eg, 0) + 1
+
+        elif status == "Tagged":
+            seen_groups_t: set[str] = set()
+            for c in collections:
+                g = collections_cfg.group_of(c)
+                if g not in seen_groups_t:
+                    seen_groups_t.add(g)
+                    tagged[g] = tagged.get(g, 0) + 1
+
+    return queued, enrichable, tagged
+
+
+def _backend_name(backend) -> str:
+    return getattr(backend, "NAME", None) or str(backend)
+
+
+def _step_for_group(
+    group: str,
+    queued: dict,
+    enrichable: dict,
+    tagged: dict,
+    vocab,
+    backend,
+    routing_enabled: bool,
+) -> GroupStep:
+    """Apply the rule table and return the GroupStep for one group."""
+    name = _backend_name(backend)
+
+    if queued.get(group, 0) > 0:
+        return GroupStep(
+            group=group,
+            action="extract",
+            automated=True,
+            detail=f"drain extract: {queued[group]} Queued",
+        )
+
+    if enrichable.get(group, 0) > 0 and not vocab.has_group(group):
+        return GroupStep(
+            group=group,
+            action="calibrate",
+            automated=False,
+            detail=f"calibrate vocab for {group} ({enrichable[group]} items waiting to enrich)",
+        )
+
+    if enrichable.get(group, 0) > 0:
+        return GroupStep(
+            group=group,
+            action="enrich",
+            automated=backend.AUTOMATED,
+            detail=f"enrich {enrichable[group]} items via {name}",
+        )
+
+    if routing_enabled and tagged.get(group, 0) > 0:
+        return GroupStep(
+            group=group,
+            action="route",
+            automated=True,
+            detail=f"route {tagged[group]} Tagged",
+        )
+
+    return GroupStep(
+        group=group,
+        action="done",
+        automated=True,
+        detail="nothing pending",
+    )
+
+
+def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
+    """Read all Notion pages once, classify each item, and return the Plan.
+
+    Args:
+        env:             EnvConfig (passed to query_all_pages).
+        run_cfg:         RunConfig (accepted for forward-compat; not deeply used here).
+        collections_cfg: CollectionsConfig with .groups ordering + group_of/enrich_group.
+        vocab:           Vocab with .has_group(group) -> bool.
+        backend:         backend module with .AUTOMATED: bool and .NAME: str.
+        routes:          Routes with .by_tag/.by_collection/.by_group dicts.
+
+    Returns:
+        Plan with per-group steps in collections_cfg.groups order, next_action, and done flag.
+    """
+    routing_enabled = bool(routes.by_tag or routes.by_collection or routes.by_group)
+
+    pages = query_all_pages(env)
+    queued, enrichable, tagged = _tally(pages, collections_cfg)
+
+    steps = [
+        _step_for_group(group, queued, enrichable, tagged, vocab, backend, routing_enabled)
+        for group in collections_cfg.groups
+    ]
+
+    next_action = next((s for s in steps if s.action != "done"), None)
+    done = next_action is None
+
+    return Plan(steps=steps, next_action=next_action, done=done)
+
+
+# ---------------------------------------------------------------------------
+# Sequencer execution
+# ---------------------------------------------------------------------------
+
+def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+              progress_factory=None, reject_calibrate=False) -> Plan:
+    """Inner loop shared by run_first_time and run_incremental.
+
+    Repeatedly computes the plan, checks whether the next step can be executed
+    automatically, and drives the appropriate stage drain until the plan is done
+    or a gate (non-automated step) is reached.
+
+    Args:
+        reject_calibrate: when True (incremental mode), a calibrate step raises
+                          SystemExit instead of being returned as a gate.
+    """
+    executed: set[tuple[str, str]] = set()
+
+    while True:
+        plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+
+        if plan.done:
+            return plan
+
+        step = plan.next_action
+
+        if not step.automated:
+            if reject_calibrate and step.action == "calibrate":
+                raise SystemExit(
+                    f"incremental: group {step.group!r} is uncalibrated — "
+                    "run --mode first-time to calibrate it first"
+                )
+            # Human/agent gate: return the plan so the caller can report and stop.
+            return plan
+
+        key = (step.group, step.action)
+        if key in executed:
+            # No-progress guard: this (group, action) was already executed in this
+            # loop iteration but Notion state didn't advance enough to move past it.
+            # Returning prevents an infinite spin; caller/logs surface the issue.
+            log.warning(
+                "sequencer: no-progress guard triggered for group=%r action=%r — "
+                "the stage ran but state did not advance; returning current plan",
+                step.group, step.action,
+            )
+            return plan
+
+        executed.add(key)
+
+        _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
+                      step, progress_factory)
+
+
+def _null_progress(label):
+    """Minimal no-op progress context manager for use when progress_factory is None."""
+    class _N:
+        def __enter__(self): return None
+        def __exit__(self, *a): return False
+    return _N()
+
+
+def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
+                  step, progress_factory):
+    """Dispatch one automated step to the appropriate stage drain."""
+    pf = progress_factory or _null_progress
+
+    if step.action == "extract":
+        with pf(f"Extract · {step.group}") as progress:
+            run_extract_stage(env, run_cfg.extract, progress,
+                              group=step.group, collections_cfg=collections_cfg)
+
+    elif step.action == "enrich":
+        _enrich_stage.drain_enrich_group(
+            env, run_cfg, collections_cfg, vocab, backend, step.group,
+            progress_factory=progress_factory,
+        )
+
+    elif step.action == "route":
+        write_delay = getattr(env, "notion_write_delay", 0.0)
+        with pf(f"Route · {step.group}") as progress:
+            run_route_stage(env, routes, collections_cfg, progress,
+                            group=step.group, write_delay=write_delay)
+
+
+def run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+                   progress_factory=None, dry_run=False) -> Plan:
+    """Run the pipeline in first-time mode (calibrate is a human gate, not an error).
+
+    Executes automated steps — extract, enrich (automated backend), route — in the
+    order the plan prescribes, recomputing from Notion state after each step. Stops
+    when the plan is done, a non-automated step (calibrate, or agent-filled enrich)
+    is reached, or the no-progress guard fires.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig.
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab.
+        backend:         Backend module.
+        routes:          Routes.
+        progress_factory: Optional ``(label: str) -> context manager``.
+        dry_run:         If True, compute and return the plan without executing anything.
+
+    Returns:
+        The final Plan (done, or stopped at a gate / no-progress).
+    """
+    if dry_run:
+        return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+    return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
+                     progress_factory=progress_factory, reject_calibrate=False)
+
+
+def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
+                    progress_factory=None, dry_run=False) -> Plan:
+    """Run the pipeline in incremental mode (locked vocab required for all groups).
+
+    Like run_first_time but raises SystemExit when a calibrate step is encountered,
+    because incremental mode requires all groups to already be calibrated.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig.
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab.
+        backend:         Backend module.
+        routes:          Routes.
+        progress_factory: Optional ``(label: str) -> context manager``.
+        dry_run:         If True, compute and return the plan without executing anything.
+
+    Returns:
+        The final Plan (done, or stopped at an agent-filled enrich gate / no-progress).
+
+    Raises:
+        SystemExit: if any group requires calibration.
+    """
+    if dry_run:
+        return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
+    return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
+                     progress_factory=progress_factory, reject_calibrate=True)

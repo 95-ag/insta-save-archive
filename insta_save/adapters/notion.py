@@ -24,6 +24,9 @@ _V2_PROPERTIES = {
 }
 _V2_STATUS_OPTIONS = ("Tagged", "Routed")
 
+OCR_MAX_CHARS = 12000  # enrich-read OCR safety cap: bounds pathological frame-OCR jitter
+                       # (raw_extraction keeps the full OCR; D13). ~typical cleaned text is far below.
+
 
 # --- property builders (PORT verbatim from legacy/pipeline/notion.py) -------
 def _notion_truncate(text: str, limit: int = 2000) -> str:
@@ -208,6 +211,7 @@ def _row(page: dict) -> dict:
     author_blocks = props.get("author", {}).get("rich_text", [])
     type_select = props.get("type", {}).get("select") or {}
     collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
+    tags = [t["name"] for t in props.get("tags", {}).get("multi_select", [])]
     return {
         "page_id": page["id"],
         "source_id": sid_blocks[0]["text"]["content"] if sid_blocks else None,
@@ -215,6 +219,7 @@ def _row(page: dict) -> dict:
         "ig_link": props.get("ig_link", {}).get("url"),
         "type": type_select.get("name"),
         "collections": collections,
+        "tags": tags,
     }
 
 
@@ -332,7 +337,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
     # Collapse near-duplicate frame-OCR at enrich-read so enrich/calibrate read (and budget on)
     # the cleaned text, while raw_extraction keeps the full OCR (D13: durable/reprocessable).
     ocr_raw = _text("ocr_text")
-    ocr_text = clean_ocr_text(ocr_raw) if ocr_raw else None
+    ocr_text = clean_ocr_text(ocr_raw, max_chars=OCR_MAX_CHARS) if ocr_raw else None
 
     return {
         "page_id": page_id,
@@ -380,6 +385,21 @@ def write_deterministic(env: EnvConfig, page_id: str, title: str, tags: list, ve
         log.info("notion: wrote deterministic %s for page %s", version, page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: failed to write deterministic for {page_id}: {e}") from e
+
+
+def write_route(env: EnvConfig, page_id: str, route_target: str) -> None:
+    """Route a Tagged item -> Routed: set route_target (select) + status. Idempotent."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Routed"),
+        "route_target": _select(route_target),
+    }
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: routed page %s -> %s", page_id, route_target)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to route {page_id}: {e}") from e
 
 
 def create_page(env: EnvConfig, metadata: dict) -> str:
@@ -452,6 +472,26 @@ def update_metadata(env: EnvConfig, page_id: str, metadata: dict) -> None:
         raise RuntimeError(f"notion: update_metadata failed on {page_id}: {e}") from e
 
 
+def query_all_pages(env: EnvConfig) -> list[dict]:
+    """Return every page in the DB with no status/priority filter (all statuses captured).
+    Each entry: {"page_id": <id>, "properties": <raw Notion properties dict>}.
+    Raw properties are kept as-is so the snapshot is complete and avoids field-mapping drift."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_database_id)
+    results, cursor = [], None
+    while True:
+        kwargs = {"start_cursor": cursor} if cursor else {}
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            results.append({"page_id": page["id"], "properties": page.get("properties", {})})
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    log.info("notion: query_all_pages returned %d pages", len(results))
+    return results
+
+
 def mark_queued(env: EnvConfig, page_id: str) -> None:
     validate_notion(env)
     client = Client(auth=env.notion_token)
@@ -460,3 +500,23 @@ def mark_queued(env: EnvConfig, page_id: str) -> None:
         log.info("notion: marked %s Queued", page_id)
     except APIResponseError as e:
         raise RuntimeError(f"notion: mark_queued failed on {page_id}: {e}") from e
+
+
+def requeue(env: EnvConfig, page_id: str, status: str) -> None:
+    """Reset a Failed item to the given status and clear its failure_notes.
+
+    Used by retry_failed to send items back to Queued or Extracted.
+    failure_notes is cleared by passing an empty rich_text array — passing
+    _rich_text("") would leave a block with empty content; {"rich_text": []}
+    removes all blocks and reads back as empty/None."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        client.pages.update(page_id=page_id, properties={
+            "status": _select(status),
+            "failure_notes": {"rich_text": []},
+        })
+        log.info("notion: requeued %s → %s (failure_notes cleared)", page_id, status)
+    except APIResponseError as e:
+        log.error("notion: could not requeue %s: %s", page_id, e)
+        raise

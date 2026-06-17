@@ -19,7 +19,8 @@ def _select_item(env, collections_cfg, item) -> str:
     return "deterministic_pending"
 
 
-def run_select_stage(env, collections_cfg, progress, *, limit=None, group=None) -> dict:
+def run_select_stage(env, collections_cfg, progress, *, limit=None, group=None,
+                     write_delay: float = 0.0) -> dict:
     """Drive selection over Imported items in priority order."""
     def _process(env_, item, _ctx):
         return _select_item(env_, collections_cfg, item)
@@ -27,4 +28,5 @@ def run_select_stage(env, collections_cfg, progress, *, limit=None, group=None) 
     return run_priority_stage(
         env, "Imported", _process, progress,
         limit=limit, group=group, collections_cfg=collections_cfg,
-        stage_key="select", bar_label="Select (Imported)")
+        stage_key="select", bar_label="Select (Imported)",
+        write_delay=write_delay, delay_on={"queued"})

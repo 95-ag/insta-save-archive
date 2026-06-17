@@ -139,3 +139,123 @@ def test_slide_images_from_raw_resolves_paths():
 
 def test_slide_images_from_raw_empty_when_no_slides():
     assert notion._slide_images_from_raw({"v": {"transcript": "x"}}, "tmp", "v") == []
+
+
+def test_write_route_sets_routed_status_and_route_target(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.write_route(env, "pg42", "ToolsDB")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg42"
+    assert props["status"]["select"]["name"] == "Routed"
+    assert props["route_target"]["select"]["name"] == "ToolsDB"
+    # write_route must NOT touch title/summary/externals/tags
+    assert "title" not in props and "summary" not in props
+    assert "tags" not in props and "externals" not in props
+
+
+def test_row_includes_tags():
+    page = {"id": "p3", "properties": {
+        "source_id": {"rich_text": [{"text": {"content": "abc"}}]},
+        "tags": {"multi_select": [{"name": "clothing"}, {"name": "inspo"}]},
+        "collection": {"multi_select": []},
+    }}
+    row = notion._row(page)
+    assert row["tags"] == ["clothing", "inspo"]
+
+
+def test_row_tags_defaults_to_empty_list():
+    page = {"id": "p4", "properties": {}}
+    assert notion._row(page)["tags"] == []
+
+
+def test_requeue_sets_status_and_clears_failure_notes(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.requeue(env, "pg-fail-1", "Queued")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg-fail-1"
+    assert props["status"]["select"]["name"] == "Queued"
+    # failure_notes must be cleared: empty rich_text array (not a block with empty content)
+    assert props["failure_notes"] == {"rich_text": []}
+
+
+def test_requeue_to_extracted(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(notion, "Client",
+                        lambda auth: type("C", (), {"pages": type("P", (), {
+                            "update": lambda self, page_id, properties: captured.update(
+                                page_id=page_id, props=properties)})()})())
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    notion.requeue(type("E", (), {"notion_token": "t"})(), "pg-2", "Extracted")
+    assert captured["props"]["status"]["select"]["name"] == "Extracted"
+    assert captured["props"]["failure_notes"] == {"rich_text": []}
+
+
+def test_query_all_pages_paginates_and_returns_all(monkeypatch):
+    """query_all_pages follows the cursor across two pages and returns every page dict."""
+    page_a = {"id": "p1", "properties": {"source_id": {"rich_text": [{"text": {"content": "abc"}}]}}}
+    page_b = {"id": "p2", "properties": {"source_id": {"rich_text": [{"text": {"content": "def"}}]}}}
+
+    call_log = []
+
+    class _DataSources:
+        def query(self, data_source_id, **kwargs):
+            call_log.append(kwargs.get("start_cursor"))
+            if not kwargs.get("start_cursor"):
+                return {"results": [page_a], "has_more": True, "next_cursor": "cursor-1"}
+            return {"results": [page_b], "has_more": False, "next_cursor": None}
+
+    class _Databases:
+        def retrieve(self, database_id):
+            return {"data_sources": [{"id": "ds-test"}]}
+
+    class _Client:
+        def __init__(self, auth):
+            self.data_sources = _DataSources()
+            self.databases = _Databases()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t", "notion_database_id": "db-1"})()
+    result = notion.query_all_pages(env)
+
+    # followed the cursor
+    assert call_log == [None, "cursor-1"]
+    # returned both pages with expected shape
+    assert len(result) == 2
+    assert result[0]["page_id"] == "p1"
+    assert result[1]["page_id"] == "p2"
+    # raw properties preserved
+    assert "properties" in result[0]
+    assert "properties" in result[1]

@@ -16,7 +16,8 @@ from insta_save.adapters.notion import (get_page_content, query_by_status_and_pr
                                         write_enrichment)
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
-from insta_save.config.tags import allowed_topics
+from insta_save.config.tags import allowed_topics, union_topics
+from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=None):
             for stub in query_by_status_and_priority(env, status, bucket):
                 if kinds is not None and stub.get("type") not in kinds:
                     continue
-                if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
+                if collections_cfg.enrich_group(stub.get("collections", [])) == group:
                     yield stub
 
 
@@ -60,9 +61,17 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
     (sum of slide_images * PER_SLIDE_IMAGE_TOKENS). The first item is always admitted;
     subsequent items break the loop when this budget would be exceeded."""
     items = []
-    total = prompt.header_len(group, vocab, prompt_template, output_language)
+    # batch_groups is computed incrementally as items are admitted; used for union vocab.
+    # Start with a placeholder — header_len is re-computed once items are known.
     img_total = 0
     bar = progress.add_bar(f"Enrich prepare · {group}", total=max_items) if progress else None
+
+    # Seed total with the single-group header length (conservative estimate).
+    # For a cross-group batch the actual prompt.txt uses the union vocab header, which is
+    # slightly longer — so total underestimates marginally (acceptable soft-cap; the rendered
+    # prompt may marginally exceed char_budget, but raw_extraction is unaffected).
+    total = prompt.header_len(group, vocab, prompt_template, output_language)
+
     for stub in _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=kinds):
         if max_items is not None and len(items) >= max_items:
             break
@@ -84,21 +93,39 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
         log.info("enrich.prepare: no items left for group %s", group)
         return 0
 
+    # Compute the ordered union of extract groups across all admitted items (§7.3).
+    # This drives the union vocab in the prompt. For a single-group batch this equals [group].
+    seen_groups: set[str] = set()
+    batch_groups: list[str] = []
+    for g in collections_cfg.groups:
+        for item in items:
+            item_groups = collections_cfg.extract_groups_of(item.get("collections", []))
+            if g in item_groups and g not in seen_groups:
+                seen_groups.add(g)
+                batch_groups.append(g)
+
     d = _enrich_dir(env)
     (d / "batch.json").write_text(
         json.dumps({"group": group, "items": items}, ensure_ascii=False, indent=2),
         encoding="utf-8")
     (d / "prompt.txt").write_text(
-        prompt.build_prompt(group, items, vocab, prompt_template, output_language), encoding="utf-8")
-    log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s", len(items), total, group)
+        prompt.build_prompt(group, items, vocab, prompt_template, output_language,
+                            groups=batch_groups),
+        encoding="utf-8")
+    log.info("enrich.prepare: wrote %d items (~%d prompt chars) for group %s (batch_groups=%s)",
+             len(items), total, group, batch_groups)
     return len(items)
 
 
-def apply(env, *, vocab, model, progress=None) -> dict:
+def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
     """Read results.json, validate tags vs the locked vocab, write each to Notion.
     Reads batch.json for the group (-> vocab axis + enrich_version). Cleans tmp on
     full success. Returns {written, failed}. Optional `progress` (StageProgress)
-    shows a live per-item bar."""
+    shows a live per-item bar.
+
+    collections_cfg: used to resolve each result item's extract groups for per-item
+    union-vocab validation (§7.3). Cross-group items carry topics from multiple groups;
+    validating only against the batch group's allowed_topics would strip valid tags."""
     d = _enrich_dir(env)
     batch_file, results_file = d / "batch.json", d / "results.json"
     if not results_file.exists():
@@ -108,7 +135,12 @@ def apply(env, *, vocab, model, progress=None) -> dict:
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
     group = batch["group"]
     version = f"{model}/{env.enrich_version}/{group}"
-    topics_allowed = allowed_topics(vocab, group)
+
+    # Build a page_id -> collections lookup from the batch so apply can resolve
+    # each item's groups without an extra Notion read.
+    batch_collections: dict[str, list[str]] = {
+        i["page_id"]: i.get("collections", []) for i in batch.get("items", [])
+    }
 
     results = parse_results(results_file)
     counts = {"written": 0, "failed": 0}
@@ -124,6 +156,17 @@ def apply(env, *, vocab, model, progress=None) -> dict:
             if progress:
                 progress.bump("failed"); progress.advance(bar)
             continue
+
+        # Per-item union vocab: a cross-group item's granular topics span multiple groups.
+        # Fall back to single-group allowed_topics when the item isn't in the batch map
+        # (defensive; shouldn't happen in normal operation).
+        item_collections = batch_collections.get(page_id)
+        if item_collections is not None:
+            item_groups = collections_cfg.extract_groups_of(item_collections)
+            topics_allowed = union_topics(vocab, item_groups) if item_groups else allowed_topics(vocab, group)
+        else:
+            topics_allowed = allowed_topics(vocab, group)
+
         content_type, topics = enrich_schema.validate_item(
             item, vocab.content_types, topics_allowed)
         fields = {
@@ -152,3 +195,129 @@ def apply(env, *, vocab, model, progress=None) -> dict:
                 f.unlink()
         log.info("enrich.apply: cleaned tmp files")
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Reusable automated drain — used by the sequencer (run_first_time/run_incremental)
+# ---------------------------------------------------------------------------
+
+def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
+                       lanes: list | None = None,
+                       progress_factory=None) -> dict:
+    """Drain a single group via the automated backend.
+
+    Loops prepare→fill→apply per lane until the lane is DRAINED (prepare returns 0)
+    or no-progress (apply writes nothing). Only runs the vision lane when
+    ``backend.VISION_CAPABLE`` is True.
+
+    Args:
+        env:             EnvConfig.
+        run_cfg:         RunConfig (used for budgets, model, output_language).
+        collections_cfg: CollectionsConfig.
+        vocab:           Vocab with locked topics for the group.
+        backend:         Backend module (must have .AUTOMATED True; callers should not
+                         call this for agent-filled backends).
+        group:           Group name to drain.
+        lanes:           Optional list of lane names to run (e.g. ``["text"]``). None
+                         (default) runs all applicable lanes (text always; vision if
+                         ``backend.VISION_CAPABLE`` is True). Explicit list restricts
+                         which lanes execute — useful when the CLI runs a single lane.
+        progress_factory: Optional callable ``(label: str) -> context manager`` returning
+                         a StageProgress. Pass None to skip live progress bars.
+
+    Returns:
+        dict with keys ``written`` (total items written), ``lanes`` (per-lane totals),
+        and ``stop_reason`` ("drained" | "no_progress") for each lane.
+    """
+    budgets = backend.batch_budgets(run_cfg)
+    enrich_dir = Path(env.tmp_dir) / "enrich"
+
+    text_template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+    vision_template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8") \
+        if backend.VISION_CAPABLE else None
+
+    all_lanes = [
+        {
+            "name": "text",
+            "kinds": {"Reel", "IGTV"},
+            "template": text_template,
+            "image_budget": None,
+        },
+    ]
+    if backend.VISION_CAPABLE:
+        all_lanes.append({
+            "name": "vision",
+            "kinds": {"Carousel", "Post"},
+            "template": vision_template,
+            "image_budget": budgets.image_token_budget,
+        })
+
+    # Filter to the requested subset; None means "all applicable lanes" (default).
+    lane_filter = set(lanes) if lanes is not None else None
+    active_lanes = [l for l in all_lanes if lane_filter is None or l["name"] in lane_filter]
+
+    totals: dict[str, object] = {"written": 0, "lanes": {}}
+
+    for lane in active_lanes:
+        lane_name = lane["name"]
+        lane_written = 0
+        stop_reason = "drained"
+
+        while True:
+            progress_ctx = progress_factory(f"Enrich prepare · {lane_name}") \
+                if progress_factory else _NullContext()
+            with progress_ctx as progress:
+                n = prepare(env, group=group, collections_cfg=collections_cfg, vocab=vocab,
+                            char_budget=budgets.char_budget, max_items=budgets.max_items,
+                            statuses=["Extracted"], prompt_template=lane["template"],
+                            kinds=lane["kinds"], image_token_budget=lane["image_budget"],
+                            output_language=run_cfg.output_language, progress=progress)
+            if n == 0:
+                log.info("drain_enrich_group: %s lane=%s DRAINED", group, lane_name)
+                stop_reason = "drained"
+                break
+
+            # Per-batch spend gate: estimate cost from the rendered prompt before calling
+            # the model. Only reads prompt.txt when the api backend is active and a cap is
+            # set — no-op (and no file read) for all other backends. Gates EACH batch against
+            # the cap (conservative per-batch pre-fill estimate), not cumulative run spend —
+            # consistent with the soft-cap philosophy.
+            if (getattr(run_cfg.enrich, "backend", None) == "api"
+                    and getattr(run_cfg, "guardrails_max_spend_usd", None) is not None):
+                char_total = len((enrich_dir / "prompt.txt").read_text(encoding="utf-8"))
+                guardrails.check_spend_cap(char_total, run_cfg)
+
+            backend.fill(env, run_cfg, enrich_dir)
+
+            progress_ctx = progress_factory(f"Enrich apply · {lane_name}") \
+                if progress_factory else _NullContext()
+            with progress_ctx as progress:
+                counts = apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                               collections_cfg=collections_cfg, progress=progress)
+
+            lane_written += counts["written"]
+            totals["written"] = totals["written"] + counts["written"]
+
+            if counts["written"] == 0:
+                # No-progress guard: items stay Extracted, next prepare re-selects them.
+                # Break to avoid an infinite loop; caller/logs should surface the failure.
+                log.warning(
+                    "drain_enrich_group: no items applied for group %s lane=%s — "
+                    "stopping to avoid a no-progress loop (check logs; resolve failures, "
+                    "then re-run)",
+                    group, lane_name,
+                )
+                stop_reason = "no_progress"
+                break
+
+        totals["lanes"][lane_name] = {"written": lane_written, "stop_reason": stop_reason}
+
+    return totals
+
+
+class _NullContext:
+    """No-op context manager returned when progress_factory is None."""
+    def __enter__(self):
+        return None
+    def __exit__(self, *a):
+        return False

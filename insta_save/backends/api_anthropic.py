@@ -165,6 +165,10 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
 
 def _fill_sync(env, run_cfg, kwargs) -> str:
     resp = _messages(env, run_cfg).create(**kwargs)
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            f"api: response truncated at max_tokens ({MAX_TOKENS}) — reduce batch size "
+            f"(char_budget/max_items) or image_token_budget and retry")
     return _first_text(resp)
 
 
@@ -183,5 +187,12 @@ def _fill_batches(env, run_cfg, kwargs) -> str:
     while batches.retrieve(batch.id).processing_status != "ended":
         time.sleep(5)
     for result in batches.results(batch.id):
-        return _first_text(result.result.message)
+        message = result.result.message
+        if getattr(message, "stop_reason", None) == "max_tokens":
+            result_id = getattr(result, "custom_id", None) or "unknown"
+            raise RuntimeError(
+                f"api (batches): response truncated at max_tokens ({MAX_TOKENS}) "
+                f"[result id={result_id}] — reduce batch size "
+                f"(char_budget/max_items) or image_token_budget and retry")
+        return _first_text(message)
     raise ValueError("batch returned no results")

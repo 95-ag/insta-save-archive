@@ -57,14 +57,16 @@ def _tag_item(env, item, collections_cfg) -> str:
     return "tagged"
 
 
-def run_deterministic_stage(env, collections_cfg, progress, *, limit=None, group=None) -> dict:
+def run_deterministic_stage(env, collections_cfg, progress, *, limit=None, group=None,
+                             write_delay: float = 0.0) -> dict:
     """Drive the template (one-shot) deterministic branch over Imported items."""
     # ctx feeds collections_cfg to _tag_item; the separate collections_cfg= drives the
     # runner's --group membership filter. Both are needed.
     return run_priority_stage(
         env, "Imported", _tag_item, progress,
         ctx=collections_cfg, limit=limit, group=group, collections_cfg=collections_cfg,
-        stage_key="deterministic", bar_label="Deterministic (Imported)")
+        stage_key="deterministic", bar_label="Deterministic (Imported)",
+        write_delay=write_delay, delay_on={"tagged"})
 
 
 # ---------------------------------------------------------------------------

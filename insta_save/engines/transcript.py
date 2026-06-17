@@ -3,12 +3,13 @@
 CARRYOVER: Netscape cookie conversion at runtime; venv-local yt-dlp; cleanup in finally;
 transcript gate nulls music-only/low-confidence output."""
 
-import json
 import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from insta_save.adapters.instagram.cookies import json_cookies_to_netscape
 
 log = logging.getLogger(__name__)
 
@@ -21,18 +22,9 @@ def _gate(transcript: str, language_probability: float) -> bool:
     return bool(transcript and len(words) >= _MIN_WORDS and language_probability >= _MIN_LANG_PROB)
 
 
-def _netscape_cookies(json_path: str, txt_path: str) -> None:
-    with open(json_path) as f:
-        cookies = json.load(f)
-    lines = ["# Netscape HTTP Cookie File"]
-    for c in cookies:
-        domain = c.get("domain", "")
-        flag = "TRUE" if domain.startswith(".") else "FALSE"
-        secure = "TRUE" if c.get("secure") else "FALSE"
-        lines.append(f"{domain}\t{flag}\t{c.get('path', '/')}\t{secure}\t"
-                     f"{int(c.get('expirationDate', 0))}\t{c.get('name', '')}\t{c.get('value', '')}")
-    with open(txt_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+def _prepare_cookies(json_path: str, txt_path: str) -> None:
+    """Convert JSON session cookies to Netscape format for yt-dlp."""
+    json_cookies_to_netscape(json_path, txt_path)
 
 
 def transcribe(audio_path: str, model_size: str = "base", vad: bool = True) -> tuple[str, bool, str]:
@@ -65,7 +57,7 @@ def extract_transcript(ig_link: str, shortcode: str, tmp_dir: str, cookies_json:
     tmp.mkdir(exist_ok=True)
     cookies_txt = str(tmp / "cookies.txt")
     audio_path = str(tmp / f"{shortcode}.mp3")
-    _netscape_cookies(cookies_json, cookies_txt)
+    _prepare_cookies(cookies_json, cookies_txt)
     try:
         yt = str(Path(sys.executable).parent / "yt-dlp")
         result = subprocess.run(

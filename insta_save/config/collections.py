@@ -37,18 +37,24 @@ class CollectionsConfig:
         """Extract path if ANY of the item's collections is extract=yes."""
         return any(self.collections.get(n, {}).get("extract") for n in names)
 
+    def extract_groups_of(self, names: list[str]) -> list[str]:
+        """Distinct groups (in `groups` order) that contain at least one of the item's
+        extract=yes collections. Empty list when no extract=yes collection exists
+        (the item goes to the deterministic branch)."""
+        return [
+            g for g in self.groups
+            if any(self.collections.get(n, {}).get("extract") and self.collections[n]["group"] == g
+                   for n in names)
+        ]
+
     def enrich_group(self, names: list[str]) -> str | None:
         """
         The group an item is enriched under = the LAST group (in `groups` order)
         that contains at least one of the item's extract=yes collections. None when
         the item has no extract=yes collection (it goes to the deterministic branch).
         """
-        extract_groups = [
-            g for g in self.groups
-            if any(self.collections.get(n, {}).get("extract") and self.collections[n]["group"] == g
-                   for n in names)
-        ]
-        return extract_groups[-1] if extract_groups else None
+        groups = self.extract_groups_of(names)
+        return groups[-1] if groups else None
 
 
 def load_collections(path=_DEFAULT_COLLECTIONS) -> CollectionsConfig:
