@@ -70,7 +70,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--group", default=None)
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--reextract", action="store_true")
-    run.add_argument("--reenrich", action="store_true")
     run.add_argument("--retry-failed", action="store_true")
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
@@ -114,15 +113,14 @@ def dispatch_run(args) -> None:
         log_path = setup_logging("calibrate")
         print(f"Logging to {_rel(log_path)}")
         collections_cfg = _load_collections()
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
+        statuses = ["Extracted"]
         template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
         with StageProgress("Calibrate") as progress:
             n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
                                  limit=args.calibrate_limit, statuses=statuses,
                                  prompt_template=template, progress=progress)
         if n == 0:
-            print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}). "
-                  f"Add --reenrich to also sample already-Summarized items.")
+            print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}).")
         else:
             print(f"Sampled {n} items -> tmp/calibrate/prompt.txt. In a Claude session: "
                   f'"Read tmp/calibrate/prompt.txt and write tmp/calibrate/proposed_tags.json", '
@@ -154,7 +152,7 @@ def dispatch_run(args) -> None:
                   f"enrichable remaining")
             return
 
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
+        statuses = ["Extracted"]
         if args.lane == "vision":
             kinds = {"Carousel", "Post"}
             template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")

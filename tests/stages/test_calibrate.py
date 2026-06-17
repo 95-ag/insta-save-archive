@@ -42,22 +42,3 @@ def test_sample_respects_limit(tmp_path, monkeypatch):
     n = calibrate.sample(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
                          limit=3, statuses=["Extracted"], prompt_template="CAL {group}")
     assert n == 3
-
-
-def test_sample_reads_multiple_statuses(tmp_path, monkeypatch):
-    # Hustling content lives only at Summarized (v1-done) -> sampling must reach it.
-    by_status = {
-        "Extracted": {},
-        "Summarized": {"High": [{"page_id": "p9", "source_id": "s9", "collections": ["hust-a"]}]},
-    }
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority",
-                        lambda env, status, pr: by_status.get(status, {}).get(pr, []))
-    monkeypatch.setattr(calibrate, "get_page_content",
-                        lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
-                                          "transcript": "t", "ocr_text": "", "type": "Reel"})
-    n = calibrate.sample(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
-                         limit=20, statuses=["Extracted", "Summarized"],
-                         prompt_template="CAL {group}")
-    assert n == 1
-    sample = json.loads((tmp_path / "calibrate" / "sample.json").read_text())
-    assert [i["page_id"] for i in sample["items"]] == ["p9"]

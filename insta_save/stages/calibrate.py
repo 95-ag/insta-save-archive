@@ -48,8 +48,8 @@ def _group_stubs(env, statuses, group, collections_cfg):
 
 def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, progress=None) -> int:
     """Collect up to `limit` items of the group across `statuses` (priority order),
-    write sample.json + prompt.txt. Returns the sample size. `statuses` lets calibrate
-    sample already-Summarized groups (the re-enrich migration path), not just Extracted.
+    write sample.json + prompt.txt. Returns the sample size. Callers pass the extract
+    output status (["Extracted"]); the param stays a list to keep the query seam flexible.
     Optional `progress` (StageProgress) shows a live per-item sample bar."""
     items = []
     bar = progress.add_bar(f"Calibrate sample · {group}", total=limit) if progress else None

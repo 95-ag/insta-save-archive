@@ -50,7 +50,7 @@ def test_run_extract_dispatches(monkeypatch):
 
     isa.dispatch_run(type("A", (), {
         "mode": "incremental", "stage": "extract", "group": "Hustling",
-        "limit": 5, "reextract": False, "reenrich": False, "retry_failed": False})())
+        "limit": 5, "reextract": False, "retry_failed": False})())
 
     assert calls["schema"] == "ENV"
     assert calls["stage"][0] == "ENV" and calls["stage"][1] == "EX"
@@ -61,7 +61,7 @@ def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
             "mode": "incremental", "stage": "discover", "group": None,
-            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
+            "limit": None, "reextract": False, "retry_failed": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
             "confirm_removed": None, "apply": False, "prepare": False,
             "calibrate_limit": 20})())
@@ -173,7 +173,7 @@ def _det_common(monkeypatch, run_obj):
 
 def _det_args(**kw):
     base = {"mode": "incremental", "stage": "deterministic", "group": None, "limit": None,
-            "prepare": False, "apply": False, "reextract": False, "reenrich": False,
+            "prepare": False, "apply": False, "reextract": False,
             "retry_failed": False, "collection": None}
     base.update(kw)
     return type("A", (), base)()
