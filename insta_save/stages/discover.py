@@ -80,7 +80,8 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
         raise RuntimeError("discover: IG_USERNAME is not set (in .env) and no --ig-username "
                            "was given — cannot build collection URLs.")
     from playwright.sync_api import sync_playwright
-    from insta_save.adapters.instagram.session import ensure_authenticated
+    from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
+    prepare_display(env)  # set DISPLAY before the driver freezes the env (headed re-auth needs it)
     with sync_playwright() as pw:
         browser, context = ensure_authenticated(pw, env, headless=not headed)
         try:

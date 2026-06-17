@@ -11,6 +11,7 @@ Usage:
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -66,6 +67,24 @@ def apply_display_strategy(mode: str, headless: bool) -> None:
         return
     if mode == "wsl-vcxsrv":
         _launch_vcxsrv_strategy()
+
+
+def prepare_display(env: EnvConfig) -> None:
+    """Set os.environ['DISPLAY'] for the wsl-vcxsrv path BEFORE sync_playwright() is entered.
+
+    Playwright's Node driver freezes the environment when it launches; a DISPLAY set later
+    (inside _launch_browser, e.g. on a headed re-auth) never reaches Chromium, which then dies
+    with "Missing X server or $DISPLAY". Call this immediately before `with sync_playwright()`
+    in every browser entry point so the driver inherits DISPLAY. Does NOT start VcXsrv — that
+    stays lazy in ensure_display() (only when a headed browser is actually needed); here we
+    only need the variable present in the env the driver will capture."""
+    if resolve_display_mode(env.display_mode) != "wsl-vcxsrv":
+        return
+    from insta_save.adapters.instagram.display import display_string
+    try:
+        os.environ["DISPLAY"] = display_string()
+    except (RuntimeError, OSError):
+        pass  # best-effort; ensure_display() surfaces a clear error if headed is truly needed
 
 
 # ---------------------------------------------------------------------------
