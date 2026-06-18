@@ -415,11 +415,13 @@ def _print_plan(plan, dry_run: bool) -> None:
 
     if not na.automated:
         if na.action == "calibrate":
+            # Reached only in --dry-run: a real --mode run handles calibrate inline
+            # (the gate samples, the backend drafts, you lock — then enrich continues).
             print(
-                f"\nNEXT (manual){label}: {na.group} — {na.detail}\n"
-                f"  Run: isa run --stage calibrate --group {na.group!r}\n"
-                f"  Then review tmp/calibrate/proposed_tags.json, lock vocab in "
-                f"config/tags.json, and re-run isa run --mode first-time."
+                f"\nNEXT{label}: {na.group} — {na.detail}\n"
+                f"  The interactive calibrate gate runs inline on the next "
+                f"`isa run --mode first-time` (without --dry-run): the backend drafts a "
+                f"vocab, you review/lock it into config/tags.json, then enrich continues."
             )
         else:
             # agent-filled enrich gate

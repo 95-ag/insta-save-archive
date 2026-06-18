@@ -700,12 +700,12 @@ def test_mode_dry_run_passes_through(monkeypatch, capsys):
 
 
 def test_mode_prints_calibrate_gate(monkeypatch, capsys):
-    """When the plan next_action is a calibrate gate, prints the manual step hint."""
+    """When the plan next_action is a calibrate gate, prints the inline-gate hint."""
     plan = _make_plan("calibrate", automated=False)
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
     isa._dispatch_mode(args)
     out = capsys.readouterr().out
-    assert "NEXT (manual)" in out
+    assert "calibrate gate runs inline" in out
     assert "calibrate" in out.lower()
     assert "TestG" in out
 
@@ -873,7 +873,7 @@ def test_mode_calibrate_gate_prints_dry_run_label(monkeypatch, capsys):
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
     isa._dispatch_mode(args)
     out = capsys.readouterr().out
-    assert "NEXT (manual)" in out
+    assert "NEXT (dry-run)" in out
     assert "(dry-run)" in out
 
 
