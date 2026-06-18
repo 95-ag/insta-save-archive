@@ -658,6 +658,8 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     monkeypatch.setattr(isa, "preflight", lambda env, run_cfg, stages: None)
     monkeypatch.setattr(isa, "build_status",
                         lambda env, cols: [{"group": "TOTAL", "remaining": 5}])
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    monkeypatch.setattr(isa, "run_config_gate", lambda run_cfg, **k: run_cfg)
 
     # _dispatch_mode now calls run_pipeline via a function-local import.
     # Patch the attribute on the pipeline module so the local import picks it up.
@@ -734,6 +736,30 @@ def test_mode_calls_preflight(monkeypatch):
     assert "preflight" in calls
     assert "extract" in calls["preflight"]
     assert "enrich" in calls["preflight"]
+
+
+def test_first_time_runs_config_gate(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    gate = {"n": 0}
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    def _fake_gate(run_cfg, **k):
+        gate["n"] += 1
+        return run_cfg
+    monkeypatch.setattr(isa, "run_config_gate", _fake_gate)
+    isa._dispatch_mode(args)
+    assert gate["n"] == 1
+
+
+def test_incremental_skips_config_gate(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+    gate = {"n": 0}
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    monkeypatch.setattr(isa, "run_config_gate",
+                        lambda run_cfg, **k: gate.update(n=gate["n"] + 1) or run_cfg)
+    isa._dispatch_mode(args)
+    assert gate["n"] == 0
 
 
 def test_mode_calls_guardrail_check(monkeypatch):

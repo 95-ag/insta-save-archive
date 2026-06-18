@@ -20,6 +20,7 @@ from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
+from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
 
@@ -365,10 +366,14 @@ def dispatch_run(args) -> None:
 def _dispatch_mode(args) -> None:
     """Run the pipeline in first-time or incremental mode (no --stage given)."""
     env = _load_env()
+    if args.mode == "first-time":
+        ensure_run_json()                      # seed claude-p default if run.json absent
     run_cfg = _load_run()
+    if args.mode == "first-time":
+        run_cfg = run_config_gate(run_cfg, select_mode=getattr(args, "select_mode", "inline"))
     collections_cfg = _load_collections()
     vocab = load_vocab()
-    backend = get_backend(run_cfg.enrich.backend)
+    backend = get_backend(run_cfg.enrich.backend)   # resolved AFTER the gate
     routes = load_routes()
 
     log_path = setup_logging("run")
