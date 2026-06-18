@@ -132,3 +132,9 @@ class TestUsageReminder:
     def test_api_returns_none(self):
         cfg = _cfg(backend="api")
         assert usage_reminder(cfg) is None
+
+    def test_claude_p_returns_reminder(self):
+        cfg = _cfg(backend="claude-p")
+        result = usage_reminder(cfg)
+        assert result is not None
+        assert len(result) > 0

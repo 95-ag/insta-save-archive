@@ -40,7 +40,7 @@ def check_spend_cap(char_total: int, run_cfg) -> None:
 def usage_reminder(run_cfg) -> str | None:
     """A printed Claude-Max usage reminder for session backends (can't be checked
     programmatically). None for local/api."""
-    if run_cfg.enrich.backend in ("claude-code", "cowork"):
+    if run_cfg.enrich.backend in ("claude-code", "cowork", "claude-p"):
         return ("reminder: this run uses a Claude subscription session — watch your "
                 "Claude-Max usage; large batches may hit limits mid-run.")
     return None
