@@ -49,6 +49,23 @@ def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
     )
 
 
+def lock_vocab(group: str, proposed: dict, path=_DEFAULT_TAGS) -> None:
+    """Merge a proposed vocab (calibrate shape: content_type/groups/cross_group) into
+    config/tags.json. Sets the group's topics outright; for content_type/cross_group adds
+    only NEW keys (existing definitions are preserved). Other groups are untouched."""
+    p = Path(path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data.setdefault("content_type", {})
+    data.setdefault("groups", {})
+    data.setdefault("cross_group", {})
+    data["groups"][group] = dict(proposed.get("groups", {}).get(group, {}))
+    for key, definition in proposed.get("content_type", {}).items():
+        data["content_type"].setdefault(key, definition)
+    for key, definition in proposed.get("cross_group", {}).items():
+        data["cross_group"].setdefault(key, definition)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def allowed_topics(vocab: Vocab, group: str) -> list[str]:
     """Topic enum for a group: its granular topics first, then cross-group."""
     return vocab.group_topics(group) + vocab.cross_group_topics

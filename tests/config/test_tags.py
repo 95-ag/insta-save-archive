@@ -89,3 +89,27 @@ def test_union_topics_uncalibrated_group_raises(tmp_path):
     v = _load(tmp_path)
     with pytest.raises((KeyError, RuntimeError)):
         tagcfg.union_topics(v, ["Nope"])
+
+
+def test_lock_vocab_adds_group_without_clobbering(tmp_path):
+    p = tmp_path / "tags.json"
+    p.write_text(json.dumps({
+        "content_type": {"tool": "an app"},
+        "groups": {"Existing": {"old-topic": "kept"}},
+        "cross_group": {"ai": "ai themes"},
+    }), encoding="utf-8")
+    proposed = {
+        "content_type": {"tool": "an app", "explainer": "explains a concept"},
+        "groups": {"NewGroup": {"web-dev": "building sites"}},
+        "cross_group": {"ai": "SHOULD-NOT-OVERWRITE", "sustainability": "eco themes"},
+    }
+    tagcfg.lock_vocab("NewGroup", proposed, path=p)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["groups"]["NewGroup"] == {"web-dev": "building sites"}
+    assert data["groups"]["Existing"] == {"old-topic": "kept"}          # untouched
+    assert data["content_type"]["explainer"] == "explains a concept"    # added
+    assert data["cross_group"]["sustainability"] == "eco themes"        # added
+    assert data["cross_group"]["ai"] == "ai themes"                     # existing key NOT overwritten
+    # loadable into a Vocab with the new group calibrated
+    v = tagcfg.load_vocab(path=p)
+    assert v.has_group("NewGroup") and "web-dev" in v.group_topics("NewGroup")
