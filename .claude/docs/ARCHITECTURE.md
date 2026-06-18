@@ -71,8 +71,8 @@ deterministic branch (stage 5) reaches `Tagged` without extract/enrich.
 | Trigger | Initial run over the whole archive | New saves since last run |
 | Granularity | **Stage-at-a-time per group**: drain Extract for the group → calibrate → drain Enrich | Small delta; group order still respected |
 | Ordering | Group order (position in the `groups` list) | Same ordering, applied to the delta |
-| Calibration (3.5) | **Yes** — per group, before its enrich loop | **No** — reuses the locked vocab |
-| Human-in-loop | Per-group: vocab refine + spot-check | Spot-check only (raises if a group is uncalibrated — run first-time first) |
+| Calibration (3.5) | **Yes** — per group, before its enrich loop | **Yes, if needed** — reuses locked vocab for existing groups; runs the interactive gate inline for any new uncalibrated group (e.g. a collection added since last run) |
+| Human-in-loop | Per-group: vocab refine + spot-check | Spot-check only for existing groups; new/uncalibrated groups run the same interactive calibrate gate inline (no error) |
 | Correction cost | Paid **once per group** | Near-zero |
 
 The calibration gate is what makes tagging tractable: the hard part (vocabulary + tag
@@ -92,12 +92,18 @@ else an agent-filled gate); (4) routing enabled + Tagged items → `route`; (5) 
 
 The runner **recomputes the plan from Notion after EACH automated step** — state lives in Notion, so
 the loop is crash/compaction-safe and resumable (D6) with no in-memory or file state. It **stops and
-returns at the first non-automated gate** (calibrate, or agent-filled enrich), and has a
+returns only at an agent-filled enrich gate** (`backend.AUTOMATED is False`), and has a
 **no-progress guard**: a `(group, action)` that repeats without advancing returns instead of looping
-forever. `run_incremental` raises `SystemExit` on a calibrate step (vocab must already be locked —
-run first-time first). `dry_run=True` returns the plan without executing any step. CLI:
-`isa run --mode first-time|incremental [--dry-run]` runs preflight + the item-cap guardrail + a
-session usage reminder, then the sequencer, then prints the per-group plan and the next gate.
+forever. A **calibrate** step is run **inline and interactively** in BOTH first-time and incremental
+modes (`orchestrator/calibrate_gate.py`): the gate samples the group, the backend drafts a vocab if it
+exposes `propose_vocab`, the human accepts/edits/aborts, and `lock_vocab` merges it into
+`config/tags.json` before the loop continues with the reloaded vocab — calibrate is never a gate stop.
+`dry_run=True` skips discover/ingest/select and returns the computed plan without executing any stage.
+CLI: `isa run --mode first-time|incremental [--dry-run] [--select-mode inline|editor]` calls
+`run_pipeline` (`orchestrator/pipeline.py`), which **front-folds discover → ingest → select** before
+entering the sequencer loop — first-time crawls fresh, incremental reuses snapshots. It runs preflight
++ the item-cap guardrail + a session usage reminder, then the loop, then prints the per-group plan and
+the next gate.
 
 ---
 
@@ -125,18 +131,23 @@ session usage reminder, then the sequencer, then prints the per-group plan and t
 
 ## 5. Enrich backends (the pluggable core)
 
-**One file contract, four implementations.** Every backend reads `tmp/enrich/batch.json`
+**One file contract, five implementations.** Every backend reads `tmp/enrich/batch.json`
 and writes `tmp/enrich/results.json` against `enrich_schema`. Only *who fills results* differs:
 
 | Backend | Fills results by | Execution model | Quality | Cost | Vision-capable |
 |---|---|---|---|---|---|
 | `local` | Ollama call inline (qwen2.5) | **automated** | title-grade (D8, spike-confirmed) | free | no |
 | `api` | Anthropic SDK call inline | **automated** | high | $ per token | yes |
+| `claude-p` | headless `claude -p --output-format json` (prompt on STDIN, parses `result` envelope) | **automated** | high | subscription (Claude Max, no key) | yes |
 | `claude-code` | a Claude Code session (`--prepare`/`--apply`) | **agent-filled**¹ | high | subscription | yes |
 | `cowork` | a self-paced Cowork loop (one kickoff msg) | **agent-filled** | high | subscription | yes |
 
+`claude-p` is the **default backend for the one-call orchestrator** (D25): Claude Max users have no
+API key, and a headless `claude -p` subprocess gives `claude-code`-grade quality with zero manual
+steps (`AUTOMATED=True`, in-process drain, no relay).
+
 The `AUTOMATED` flag splits the backends into two execution models. **Automated** backends
-(`local`, `api`) fill `results.json` in-process — the CLI drains the whole group in **one command**
+(`local`, `api`, `claude-p`) fill `results.json` in-process — the CLI drains the whole group in **one command**
 (prepare → fill → apply, looped). **Agent-filled** backends (`claude-code`, `cowork`) return
 `FillResult(external=True)`: the CLI does a single prepare or apply step and the driving Claude
 session / Cowork loop runs the fill and re-invokes. `VISION_CAPABLE` is a separate capability flag
@@ -194,6 +205,17 @@ in conversation. So the loop is: `--prepare` next batch → read prompt → writ
 safe and the loop resumes after any crash** (Notion status drives `--prepare` to the next undone
 batch). One kickoff message; idempotent; resumable.
 
+**`claude-p` (the one-call default).** Runs `claude -p --output-format json` headlessly as a
+subprocess (prompt on STDIN since enrich prompts exceed argv limits; the `result` envelope key
+carries the JSON array). No API key — uses a Claude Max subscription. `AUTOMATED=True`, so the
+drain loop (§5) fills `results.json` in-process with no human steps. `VISION_CAPABLE=True` — the
+same `IMAGES:`-path contract as `claude-code` works because `claude -p` reads slide images by file
+path (so it must run with cwd = repo root for repo-relative paths to resolve). `--model` maps the
+run.json alias (e.g. `claude-sonnet`) to the CLI value (`sonnet`) by stripping the `claude-`
+prefix, controlling cost. `claude-p` also exposes `propose_vocab(prompt, model) -> dict`, which the
+interactive calibrate gate uses to draft a vocabulary before the human reviews and locks it. Falls
+under the same Claude-Max usage reminder as `claude-code` and `cowork`.
+
 ### 5.1 Dynamic batching (per backend)
 
 Each backend exposes `batch_budgets(run_cfg) -> Budgets(char_budget, max_items, image_token_budget)`
@@ -206,6 +228,7 @@ prompt length) or the `image_token_budget` would be exceeded. For automated back
 |---|---|---|
 | `local` | `Budgets(10**9, None, None)` — char/items uncapped, no image budget | per-item sequential `fill` (checkpoint every 25); 1 GPU, no batch gain, text-only |
 | `api` | run-config budgets (`char_budget`, `max_items`, `image_token_budget`) | one whole-batch request per fill (`sync`, or one Message Batches request when `api_mode="batches"`) — per-item parallelism / async fan-out is **not built yet**, so the cheaper-async win is not realized at item granularity |
+| `claude-p` | run-config budgets (`char_budget`, `max_items`, `image_token_budget`) | one `claude -p` subprocess call per fill (whole batch on STDIN); same ceiling rationale as the session backends — confirm `model` at run start |
 | `claude-code` / `cowork` | run-config budgets (`char_budget`, `max_items` ~15, `image_token_budget`) | fit one session pass before compaction (ceiling scales with model+effort); small = resumable |
 
 **Vision preflight.** A backend that is not `VISION_CAPABLE` (i.e. `local`) selected on the vision
@@ -276,12 +299,14 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 3. Run enrich on the sample, eyeball tag quality, adjust vocab, repeat until good.
 4. Lock; run the full-group enrich loop.
 
-> **Backend-independent by design.** Calibration is **not** routed through the enrich `Backend`
-> protocol — `calibrate.sample` writes `tmp/calibrate/prompt.txt`, whatever session runs it
-> (claude-code, Cowork, or you) proposes `proposed_tags.json`, and you always review + lock (D18,
-> "LLM proposes, human disposes"). `enrich.backend` selects the *enrich* fill engine, not the
-> calibrate proposer; calibrate behaves identically under every backend. (No `backend.fill()` —
-> the vocab proposal is a one-shot, human-reviewed gate, not a per-item automated fill.)
+> **Human-locked at the lock step; backend-assisted at the draft step.** Calibration is **not**
+> routed through `Backend.fill()` — the vocab proposal is a human-reviewed gate, not a per-item
+> automated fill. `calibrate.sample` writes `tmp/calibrate/prompt.txt`; the interactive gate
+> (`orchestrator/calibrate_gate.py`) then checks whether the selected backend exposes
+> `propose_vocab(prompt, model) -> dict`. If so (e.g. `claude-p`), it auto-drafts `proposed_tags.json`
+> and prints it for review; if not, it prompts you to write the file manually. In both cases you
+> accept / edit / abort, then `lock_vocab` merges the result into `config/tags.json` (D18). So
+> `enrich.backend` determines whether the draft is auto-generated, but the human lock always applies.
 
 ### 7.3 Cross-group items
 An item in collections spanning groups gets the **union** of its groups' granular vocab + cross-group,
@@ -367,10 +392,10 @@ insta-save-archive/
 │   └── README.md
 ├── insta_save/                  # v2 package (import name; distribution = insta-save)
 │   ├── config/                  # typed loaders: run · collections · tags · routes
-│   ├── orchestrator/            # sequence (modes+plan) · runner · preflight · guardrails · status_report
+│   ├── orchestrator/            # pipeline (front-fold + mode dispatch) · sequence (modes+plan) · calibrate_gate (interactive vocab lock) · runner · preflight · guardrails · status_report
 │   ├── stages/                  # discover · ingest · select · extract · calibrate · enrich · deterministic · route
 │   ├── engines/                 # transcript · ocr · vision  (extract plugins)
-│   ├── backends/                # base · local_ollama · api_anthropic · claude_code · cowork
+│   ├── backends/                # base · local_ollama · api_anthropic · claude_p · claude_code · cowork
 │   ├── adapters/                # notion (state) · instagram/ (session·display·harvest·crawl·extractor·cookies)
 │   ├── helpers/                 # observability (StageProgress, setup_logging)
 │   ├── enrich_schema.py · reconcile.py · snapshots.py (crawl) · backup.py (Notion→JSON)
@@ -407,7 +432,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D2 | Fork: extract path vs deterministic branch | Thin/visual saves don't warrant transcription or an LLM | LLM-enrich everything (waste on no-content) |
 | D3 | One-shot enrich (title+summary+externals+tags) | Claude already loads the content; extra fields are ~free; coherent labels | Separate passes (re-reads content N times) |
 | D4 | Drop `Summarized` status | One-shot lands at `Tagged`; the intermediate stop no longer exists | Keep it (ghost status, friction) |
-| D5 | Backend file-contract (local/api/claude-code/cowork) | Subscription, API, and local must all work; user picks at start. Realized as the `Backend` protocol + `get_backend` registry in `backends.base`, with `Budgets`/`FillResult` typing the contract | Hardcode one engine; lose portability (Phase 6) |
+| D5 | Backend file-contract (local/api/claude-p/claude-code/cowork) | Subscription, API, and local must all work; user picks at start. Realized as the `Backend` protocol + `get_backend` registry in `backends.base`, with `Budgets`/`FillResult` typing the contract | Hardcode one engine; lose portability (Phase 6) |
 | D6 | Cowork loop: state in Notion, not chat | Makes auto-compaction safe and the loop crash-resumable | State in conversation (breaks on compaction) |
 | D7 | Per-backend dynamic batching | Optimal chunk differs per backend, expressed as `Budgets(char_budget, max_items, image_token_budget)`: `local` uncaps char/items and checkpoints per item; the others pass the run-config budgets through | One fixed batch size |
 | D8 | Local LLM is **structurally** full-enrich-capable; title-grade is the PRACTICAL quality ceiling on this box | The `local` backend withholds no field structurally (a stronger local model can do full enrich — portability). Title-grade is a quality ceiling of THIS box's qwen2.5:7b, NOT an architectural restriction. **Spike-confirmed 2026-06-10:** constrained `format=` fixes JSON compliance, but qwen2.5:7b summaries drop the high-value specifics (numbers, benchmarks, names) and externals come back empty or hallucinated — semantic *quality*, not compliance, is the wall | Hard-cap `local` to title-only (would block a stronger local model) |
@@ -420,13 +445,14 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D15 | OCR: RapidOCR for text baseline + **vision-at-enrich** for carousel/post slides (all slides, not escalate) | Live DB showed 0% of slides were flagged by the old confidence gate, and OCR confidence ≠ information capture. Images are effectively free on a Claude Max subscription session, so per-slide confidence gating has no value. Escalate path retired. | Escalate-to-Claude-vision at extract time (was D15 v1); OCR-only (misses graphic slides) |
 | D16 | Routing deterministic + optional | Collection encodes destination; 100% reliable, no model | AI-chosen routing (cost, unreliable) |
 | D17 | Fresh `insta_save/` + `legacy/` fallback | Clean v2 boundaries; v1 runnable during migration | In-place rewrite (risky, no fallback) |
-| D18 | LLM proposes vocab, human refines | Faster than authoring cold; human keeps control | Pure-manual (slow) or pure-LLM (uncurated) |
+| D18 | Backend drafts vocab (if it exposes `propose_vocab`), human refines + locks | Faster than authoring cold; human keeps control. Backends with `propose_vocab` (e.g. `claude-p`) auto-draft; others fall back to a manual write-proposed-json prompt. The calibrate gate is never part of `Backend.fill()` — it is always human-reviewed before lock | Pure-manual (slow) or pure-LLM (uncurated) |
 | D19 | Guardrails + preflight + backup/restore | Bulk re-runs are high-blast-radius; fail fast, cap spend, be restorable — built as preflight (effort/notion/backend/engines), item-cap (pre-run vs remaining), per-batch spend-cap, usage reminder, backup + dry restore-check | Trust the run (silent overruns, unrecoverable writes) |
 | D20 | Group-level ordering (not per-collection) | ~6 groups to order, not ~44 folders; group names move to the private config | Per-collection `order` (tedious; leaks group names in code) |
 | D21 | Ingest metadata yt-dlp-first, browser fallback, wall guard | More 429-resilient; works on image posts; v1-proven | Browser-first (fragile, rate-limited) |
 | D22 | Consolidate v1's two collection scrapers/mergers into one discover stage | v1 had divergent duplicates (`crawler.py` vs `list_collections.py`) | Keep both (maintenance trap) |
 | D23 | Vision as an enrich input modality; two lanes per group (text/vision) | Carousel/post slides contain information that transcript/OCR alone can miss; feeding raw images into the enrich lane is simpler and more complete than a separate post-OCR vision pass. Reel-vision deferred: reel frames carry little unique information vs transcript + frame-OCR text, and a per-frame vision pass is not content-completeness-gated. | Single lane (would need complex image-text merge logic); per-frame confidence gate at extract time (wrong signal) |
 | D24 | Sequencer: guided-resumable, state in Notion, 5-rule decision table | Re-reading Notion before each step makes the loop crash/compaction-safe with no in-memory/file state; sequencing is a pure function of DB state; stops at human/agent gates; a no-progress guard prevents infinite loops | State in memory (breaks on crash); single-pass planning (stale after each step) |
+| D25 | `claude-p` automated backend (headless `claude -p`, Claude Max, default for the one-call orchestrator); the calibrate gate runs INLINE in both modes | Claude Max users have no API key; a headless subprocess gives `claude-code`-grade quality fully automated (`AUTOMATED=True`), vision-capable (reads slides by path), in-process with no relay. Running the calibrate gate inline (backend drafts via `propose_vocab` → human locks) makes `isa run --mode first-time` a true one-call pipeline (front-folds discover→ingest→select) instead of a multi-command manual sequence | `api`-only (needs a key); `claude-code` agent-filled loop (needs a driving session); incremental raising on uncalibrated groups (forces a separate first-time run) |
 
 ---
 
