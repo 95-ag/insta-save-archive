@@ -51,6 +51,33 @@ def batch_confirm(collections_path, new_names) -> None:
     print("collections.json validated.")
 
 
+def run_inline_select(collections_path, new_names, *, prompt_input=input) -> None:
+    """In-terminal group+extract picker for new collections (alternative to batch_confirm).
+    Prompts group (existing or a new name) + extract (y/n) per collection, writes the file.
+    No-op when new_names is empty."""
+    if not new_names:
+        return
+    p = Path(collections_path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    groups = list(data.get("groups", []))
+    for name in new_names:
+        print(f"\nCollection {name!r}. Existing groups: {', '.join(groups)}")
+        group = prompt_input(f"  group for {name} (type an existing or a new name): ").strip()
+        if not group:
+            group = UNCATEGORIZED
+        if group not in groups:
+            groups.append(group)
+        extract = prompt_input(f"  extract {name}? [y/N]: ").strip().lower() in ("y", "yes")
+        entry = dict(data["collections"].get(name, {}))
+        entry["group"] = group
+        entry["extract"] = extract
+        data["collections"][name] = entry
+    data["groups"] = groups
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    load_collections(collections_path)  # validate; raises loudly on a broken file
+    print("collections.json updated.")
+
+
 def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_collection,
               fresh=False, names=None, max_age_min=360, now=None) -> list:
     """Crawl each collection grid → snapshot. Reuses complete+fresh snapshots unless
@@ -74,8 +101,13 @@ def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_
 
 
 def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
-                 fresh=False, names=None, max_age_min=360, persist=True):
-    """Full discover: auth → index refresh → batch-confirm → crawl all grids."""
+                 fresh=False, names=None, max_age_min=360, persist=True,
+                 select_mode="inline"):
+    """Full discover: auth → index refresh → inline-select or editor → crawl all grids.
+
+    select_mode: "inline" (default) prompts group+extract interactively per new collection;
+                 "editor" opens $EDITOR on the whole file (legacy batch_confirm path).
+    """
     if not ig_username:
         raise RuntimeError("discover: IG_USERNAME is not set (in .env) and no --ig-username "
                            "was given — cannot build collection URLs.")
@@ -88,7 +120,10 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
             merged, new_names, missing, complete = refresh_collections_config(
                 context, ig_username, collections_path=collections_path, persist=persist)
             if persist:
-                batch_confirm(collections_path, new_names)
+                if select_mode == "editor":
+                    batch_confirm(collections_path, new_names)
+                else:
+                    run_inline_select(collections_path, new_names)
             cfg = load_collections(collections_path)
             skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
                                 tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min)

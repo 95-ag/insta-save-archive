@@ -56,3 +56,19 @@ def test_refresh_collections_config_preserves_and_reports_missing(tmp_path, monk
     assert complete is True
     written = json.loads(p.read_text(encoding="utf-8"))
     assert "Dev" in written["collections"]
+
+
+def test_inline_select_sets_group_and_extract(tmp_path):
+    from insta_save.stages.discover import run_inline_select
+    import json
+    p = tmp_path / "collections.json"
+    p.write_text(json.dumps({"groups": ["uncategorized", "Biz"], "collections": {
+        "A": {"group": "uncategorized", "extract": False, "slug": "a", "numeric_id": "1"},
+        "B": {"group": "uncategorized", "extract": False, "slug": "b", "numeric_id": "2"}}}),
+        encoding="utf-8")
+    answers = iter(["Biz", "y", "NewGrp", "n"])   # group, extract per collection, in order
+    run_inline_select(p, ["A", "B"], prompt_input=lambda _p: next(answers))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["collections"]["A"] == {"group": "Biz", "extract": True, "slug": "a", "numeric_id": "1"}
+    assert data["collections"]["B"]["group"] == "NewGrp" and data["collections"]["B"]["extract"] is False
+    assert "NewGrp" in data["groups"]   # new group registered
