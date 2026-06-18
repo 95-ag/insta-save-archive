@@ -9,11 +9,14 @@ reads slide images by file path so the vision lane works with the same IMAGES:-p
 contract as claude-code -> VISION_CAPABLE=True. fill is lane-agnostic (prompt.txt carries the
 image paths); claude -p must run with cwd=repo root so repo-relative image paths resolve."""
 import json
+import logging
 import subprocess
 from pathlib import Path
 
 from insta_save.backends.base import (Budgets, FillResult,
                                        parse_results_array, normalize_results)
+
+log = logging.getLogger(__name__)
 
 NAME = "claude-p"
 AUTOMATED = True
@@ -69,4 +72,5 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     results = normalize_results(parse_results_array(text), items)
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
+    log.info("claude-p fill: %d filled, %d failed", len(results), max(len(items) - len(results), 0))
     return FillResult(filled=len(results), failed=max(len(items) - len(results), 0))

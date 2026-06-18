@@ -14,9 +14,9 @@ Two modes (run_cfg.enrich.api_mode):
 
 We deliberately do NOT use output_config.format structured outputs (uncertain
 typing in SDK 0.105.2). Instead the prompt instructs the model to emit ONLY a
-JSON array; _parse_json_array strips any ```json fence and json.loads it.
+JSON array; parse_results_array strips any ```json fence and json.loads it.
 
-Identity is normalized from the batch (_normalize): only results whose page_id
+Identity is normalized from the batch (normalize_results): only results whose page_id
 is a real batch item survive (fabricated ids dropped, de-duped), and source_id
 is overwritten from the matching batch item — the model is never trusted for
 identity (same posture as local_ollama.fill). The shared apply() validates
