@@ -49,3 +49,15 @@ def test_cli_model_strips_claude_prefix():
     assert claude_p._cli_model("claude-sonnet") == "sonnet"
     assert claude_p._cli_model("claude-opus") == "opus"
     assert claude_p._cli_model("haiku") == "haiku"
+
+
+def test_propose_vocab_parses_claude_p_json(monkeypatch):
+    from insta_save.backends import claude_p
+    payload = ('{"content_type":{"tool":"an app"},'
+               '"groups":{"G":{"web-dev":"sites"}},"cross_group":{"ai":"ai"}}')
+    def fake_run(prompt, model):
+        assert "PROMPT" in prompt and model == "claude-sonnet"
+        return payload
+    monkeypatch.setattr(claude_p, "_run_claude_p", fake_run)
+    out = claude_p.propose_vocab("CALIBRATE PROMPT body", "claude-sonnet")
+    assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]

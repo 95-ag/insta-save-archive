@@ -50,6 +50,16 @@ def _run_claude_p(prompt: str, model: str) -> str:
     return text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
 
+def propose_vocab(prompt: str, model: str) -> dict:
+    """Draft a calibrate vocab (content_type/groups/cross_group dict) from the calibrate
+    prompt via `claude -p`. The human reviews/locks it — this only produces the draft.
+    _run_claude_p already unwraps the envelope `result` key and strips fences, so a bare
+    json.loads on its return value is correct and consistent with how fill uses parse_results_array
+    (which also calls json.loads internally on the same unwrapped text)."""
+    text = _run_claude_p(prompt, model)
+    return json.loads(text)
+
+
 def fill(env, run_cfg, enrich_dir) -> FillResult:
     d = Path(enrich_dir)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
