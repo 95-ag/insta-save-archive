@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 VALID_MODES = {"first-time", "incremental"}
-VALID_BACKENDS = {"local", "api", "claude-code", "cowork"}
+VALID_BACKENDS = {"local", "api", "claude-code", "cowork", "claude-p"}
 VALID_OCR_MODES = {"none", "rapidocr"}
 VALID_TITLE_MODES = {"template", "llm"}
 VALID_API_MODES = {"sync", "batches"}

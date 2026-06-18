@@ -94,6 +94,8 @@ def get_backend(name: str):
         from insta_save.backends import local_ollama as m
     elif name == "api":
         from insta_save.backends import api_anthropic as m
+    elif name == "claude-p":
+        from insta_save.backends import claude_p as m
     else:
         raise ValueError(f"unknown enrich backend {name!r}")
     return m

@@ -214,3 +214,23 @@ def test_preflight_invalid_effort(monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         preflight(env, cfg, stages=set())
     assert "turbo" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Backend: claude-p (requires claude CLI on PATH)
+# ---------------------------------------------------------------------------
+
+def test_preflight_claude_p_requires_cli(monkeypatch):
+    import insta_save.orchestrator.preflight as pf
+    monkeypatch.setattr(
+        "insta_save.orchestrator.preflight.validate_notion",
+        lambda env: None,
+    )
+    monkeypatch.setattr(pf.shutil, "which", lambda name: None)
+    env = _FakeEnv()
+    cfg = _run_cfg(backend="claude-p")
+    with pytest.raises(SystemExit) as exc_info:
+        preflight(env, cfg, stages=set())
+    msg = str(exc_info.value)
+    assert "claude-p" in msg
+    assert "claude" in msg
