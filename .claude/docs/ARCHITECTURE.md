@@ -101,10 +101,13 @@ exposes `propose_vocab`, the human accepts/edits/aborts, and `lock_vocab` merges
 `dry_run=True` skips discover/ingest/select and returns the computed plan without executing any stage.
 CLI: `isa run --mode first-time|incremental [--dry-run] [--select-mode inline|editor]`. On
 **first-time only**, before anything else, the **run-config gate** (`orchestrator/config_gate.py`)
-runs: it seeds `config/run.json` from a `claude-p` default if absent, then lets you set
-backend/model/effort inline (or edit the whole file via `--select-mode editor`) and confirm
-(`y / edit / abort`) — so `get_backend`/preflight see the chosen backend (incremental skips this and
-uses the locked `run.json`). It then calls `run_pipeline` (`orchestrator/pipeline.py`), which
+runs: it seeds `config/run.json` from a `claude-p` default if absent, then **keyboard-selects**
+backend/model/effort (arrow-pick with per-option help; open fields offer an "Other…" free-text
+entry) after a start mode-prompt (inline picker vs the whole file in `$EDITOR`, defaulting from
+`--select-mode`), then a **Proceed / Go back / Edit in $EDITOR / Abort** confirm — so
+`get_backend`/preflight see the chosen backend (incremental skips this and uses the locked
+`run.json`). The keyboard-select prompts are built on `helpers/tui.py` (questionary; D27). It then
+calls `run_pipeline` (`orchestrator/pipeline.py`), which
 **front-folds discover → ingest → select** before entering the sequencer loop — first-time crawls
 fresh, incremental reuses snapshots (`--fresh` forces a re-crawl in incremental). It runs preflight
 + the item-cap guardrail + a session usage reminder, then the loop, then prints the per-group plan and
@@ -125,7 +128,7 @@ the next gate.
 | 5 | Deterministic | slug-tag union + title (template default, opt-in llm) | title only (opt-in) | `Tagged` |
 | 6 | Route | pure Python (`routes.json`) | no | `Routed` (optional) |
 
-- **Discover** surfaces all collections + post links. First-time → prompt group + extract per collection (group *order* is set once in the `groups` list). Incremental → diff config, prompt only new/removed collections (smart-merge). v2 uses **one** harvester/merger — v1 had two divergent copies (`crawler.py` vs `list_collections.py`); see `CARRYOVER.md`.
+- **Discover** surfaces all collections + post links. First-time → **keyboard-select** group + extract per new collection (arrow-pick an existing group, "New group…", or "→ Edit the rest in $EDITOR" to hand the remaining collections to the editor mid-loop), behind the same inline-vs-`$EDITOR` mode-prompt and Proceed/Go back/Edit/Abort confirm as the run-config gate (`helpers/tui.py`; D27); group *order* is set once in the `groups` list. Incremental → diff config, prompt only new/removed collections (smart-merge). v2 uses **one** harvester/merger — v1 had two divergent copies (`crawler.py` vs `list_collections.py`); see `CARRYOVER.md`.
 - **Ingest** pulls metadata **yt-dlp `--dump-json` first** (more 429-resilient, works on image posts), browser render as fallback, with a **wall guard** (stop after 5 consecutive yt-dlp failures, defer to the next run).
 - **Select** fans items to the extract path (`Queued`) or the deterministic branch (`extract=no` collections — no deep content worth a transcript).
 - **Enrich** is one LLM pass producing all four fields from `title-seed + transcript + ocr_text + caption`. Replaces v1's separate `title` (Ollama) + `summarize` (Claude) passes for extracted items.
@@ -403,7 +406,7 @@ insta-save-archive/
 │   ├── engines/                 # transcript · ocr · vision  (extract plugins)
 │   ├── backends/                # base · local_ollama · api_anthropic · claude_p · claude_code · cowork
 │   ├── adapters/                # notion (state) · instagram/ (session·display·harvest·crawl·extractor·cookies)
-│   ├── helpers/                 # observability (StageProgress, setup_logging)
+│   ├── helpers/                 # observability (StageProgress, setup_logging) · tui (keyboard-select prompts over questionary)
 │   ├── enrich_schema.py · reconcile.py · snapshots.py (crawl) · backup.py (Notion→JSON)
 ├── cli/isa.py                   # single entrypoint: isa discover|run|status|backup
 ├── config/                      # gitignored DATA: collections.json · tags.json · routes.json · run.json
@@ -427,6 +430,9 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | `config/collections.json` | **no** (private) | ordered `groups` list (group names live here) + per-collection `{group, extract}` |
 | `config/tags.json` | **no** (private) | per-group + cross-group vocab with definitions |
 | `config/routes.json` | yes (example) | route map (optional; absent/empty ⇒ routing disabled) |
+
+Interactive gates depend on **`questionary`** (a runtime dependency; pulls `prompt_toolkit`) for the
+keyboard-select prompts — see `helpers/tui.py` and D27.
 
 ---
 
@@ -460,6 +466,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D24 | Sequencer: guided-resumable, state in Notion, 5-rule decision table | Re-reading Notion before each step makes the loop crash/compaction-safe with no in-memory/file state; sequencing is a pure function of DB state; stops at human/agent gates; a no-progress guard prevents infinite loops | State in memory (breaks on crash); single-pass planning (stale after each step) |
 | D25 | `claude-p` automated backend (headless `claude -p`, Claude Max, default for the one-call orchestrator); the calibrate gate runs INLINE in both modes | Claude Max users have no API key; a headless subprocess gives `claude-code`-grade quality fully automated (`AUTOMATED=True`), vision-capable (reads slides by path), in-process with no relay. Running the calibrate gate inline (backend drafts via `propose_vocab` → human locks) makes `isa run --mode first-time` a true one-call pipeline (front-folds discover→ingest→select) instead of a multi-command manual sequence | `api`-only (needs a key); `claude-code` agent-filled loop (needs a driving session); incremental raising on uncalibrated groups (forces a separate first-time run) |
 | D26 | First-time runs confirm run-config interactively (seed `claude-p` default `run.json`, inline backend/model/effort or `$EDITOR` via `--select-mode`, then confirm); incremental stays silent | A truly fresh user must not silently run on the wrong backend — the loader defaults `enrich.backend` to `local` (title-only here) and requires the file to exist. This implements the long-documented §5/D7 "confirm model+effort at run start" as a gate, mirroring the select/calibrate gates. Incremental stays unattended/cron-able | Silent defaults (wrong backend, crash on missing file); a full field-by-field wizard (YAGNI — only backend/model/effort matter, rest via `$EDITOR`) |
+| D27 | Interactive gates use keyboard-select (questionary) via a shared `helpers/tui.py`: arrow-pick + per-option help + inline/`$EDITOR` mode-prompt + Proceed/Go back/Edit/Abort confirm (the collection gate adds a mid-loop "Edit the rest in $EDITOR" escape) | No-typing-by-default, self-documenting (per-option help), and consistent across the run-config and collection gates; tests monkeypatch the four `tui` primitives since questionary needs a TTY. The calibrate gate adopts the same helper next | Typed `input()` (error-prone, no discoverability); a full-screen prompt_toolkit form (YAGNI) |
 
 ---
 
