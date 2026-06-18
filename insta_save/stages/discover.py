@@ -13,7 +13,12 @@ from insta_save.adapters.instagram.crawl import crawl_collection, discover_colle
 from insta_save.config.collections import (
     load_collections, merge_discovered, write_collections, UNCATEGORIZED,
 )
+from insta_save.helpers import tui
 from insta_save.snapshots import is_reusable, read_snapshot, write_snapshot
+
+# Sentinel values for the inline group picker — plain strings distinct from any real group name.
+EDIT_REST = "__edit_rest__"
+_NEW_GROUP = "__new_group__"
 
 log = logging.getLogger(__name__)
 
@@ -51,31 +56,73 @@ def batch_confirm(collections_path, new_names) -> None:
     print("collections.json validated.")
 
 
-def run_inline_select(collections_path, new_names, *, prompt_input=input) -> None:
-    """In-terminal group+extract picker for new collections (alternative to batch_confirm).
-    Prompts group (existing or a new name) + extract (y/n) per collection, writes the file.
+def run_inline_select(collections_path, new_names, *, select_mode="inline") -> None:
+    """Mode-prompt, then per new collection a group + extract select (or $EDITOR), then confirm.
     No-op when new_names is empty."""
     if not new_names:
         return
+    mode = tui.select("Configure new collections via", [
+        ("Inline picker", "inline", "set group + extract per collection"),
+        ("Edit in $EDITOR", "editor", "one pass over the whole file"),
+    ], default=("editor" if select_mode == "editor" else "inline"))
+    if mode is None:
+        raise SystemExit("collection gate: aborted")
+    while True:
+        if mode == "editor":
+            batch_confirm(collections_path, new_names)
+        else:
+            _inline_pick_collections(collections_path, new_names)
+        try:
+            load_collections(collections_path)
+        except Exception as exc:                       # invalid file from the editor
+            print(f"  invalid collections.json: {exc} — re-edit")
+            mode = "editor"
+            continue
+        action = tui.confirm_action("Proceed?", [
+            ("Confirm", "proceed", "use these group/extract assignments"),
+            ("Go back", "back", "re-pick inline"),
+            ("Edit in $EDITOR", "editor", "edit the whole file"),
+            ("Abort", "abort", "exit, nothing saved further"),
+        ])
+        if action in (None, "abort"):
+            raise SystemExit("collection gate: aborted")
+        if action == "proceed":
+            print("collections.json updated.")
+            return
+        mode = "inline" if action == "back" else "editor"
+
+
+def _inline_pick_collections(collections_path, new_names) -> None:
+    """Keyboard-select group + extract for each new collection. Writes file after each
+    selection so partial progress is preserved when the user escapes mid-loop."""
     p = Path(collections_path)
     data = json.loads(p.read_text(encoding="utf-8"))
     groups = list(data.get("groups", []))
-    for name in new_names:
-        print(f"\nCollection {name!r}. Existing groups: {', '.join(groups)}")
-        group = prompt_input(f"  group for {name} (type an existing or a new name): ").strip()
+    for i, name in enumerate(new_names):
+        choices = ([(g, g, "") for g in groups]
+                   + [("New group…", _NEW_GROUP, "type a new name (triggers its calibrate gate later)"),
+                      ("→ Edit the rest in $EDITOR", EDIT_REST, "stop here; edit the remaining in the file")])
+        choice = tui.select(f"group for {name}", choices)
+        if choice in (None, EDIT_REST):                # Ctrl-C or the mid-loop escape
+            data["groups"] = groups
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            batch_confirm(collections_path, new_names[i:])  # already-picked stay saved
+            return
+        group = tui.text(f"  new group name for {name}") if choice == _NEW_GROUP else choice
         if not group:
             group = UNCATEGORIZED
         if group not in groups:
             groups.append(group)
-        extract = prompt_input(f"  extract {name}? [y/N]: ").strip().lower() in ("y", "yes")
+        extract = tui.select(f"extract {name}?", [
+            ("Yes", True, "transcript/OCR + enrich"),
+            ("No", False, "deterministic tag only"),
+        ])
         entry = dict(data["collections"].get(name, {}))
         entry["group"] = group
-        entry["extract"] = extract
+        entry["extract"] = bool(extract)
         data["collections"][name] = entry
     data["groups"] = groups
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    load_collections(collections_path)  # validate; raises loudly on a broken file
-    print("collections.json updated.")
 
 
 def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_collection,
@@ -120,10 +167,7 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
             merged, new_names, missing, complete = refresh_collections_config(
                 context, ig_username, collections_path=collections_path, persist=persist)
             if persist:
-                if select_mode == "editor":
-                    batch_confirm(collections_path, new_names)
-                else:
-                    run_inline_select(collections_path, new_names)
+                run_inline_select(collections_path, new_names, select_mode=select_mode)
             cfg = load_collections(collections_path)
             skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
                                 tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min)
