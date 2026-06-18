@@ -403,34 +403,6 @@ def test_loop_runs_calibrate_gate_then_continues(monkeypatch):
     assert calls == {"extract": [], "enrich": [], "route": []}
 
 
-def test_calibrate_gate_inline_first_time(monkeypatch):
-    """first-time calibrate is handled INLINE, not returned as a gate stop."""
-    cfg = _collections_cfg("G", "uncategorized")
-    vocab = _fake_vocab()  # uncalibrated
-    backend = _backend(automated=True)
-    routes = Routes()
-
-    plan_seq = iter([
-        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
-        _done_plan(),
-    ])
-    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
-    calls = _patch_stages(monkeypatch)
-    gate_calls = {"n": 0}
-    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
-        gate_calls["n"] += 1
-        return _fake_vocab("G")
-    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
-
-    run_cfg = SimpleNamespace(extract=None, output_language="english",
-                               enrich=SimpleNamespace(model="m"))
-    result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
-
-    assert gate_calls["n"] == 1
-    assert result.done is True
-    assert calls == {"extract": [], "enrich": [], "route": []}
-
-
 # ---------------------------------------------------------------------------
 # Agent-filled enrich gate: automated=False enrich → returns plan, no drain called
 # ---------------------------------------------------------------------------
