@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 
 from insta_save.adapters.notion import query_all_pages
+from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.stages import enrich as _enrich_stage
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages.route import run_route_stage
@@ -182,7 +183,7 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
 # ---------------------------------------------------------------------------
 
 def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
-              progress_factory=None, reject_calibrate=False) -> Plan:
+              progress_factory=None, interactive=False) -> Plan:
     """Inner loop shared by run_first_time and run_incremental.
 
     Repeatedly computes the plan, checks whether the next step can be executed
@@ -190,8 +191,10 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     or a gate (non-automated step) is reached.
 
     Args:
-        reject_calibrate: when True (incremental mode), a calibrate step raises
-                          SystemExit instead of being returned as a gate.
+        interactive: when True, calibrate steps are run inline (the gate prompts
+                     the user and reloads vocab before continuing). When False,
+                     a calibrate step is returned as a gate stop. Agent-filled
+                     enrich steps always return as a gate regardless of this flag.
     """
     executed: set[tuple[str, str]] = set()
 
@@ -204,12 +207,11 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
         step = plan.next_action
 
         if not step.automated:
-            if reject_calibrate and step.action == "calibrate":
-                raise SystemExit(
-                    f"incremental: group {step.group!r} is uncalibrated — "
-                    "run --mode first-time to calibrate it first"
-                )
-            # Human/agent gate: return the plan so the caller can report and stop.
+            if step.action == "calibrate" and interactive:
+                vocab = run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
+                                           backend=backend, group=step.group)
+                continue  # re-plan with the now-calibrated vocab
+            # Agent-filled enrich (or non-interactive): return the plan as a gate.
             return plan
 
         key = (step.group, step.action)
@@ -286,15 +288,17 @@ def run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     if dry_run:
         return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
     return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
-                     progress_factory=progress_factory, reject_calibrate=False)
+                     progress_factory=progress_factory, interactive=True)
 
 
 def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                     progress_factory=None, dry_run=False) -> Plan:
-    """Run the pipeline in incremental mode (locked vocab required for all groups).
+    """Run the pipeline in incremental mode (delta only, reuses existing snapshots).
 
-    Like run_first_time but raises SystemExit when a calibrate step is encountered,
-    because incremental mode requires all groups to already be calibrated.
+    Like run_first_time but processes only items that have not yet been processed
+    (delta run). If a group requires calibration (new collection added since the
+    last run), the gate is run interactively inline — the same behavior as
+    first-time mode.
 
     Args:
         env:             EnvConfig.
@@ -308,11 +312,8 @@ def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
 
     Returns:
         The final Plan (done, or stopped at an agent-filled enrich gate / no-progress).
-
-    Raises:
-        SystemExit: if any group requires calibration.
     """
     if dry_run:
         return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
     return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
-                     progress_factory=progress_factory, reject_calibrate=True)
+                     progress_factory=progress_factory, interactive=True)

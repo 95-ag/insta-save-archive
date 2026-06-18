@@ -376,25 +376,58 @@ def test_automated_chain_drives_stages_in_order(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Gate stop: non-automated calibrate step → return plan, no drain called
+# Calibrate gate inline: first-time runs the gate then re-plans to done
 # ---------------------------------------------------------------------------
 
-def test_calibrate_gate_stops_first_time(monkeypatch):
+def test_loop_runs_calibrate_gate_then_continues(monkeypatch):
+    cfg = _collections_cfg("G", "uncategorized")
+    vocab = _fake_vocab()  # starts uncalibrated
+    backend = _backend(automated=True)
+    routes = Routes()
+    plan_seq = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
+    calls = _patch_stages(monkeypatch)
+    gate_calls = {"n": 0}
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
+        gate_calls["n"] += 1
+        return _fake_vocab("G")  # now calibrated
+    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
+    assert gate_calls["n"] == 1
+    assert result.done is True
+    assert calls == {"extract": [], "enrich": [], "route": []}
+
+
+def test_calibrate_gate_inline_first_time(monkeypatch):
+    """first-time calibrate is handled INLINE, not returned as a gate stop."""
     cfg = _collections_cfg("G", "uncategorized")
     vocab = _fake_vocab()  # uncalibrated
     backend = _backend(automated=True)
     routes = Routes()
 
-    gate_plan = _plan([{"group": "G", "action": "calibrate", "automated": False}])
-    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: gate_plan)
+    plan_seq = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
     calls = _patch_stages(monkeypatch)
+    gate_calls = {"n": 0}
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
+        gate_calls["n"] += 1
+        return _fake_vocab("G")
+    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
 
     run_cfg = SimpleNamespace(extract=None, output_language="english",
                                enrich=SimpleNamespace(model="m"))
     result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
 
-    # Returns the gate plan; no stage drain called
-    assert result is gate_plan
+    assert gate_calls["n"] == 1
+    assert result.done is True
     assert calls == {"extract": [], "enrich": [], "route": []}
 
 
@@ -448,25 +481,33 @@ def test_no_progress_guard_bails_after_one_execution(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# incremental: calibrate → raise SystemExit
+# incremental: calibrate → runs gate inline (same as first-time)
 # ---------------------------------------------------------------------------
 
-def test_incremental_calibrate_raises(monkeypatch):
+def test_incremental_calibrate_runs_gate(monkeypatch):
     cfg = _collections_cfg("G", "uncategorized")
     vocab = _fake_vocab()  # uncalibrated
     backend = _backend(automated=True)
     routes = Routes()
 
-    gate_plan = _plan([{"group": "G", "action": "calibrate", "automated": False}])
-    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: gate_plan)
-    _patch_stages(monkeypatch)
+    plan_seq = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
+    calls = _patch_stages(monkeypatch)
+    gate_calls = {"n": 0}
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
+        gate_calls["n"] += 1
+        return _fake_vocab("G")
+    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
 
     run_cfg = SimpleNamespace(extract=None, output_language="english",
                                enrich=SimpleNamespace(model="m"))
-    with pytest.raises(SystemExit) as exc_info:
-        sequence.run_incremental(None, run_cfg, cfg, vocab, backend, routes)
-    assert "uncalibrated" in str(exc_info.value)
-    assert "first-time" in str(exc_info.value)
+    result = sequence.run_incremental(None, run_cfg, cfg, vocab, backend, routes)
+    assert gate_calls["n"] == 1
+    assert result.done is True
+    assert calls == {"extract": [], "enrich": [], "route": []}
 
 
 def test_incremental_automated_chain_works(monkeypatch):
