@@ -1,18 +1,17 @@
 """Interactive run-config gate for the one-call orchestrator (first-time).
 
 Seeds config/run.json from a claude-p default if absent, then lets the user set
-backend/model/effort inline (or edit the whole file in $EDITOR) and confirm before
-the long run. Mirrors the collection select gate (inline/editor via --select-mode)
-and the calibrate gate (accept/edit/abort). Incremental mode never calls this.
-Input is injected for testability."""
+backend/model/effort inline via keyboard-select (or edit the whole file in $EDITOR)
+and confirm before the long run. Mirrors the collection select gate (inline/editor
+via --select-mode) and the calibrate gate (accept/edit/abort). Incremental mode
+never calls this."""
 import json
 import os
 import subprocess
 from pathlib import Path
 
-from insta_save.config.run import VALID_BACKENDS, load_run_config, _DEFAULT_RUN
-
-_VALID_EFFORTS = {"low", "medium", "high"}
+from insta_save.config.run import load_run_config, _DEFAULT_RUN
+from insta_save.helpers import tui
 
 DEFAULT_RUN_TEMPLATE = {
     "mode": "first-time",
@@ -25,6 +24,28 @@ DEFAULT_RUN_TEMPLATE = {
     "output_language": "english",
 }
 
+_BACKEND_CHOICES = [
+    ("claude-p", "claude-p", "headless Claude CLI · Claude Max · no API key (default)"),
+    ("api", "api", "Anthropic API · needs ANTHROPIC_API_KEY · metered"),
+    ("local", "local", "Ollama · title-grade on this box"),
+    ("claude-code", "claude-code", "agent-filled Claude Code session loop"),
+    ("cowork", "cowork", "self-paced Cowork loop"),
+]
+_EFFORT_CHOICES = [("low", "low", "smaller context / cheaper"),
+                   ("medium", "medium", "balanced (default)"),
+                   ("high", "high", "largest context / batch")]
+_API_MODE_CHOICES = [("sync", "sync", "one request per batch (default)"),
+                     ("batches", "batches", "Message Batches API")]
+_MODEL_CHOICES = {
+    "local": [("qwen2.5:7b", "qwen2.5:7b", "default local model"),
+              ("qwen2.5:3b", "qwen2.5:3b", "smaller/faster")],
+}
+_DEFAULT_MODEL_CHOICES = [("claude-sonnet", "claude-sonnet", "balanced (default)"),
+                          ("claude-opus", "claude-opus", "highest quality"),
+                          ("claude-haiku", "claude-haiku", "fastest/cheapest")]
+_LANG_CHOICES = [("english", "english", "default"), ("spanish", "spanish", ""),
+                 ("french", "french", ""), ("german", "german", ""), ("hindi", "hindi", "")]
+
 
 def ensure_run_json(path=_DEFAULT_RUN) -> None:
     """Write the claude-p default template if run.json is absent. No-op otherwise."""
@@ -35,27 +56,23 @@ def ensure_run_json(path=_DEFAULT_RUN) -> None:
     p.write_text(json.dumps(DEFAULT_RUN_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _prompt_choice(prompt_input, label, current, valid):
-    """Prompt until the answer (or the kept current) is in `valid`. Blank keeps current."""
-    while True:
-        ans = prompt_input(f"  {label} [{current}] ({'/'.join(sorted(valid))}): ").strip()
-        val = ans or current
-        if val in valid:
-            return val
-        print(f"  invalid {label} {val!r}")
-
-
-def _inline_edit(path, run_cfg, prompt_input) -> None:
-    """Prompt backend/model/effort (blank keeps current); write them into run.json,
+def _inline_pick(path, run_cfg) -> None:
+    """Keyboard-select backend/model/effort (and api_mode for api backend); write into run.json,
     preserving all other keys."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     enrich = data.setdefault("enrich", {})
-    enrich["backend"] = _prompt_choice(prompt_input, "backend",
-                                       enrich.get("backend", run_cfg.enrich.backend), VALID_BACKENDS)
-    cur_model = enrich.get("model", run_cfg.enrich.model)
-    enrich["model"] = prompt_input(f"  model [{cur_model}]: ").strip() or cur_model
-    enrich["effort"] = _prompt_choice(prompt_input, "effort",
-                                      enrich.get("effort", run_cfg.enrich.effort), _VALID_EFFORTS)
+    enrich["backend"] = tui.select("backend", _BACKEND_CHOICES,
+                                   default=enrich.get("backend", run_cfg.enrich.backend))
+    models = _MODEL_CHOICES.get(enrich["backend"], _DEFAULT_MODEL_CHOICES)
+    enrich["model"] = tui.select_or_other("model", models,
+                                          default=enrich.get("model", run_cfg.enrich.model))
+    enrich["effort"] = tui.select("effort", _EFFORT_CHOICES,
+                                  default=enrich.get("effort", run_cfg.enrich.effort))
+    if enrich["backend"] == "api":
+        enrich["api_mode"] = tui.select("api_mode", _API_MODE_CHOICES,
+                                        default=enrich.get("api_mode", "sync"))
+    data["output_language"] = tui.select_or_other("output language", _LANG_CHOICES,
+                                                   default=data.get("output_language", "english"))
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -75,23 +92,33 @@ def _show(run_cfg) -> None:
     )
 
 
-def run_config_gate(run_cfg, *, path=_DEFAULT_RUN, select_mode="inline", prompt_input=input):
-    """Inline picker (backend/model/effort) or $EDITOR on run.json, then a confirm loop.
-    Returns the reloaded RunConfig. Raises SystemExit on abort."""
+def run_config_gate(run_cfg, *, path=_DEFAULT_RUN, select_mode="inline"):
+    """Mode-prompt (inline/editor) -> edit -> 4-way confirm. Returns reloaded RunConfig.
+    Raises SystemExit on abort (or Ctrl-C → tui returns None)."""
+    mode = tui.select("Set run config via", [
+        ("Inline picker", "inline", "pick fields here"),
+        ("Edit in $EDITOR", "editor", "edit the whole run.json"),
+    ], default=("editor" if select_mode == "editor" else "inline"))
+    if mode is None:
+        raise SystemExit("run-config gate: aborted")
     while True:
-        if select_mode == "editor":
+        if mode == "editor":
             _editor_edit(path)
         else:
-            _inline_edit(path, run_cfg, prompt_input)
+            _inline_pick(path, run_cfg)
         try:
-            run_cfg = load_run_config(path)   # reload + validate (loader's _require checks)
+            run_cfg = load_run_config(path)
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"  invalid run.json: {exc} — re-edit")
-            continue
+            print(f"  invalid run.json: {exc} — re-edit"); mode = "editor"; continue
         _show(run_cfg)
-        choice = prompt_input("Proceed with this run config? [y / edit / abort]: ").strip().lower()
-        if choice == "y":
+        action = tui.confirm_action("Proceed?", [
+            ("Confirm", "proceed", "preflight, then the pipeline"),
+            ("Go back", "back", "re-pick the fields inline"),
+            ("Edit in $EDITOR", "editor", "edit the whole run.json"),
+            ("Abort", "abort", "exit, nothing runs"),
+        ])
+        if action in (None, "abort"):
+            raise SystemExit("run-config gate: aborted")
+        if action == "proceed":
             return run_cfg
-        if choice == "abort":
-            raise SystemExit("run-config gate: aborted — nothing ran")
-        # "edit" (or anything else) → loop and re-edit
+        mode = "inline" if action == "back" else "editor"
