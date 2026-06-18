@@ -19,7 +19,6 @@ from insta_save.backends.base import get_backend
 from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
-from insta_save.orchestrator.sequence import run_first_time, run_incremental
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
@@ -81,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--confirm-removed", action="append", default=None)
     run.add_argument("--lane", choices=["text", "vision"], default="text")
     run.add_argument("--status", action="store_true")
+    run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -389,12 +389,12 @@ def _dispatch_mode(args) -> None:
     if reminder:
         print(reminder)
 
-    if args.mode == "first-time":
-        plan = run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes,
-                              dry_run=args.dry_run)
-    else:
-        plan = run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes,
-                               dry_run=args.dry_run)
+    from insta_save.orchestrator.pipeline import run_pipeline
+    ig_username = env.ig_username or os.environ.get("IG_USERNAME", "")
+    plan = run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes,
+                        mode=args.mode, dry_run=args.dry_run,
+                        select_mode=getattr(args, "select_mode", "inline"),
+                        ig_username=ig_username, headed=args.headed)
 
     _print_plan(plan, args.dry_run)
 

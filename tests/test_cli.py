@@ -631,11 +631,13 @@ def _make_plan(action="done", automated=True, next_action_idx=None):
 def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     """Patch all I/O so _dispatch_mode runs without real Notion/FS calls.
 
-    Returns the calls dict (records which sequencer was called + dry_run value).
+    Returns the calls dict (records mode/dry_run passed to run_pipeline).
     """
+    import insta_save.orchestrator.pipeline as pipeline_mod
+
     calls = {}
 
-    env = _types_mod.SimpleNamespace(tmp_dir="tmp", notion_write_delay=0.0)
+    env = _types_mod.SimpleNamespace(tmp_dir="tmp", notion_write_delay=0.0, ig_username="testuser")
     run_cfg = _types_mod.SimpleNamespace(
         enrich=_types_mod.SimpleNamespace(backend="claude-code", model="m", effort="medium"),
         output_language="english", char_budget=80000, max_items=15,
@@ -656,32 +658,37 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     monkeypatch.setattr(isa, "preflight", lambda env, run_cfg, stages: None)
     monkeypatch.setattr(isa, "build_status",
                         lambda env, cols: [{"group": "TOTAL", "remaining": 5}])
-    monkeypatch.setattr(isa, "run_first_time",
-                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
-                        calls.__setitem__("first_time_dry_run", dry_run) or plan)
-    monkeypatch.setattr(isa, "run_incremental",
-                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
-                        calls.__setitem__("incremental_dry_run", dry_run) or plan)
+
+    # _dispatch_mode now calls run_pipeline via a function-local import.
+    # Patch the attribute on the pipeline module so the local import picks it up.
+    def _fake_pipeline(env, run_cfg, cols, vocab, backend, routes, *,
+                       mode, dry_run=False, select_mode="inline",
+                       ig_username=None, headed=False, progress_factory=None):
+        calls["mode"] = mode
+        calls["dry_run"] = dry_run
+        calls["select_mode"] = select_mode
+        return plan
+
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)
 
     args = isa.build_parser().parse_args(
         ["run", "--mode", mode] + (["--dry-run"] if dry_run else []))
     return args, calls
 
 
-def test_mode_first_time_dispatches_run_first_time(monkeypatch, capsys):
+def test_mode_first_time_dispatches_run_pipeline(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
-    isa.main.__wrapped__ if hasattr(isa.main, "__wrapped__") else None
     isa._dispatch_mode(args)
-    assert "first_time_dry_run" in calls
+    assert calls.get("mode") == "first-time"
     assert "All groups complete" in capsys.readouterr().out
 
 
-def test_mode_incremental_dispatches_run_incremental(monkeypatch, capsys):
+def test_mode_incremental_dispatches_run_pipeline(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
     isa._dispatch_mode(args)
-    assert "incremental_dry_run" in calls
+    assert calls.get("mode") == "incremental"
     assert "All groups complete" in capsys.readouterr().out
 
 
@@ -689,7 +696,7 @@ def test_mode_dry_run_passes_through(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
     isa._dispatch_mode(args)
-    assert calls.get("first_time_dry_run") is True
+    assert calls.get("dry_run") is True
 
 
 def test_mode_prints_calibrate_gate(monkeypatch, capsys):
