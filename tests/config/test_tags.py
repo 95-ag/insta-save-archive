@@ -113,3 +113,44 @@ def test_lock_vocab_adds_group_without_clobbering(tmp_path):
     # loadable into a Vocab with the new group calibrated
     v = tagcfg.load_vocab(path=p)
     assert v.has_group("NewGroup") and "web-dev" in v.group_topics("NewGroup")
+
+
+def test_merge_vocab_is_pure_and_additive():
+    current = {
+        "content_type": {"tool": "an app"},
+        "groups": {"Existing": {"old-topic": "kept"}},
+        "cross_group": {"ai": "ai themes"},
+    }
+    proposed = {
+        "content_type": {"tool": "SHOULD-NOT-OVERWRITE", "explainer": "explains"},
+        "groups": {"NewGroup": {"web-dev": "building sites"}},
+        "cross_group": {"ai": "SHOULD-NOT-OVERWRITE", "sustainability": "eco"},
+    }
+    merged = tagcfg.merge_vocab(current, "NewGroup", proposed)
+    assert merged["groups"]["NewGroup"] == {"web-dev": "building sites"}   # set outright
+    assert merged["groups"]["Existing"] == {"old-topic": "kept"}           # untouched
+    assert merged["content_type"]["explainer"] == "explains"               # added
+    assert merged["content_type"]["tool"] == "an app"                      # existing key NOT overwritten
+    assert merged["cross_group"]["sustainability"] == "eco"                # added
+    assert merged["cross_group"]["ai"] == "ai themes"                      # existing NOT overwritten
+    # purity: current is unchanged
+    assert current["groups"] == {"Existing": {"old-topic": "kept"}}
+    assert "explainer" not in current["content_type"]
+
+
+def test_merge_vocab_group_set_outright_drops_rejected():
+    """A topic absent from the proposal's group is GONE after merge (reject path)."""
+    current = {"content_type": {}, "groups": {"G": {"a": "x", "b": "y"}}, "cross_group": {}}
+    proposed = {"content_type": {}, "groups": {"G": {"a": "x"}}, "cross_group": {}}
+    merged = tagcfg.merge_vocab(current, "G", proposed)
+    assert merged["groups"]["G"] == {"a": "x"}   # 'b' dropped
+
+
+def test_lock_vocab_still_matches_merge(tmp_path):
+    """lock_vocab writes exactly what merge_vocab returns."""
+    p = tmp_path / "tags.json"
+    current = {"content_type": {"tool": "an app"}, "groups": {"E": {"o": "k"}}, "cross_group": {"ai": "t"}}
+    p.write_text(json.dumps(current), encoding="utf-8")
+    proposed = {"content_type": {}, "groups": {"N": {"w": "b"}}, "cross_group": {}}
+    tagcfg.lock_vocab("N", proposed, path=p)
+    assert json.loads(p.read_text(encoding="utf-8")) == tagcfg.merge_vocab(current, "N", proposed)

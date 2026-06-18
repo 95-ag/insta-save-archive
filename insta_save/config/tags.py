@@ -1,6 +1,7 @@
 """Tag vocabulary: content-type axis + per-group topics + cross-group topics, with
 one-line definitions injected into the enrich prompt. Private file (gitignored)."""
 
+import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,12 +50,11 @@ def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
     )
 
 
-def lock_vocab(group: str, proposed: dict, path=_DEFAULT_TAGS) -> None:
-    """Merge a proposed vocab (calibrate shape: content_type/groups/cross_group) into
-    config/tags.json. Sets the group's topics outright; for content_type/cross_group adds
-    only NEW keys (existing definitions are preserved). Other groups are untouched."""
-    p = Path(path)
-    data = json.loads(p.read_text(encoding="utf-8"))
+def merge_vocab(current: dict, group: str, proposed: dict) -> dict:
+    """Pure: return the post-lock tags structure WITHOUT writing. Sets the group's topics
+    outright (so a reject removes); content_type/cross_group get only NEW keys (additive —
+    existing definitions preserved, other groups untouched). `current` is not mutated."""
+    data = copy.deepcopy(current)
     data.setdefault("content_type", {})
     data.setdefault("groups", {})
     data.setdefault("cross_group", {})
@@ -63,6 +63,15 @@ def lock_vocab(group: str, proposed: dict, path=_DEFAULT_TAGS) -> None:
         data["content_type"].setdefault(key, definition)
     for key, definition in proposed.get("cross_group", {}).items():
         data["cross_group"].setdefault(key, definition)
+    return data
+
+
+def lock_vocab(group: str, proposed: dict, path=_DEFAULT_TAGS) -> None:
+    """Merge a proposed vocab (calibrate shape: content_type/groups/cross_group) into
+    config/tags.json via merge_vocab (group outright; content_type/cross_group additive)."""
+    p = Path(path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data = merge_vocab(data, group, proposed)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
