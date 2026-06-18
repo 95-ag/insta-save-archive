@@ -663,10 +663,12 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     # Patch the attribute on the pipeline module so the local import picks it up.
     def _fake_pipeline(env, run_cfg, cols, vocab, backend, routes, *,
                        mode, dry_run=False, select_mode="inline",
-                       ig_username=None, headed=False, progress_factory=None):
+                       ig_username=None, headed=False, fresh=False,
+                       progress_factory=None):
         calls["mode"] = mode
         calls["dry_run"] = dry_run
         calls["select_mode"] = select_mode
+        calls["fresh"] = fresh
         return plan
 
     monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)

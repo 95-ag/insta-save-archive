@@ -394,7 +394,8 @@ def _dispatch_mode(args) -> None:
     plan = run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes,
                         mode=args.mode, dry_run=args.dry_run,
                         select_mode=getattr(args, "select_mode", "inline"),
-                        ig_username=ig_username, headed=args.headed)
+                        ig_username=ig_username, headed=args.headed,
+                        fresh=args.fresh)
 
     _print_plan(plan, args.dry_run)
 

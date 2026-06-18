@@ -10,7 +10,7 @@ from insta_save.orchestrator.sequence import run_first_time, run_incremental
 
 def run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                  mode, dry_run=False, select_mode="inline", ig_username=None,
-                 headed=False, progress_factory=None):
+                 headed=False, fresh=False, progress_factory=None):
     """Run discover -> ingest -> select, then the per-group interactive loop.
 
     In dry_run mode, skips the population stages entirely and returns only the
@@ -29,6 +29,9 @@ def run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                          inline collection select picker.
         ig_username:     Instagram username override; falls back to env.ig_username.
         headed:          Launch a visible browser window (for re-auth flows).
+        fresh:           Force a current re-crawl even in incremental mode (first-time
+                         always crawls fresh). Lets ``--mode incremental --fresh`` pick up
+                         newly-saved posts instead of reusing recent snapshots.
         progress_factory: Optional ``(label: str) -> context manager``.
 
     Returns:
@@ -49,7 +52,7 @@ def run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes, *,
         collections_path="config/collections.json",
         tmp_dir=env.tmp_dir,
         headed=headed,
-        fresh=(mode == "first-time"),
+        fresh=(mode == "first-time") or fresh,
         select_mode=select_mode,
     )
     # Reload after discover so the inline select picker's changes (group/extract

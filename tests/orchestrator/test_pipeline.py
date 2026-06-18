@@ -93,3 +93,27 @@ def test_pipeline_passes_select_mode(monkeypatch):
     pl.run_pipeline(_env(), object(), object(), object(), object(), object(),
                     mode="first-time", dry_run=False, select_mode="editor")
     assert seen.get("select_mode") == "editor"
+
+
+def test_pipeline_incremental_fresh_forces_recrawl(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pl, "run_discover", lambda *a, **k: seen.update(k) or {})
+    monkeypatch.setattr(pl, "run_ingest", lambda *a, **k: {})
+    monkeypatch.setattr(pl, "run_select_stage", lambda *a, **k: {})
+    monkeypatch.setattr(pl, "run_incremental", lambda *a, **k: _done_plan())
+    monkeypatch.setattr(pl, "_reload_collections", lambda: object())
+    pl.run_pipeline(_env(), object(), object(), object(), object(), object(),
+                    mode="incremental", dry_run=False, fresh=True)
+    assert seen["fresh"] is True            # --fresh overrides incremental snapshot reuse
+
+
+def test_pipeline_incremental_default_reuses_snapshots(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pl, "run_discover", lambda *a, **k: seen.update(k) or {})
+    monkeypatch.setattr(pl, "run_ingest", lambda *a, **k: {})
+    monkeypatch.setattr(pl, "run_select_stage", lambda *a, **k: {})
+    monkeypatch.setattr(pl, "run_incremental", lambda *a, **k: _done_plan())
+    monkeypatch.setattr(pl, "_reload_collections", lambda: object())
+    pl.run_pipeline(_env(), object(), object(), object(), object(), object(),
+                    mode="incremental", dry_run=False, fresh=False)
+    assert seen["fresh"] is False           # default incremental still reuses snapshots
