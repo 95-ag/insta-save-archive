@@ -41,6 +41,40 @@ class Backend(Protocol):
     def fill(self, env, run_cfg, enrich_dir) -> FillResult: ...
 
 
+def parse_results_array(text: str) -> list:
+    """Strip a leading/trailing ```json fence if present, then json.loads.
+    Raise ValueError if the result is not a list."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    data = json.loads(stripped)
+    if not isinstance(data, list):
+        raise ValueError(f"expected a JSON array, got {type(data).__name__}")
+    return data
+
+
+def normalize_results(parsed, batch_items) -> list[dict]:
+    """Trust the batch, not the model, for identity. Keep only results whose
+    page_id is a real batch item (drops fabricated ids), de-dupe on first
+    occurrence, and overwrite source_id from the matching batch item. The
+    model's title/summary/externals/content_type/topics are left intact."""
+    by_page_id = {item["page_id"]: item for item in batch_items}
+    kept, seen = [], set()
+    for result in parsed:
+        page_id = result.get("page_id")
+        if page_id not in by_page_id or page_id in seen:
+            continue
+        seen.add(page_id)
+        result["source_id"] = by_page_id[page_id].get("source_id")
+        kept.append(result)
+    return kept
+
+
 def parse_results(path) -> list[dict]:
     """Read results.json (a JSON array). Raises ValueError if not an array."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))

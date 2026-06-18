@@ -31,3 +31,18 @@ def test_parse_results_rejects_non_list(tmp_path):
     p.write_text('{"page_id": "p1"}', encoding="utf-8")
     with pytest.raises(ValueError):
         base.parse_results(p)
+
+
+def test_parse_results_array_rejects_non_array():
+    with pytest.raises(ValueError):
+        base.parse_results_array('{"not":"an array"}')
+
+
+def test_normalize_results_takes_identity_from_batch():
+    # identity comes from the batch items, never from model output
+    items = [{"page_id": "p1", "source_id": "src1"}]
+    model_out = [{"content_type": "tutorial", "topics": ["x"], "title": "t",
+                  "summary": "s", "externals": None,
+                  "page_id": "p1", "source_id": "HACKED"}]
+    out = base.normalize_results(model_out, items)
+    assert out[0]["page_id"] == "p1" and out[0]["source_id"] == "src1"

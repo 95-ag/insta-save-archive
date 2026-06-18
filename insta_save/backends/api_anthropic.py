@@ -29,7 +29,8 @@ import json
 import logging
 from pathlib import Path
 
-from insta_save.backends.base import Budgets, FillResult
+from insta_save.backends.base import (Budgets, FillResult,
+                                       parse_results_array, normalize_results)
 
 log = logging.getLogger(__name__)
 
@@ -56,23 +57,6 @@ def _batches(env, run_cfg):
 def batch_budgets(run_cfg) -> Budgets:
     return Budgets(char_budget=run_cfg.char_budget, max_items=run_cfg.max_items,
                    image_token_budget=run_cfg.image_token_budget)
-
-
-def _parse_json_array(text: str) -> list:
-    """Strip a leading/trailing ```json fence if present, then json.loads.
-    Raise ValueError if the result is not a list."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-    data = json.loads(stripped)
-    if not isinstance(data, list):
-        raise ValueError(f"expected a JSON array, got {type(data).__name__}")
-    return data
 
 
 def _image_block(path) -> dict | None:
@@ -123,23 +107,6 @@ def _first_text(message) -> str:
     raise ValueError("no text block in response")
 
 
-def _normalize(parsed, batch_items) -> list[dict]:
-    """Trust the batch, not the model, for identity. Keep only results whose
-    page_id is a real batch item (drops fabricated ids), de-dupe on first
-    occurrence, and overwrite source_id from the matching batch item. The
-    model's title/summary/externals/content_type/topics are left intact."""
-    by_page_id = {item["page_id"]: item for item in batch_items}
-    kept, seen = [], set()
-    for result in parsed:
-        page_id = result.get("page_id")
-        if page_id not in by_page_id or page_id in seen:
-            continue
-        seen.add(page_id)
-        result["source_id"] = by_page_id[page_id].get("source_id")
-        kept.append(result)
-    return kept
-
-
 def fill(env, run_cfg, enrich_dir) -> FillResult:
     d = Path(enrich_dir)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
@@ -154,7 +121,7 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     else:
         text = _fill_sync(env, run_cfg, kwargs)
 
-    results = _normalize(_parse_json_array(text), items)
+    results = normalize_results(parse_results_array(text), items)
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
     filled = len(results)
