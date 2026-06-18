@@ -99,9 +99,14 @@ modes (`orchestrator/calibrate_gate.py`): the gate samples the group, the backen
 exposes `propose_vocab`, the human accepts/edits/aborts, and `lock_vocab` merges it into
 `config/tags.json` before the loop continues with the reloaded vocab — calibrate is never a gate stop.
 `dry_run=True` skips discover/ingest/select and returns the computed plan without executing any stage.
-CLI: `isa run --mode first-time|incremental [--dry-run] [--select-mode inline|editor]` calls
-`run_pipeline` (`orchestrator/pipeline.py`), which **front-folds discover → ingest → select** before
-entering the sequencer loop — first-time crawls fresh, incremental reuses snapshots. It runs preflight
+CLI: `isa run --mode first-time|incremental [--dry-run] [--select-mode inline|editor]`. On
+**first-time only**, before anything else, the **run-config gate** (`orchestrator/config_gate.py`)
+runs: it seeds `config/run.json` from a `claude-p` default if absent, then lets you set
+backend/model/effort inline (or edit the whole file via `--select-mode editor`) and confirm
+(`y / edit / abort`) — so `get_backend`/preflight see the chosen backend (incremental skips this and
+uses the locked `run.json`). It then calls `run_pipeline` (`orchestrator/pipeline.py`), which
+**front-folds discover → ingest → select** before entering the sequencer loop — first-time crawls
+fresh, incremental reuses snapshots (`--fresh` forces a re-crawl in incremental). It runs preflight
 + the item-cap guardrail + a session usage reminder, then the loop, then prints the per-group plan and
 the next gate.
 
@@ -170,7 +175,7 @@ forever, so the loop breaks instead of spinning). **Automated fills normalize `p
 from `batch.json`** — the model is never trusted for identity (fabricated ids are dropped).
 
 The file contract (`batch.json` → `results.json` under a backend-supplied directory) is identical
-across all four; the **driver** branches on `AUTOMATED` (drain vs single-step) and `VISION_CAPABLE`
+across all five; the **driver** branches on `AUTOMATED` (drain vs single-step) and `VISION_CAPABLE`
 (lane preflight). `fill(env, run_cfg, enrich_dir)` is **dir-parameterized**, so the same backends
 also drive the deterministic-title path (`tmp/deterministic/`), not enrich only (`tmp/enrich/`).
 `enrich.backend` in run config selects one; `enrich.api_mode` (`sync` default | `batches`) picks the
@@ -178,7 +183,8 @@ also drive the deterministic-title path (`tmp/deterministic/`), not enrich only 
 `--status` (on `isa run --stage enrich`) calls `cowork.status` for a single group's remaining-enrichable count. (The top-level `isa status` command — §10 — is separate: a per-group table of all status counts.) Each backend also carries
 **`model`** and **`effort`** (effort → thinking budget on `api`, model-size on `local`, advisory
 on sessions). **On sessions, model+effort set the context capacity that caps batch size — confirm
-both at run start.** (v1 observation: a Sonnet+low session fills context and needs `/compact` far
+both at run start** — now implemented by the first-time run-config gate (§3.1), where backend / model /
+effort are chosen and confirmed before the long run (default backend `claude-p`). (v1 observation: a Sonnet+low session fills context and needs `/compact` far
 sooner than Opus+high, so the safe `char_budget`/`max_items` ceiling scales with model+effort, not
 a single fixed number.) The multilingual translate directive is centralized in
 `backends.prompt.translate_directive` (output fields emitted in `output_language`, non-English
@@ -392,7 +398,7 @@ insta-save-archive/
 │   └── README.md
 ├── insta_save/                  # v2 package (import name; distribution = insta-save)
 │   ├── config/                  # typed loaders: run · collections · tags · routes
-│   ├── orchestrator/            # pipeline (front-fold + mode dispatch) · sequence (modes+plan) · calibrate_gate (interactive vocab lock) · runner · preflight · guardrails · status_report
+│   ├── orchestrator/            # pipeline (front-fold + mode dispatch) · sequence (modes+plan) · config_gate (first-time run-config gate) · calibrate_gate (interactive vocab lock) · runner · preflight · guardrails · status_report
 │   ├── stages/                  # discover · ingest · select · extract · calibrate · enrich · deterministic · route
 │   ├── engines/                 # transcript · ocr · vision  (extract plugins)
 │   ├── backends/                # base · local_ollama · api_anthropic · claude_p · claude_code · cowork
@@ -453,6 +459,7 @@ guardrails, batching. One `isa` CLI replaces scattered scripts.
 | D23 | Vision as an enrich input modality; two lanes per group (text/vision) | Carousel/post slides contain information that transcript/OCR alone can miss; feeding raw images into the enrich lane is simpler and more complete than a separate post-OCR vision pass. Reel-vision deferred: reel frames carry little unique information vs transcript + frame-OCR text, and a per-frame vision pass is not content-completeness-gated. | Single lane (would need complex image-text merge logic); per-frame confidence gate at extract time (wrong signal) |
 | D24 | Sequencer: guided-resumable, state in Notion, 5-rule decision table | Re-reading Notion before each step makes the loop crash/compaction-safe with no in-memory/file state; sequencing is a pure function of DB state; stops at human/agent gates; a no-progress guard prevents infinite loops | State in memory (breaks on crash); single-pass planning (stale after each step) |
 | D25 | `claude-p` automated backend (headless `claude -p`, Claude Max, default for the one-call orchestrator); the calibrate gate runs INLINE in both modes | Claude Max users have no API key; a headless subprocess gives `claude-code`-grade quality fully automated (`AUTOMATED=True`), vision-capable (reads slides by path), in-process with no relay. Running the calibrate gate inline (backend drafts via `propose_vocab` → human locks) makes `isa run --mode first-time` a true one-call pipeline (front-folds discover→ingest→select) instead of a multi-command manual sequence | `api`-only (needs a key); `claude-code` agent-filled loop (needs a driving session); incremental raising on uncalibrated groups (forces a separate first-time run) |
+| D26 | First-time runs confirm run-config interactively (seed `claude-p` default `run.json`, inline backend/model/effort or `$EDITOR` via `--select-mode`, then confirm); incremental stays silent | A truly fresh user must not silently run on the wrong backend — the loader defaults `enrich.backend` to `local` (title-only here) and requires the file to exist. This implements the long-documented §5/D7 "confirm model+effort at run start" as a gate, mirroring the select/calibrate gates. Incremental stays unattended/cron-able | Silent defaults (wrong backend, crash on missing file); a full field-by-field wizard (YAGNI — only backend/model/effort matter, rest via `$EDITOR`) |
 
 ---
 
