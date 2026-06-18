@@ -13,7 +13,7 @@ from insta_save.adapters.notion import ensure_schema
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
-from insta_save.stages.calibrate import sample as calibrate_sample
+from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.backup import backup, restore_check
 from insta_save.backends.base import get_backend
 from insta_save.config.routes import load_routes
@@ -106,26 +106,17 @@ def dispatch_run(args) -> None:
                 collections_cfg=collections_cfg, reextract=args.reextract)
         return
     if args.stage == "calibrate":
-        # Backend-independent: calibrate samples + a session proposes vocab; it does NOT
-        # read run_cfg.enrich.backend or call backend.fill (D18 human-reviewed gate).
+        # Standalone interactive vocab editor (same gate the first-time loop runs inline):
+        # sample -> backend drafts -> you reject/add + preview -> lock into config/tags.json.
         if not args.group:
             raise SystemExit("isa run --stage calibrate: --group is required")
         env = _load_env()
-        log_path = setup_logging("calibrate")
-        print(f"Logging to {_rel(log_path)}")
+        run_cfg = _load_run()
         collections_cfg = _load_collections()
-        statuses = ["Extracted"]
-        template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
-        with StageProgress("Calibrate") as progress:
-            n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
-                                 limit=args.calibrate_limit, statuses=statuses,
-                                 prompt_template=template, progress=progress)
-        if n == 0:
-            print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}).")
-        else:
-            print(f"Sampled {n} items -> tmp/calibrate/prompt.txt. In a Claude session: "
-                  f'"Read tmp/calibrate/prompt.txt and write tmp/calibrate/proposed_tags.json", '
-                  f"then review + merge into config/tags.json.")
+        backend = get_backend(run_cfg.enrich.backend)
+        print(f"Logging to {_rel(setup_logging('calibrate'))}")
+        run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
+                           backend=backend, group=args.group)
         return
 
     if args.stage == "enrich":

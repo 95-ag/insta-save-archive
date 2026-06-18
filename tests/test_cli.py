@@ -95,6 +95,20 @@ def test_calibrate_requires_group(monkeypatch):
         assert "group" in str(e).lower()
 
 
+def test_calibrate_invokes_gate_with_group(monkeypatch):
+    import cli.isa as isa
+    calls = {}
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: type("R", (), {"enrich": type("E", (), {"backend": "claude-p"})()})())
+    monkeypatch.setattr(isa, "_load_collections", lambda: object())
+    monkeypatch.setattr(isa, "get_backend", lambda name: object())
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logs/calibrate.log")
+    monkeypatch.setattr(isa, "run_calibrate_gate",
+                        lambda env, run_cfg, *, collections_cfg, backend, group: calls.update(group=group))
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "calibrate", "--group", "Biz"]))
+    assert calls["group"] == "Biz"
+
+
 class _FakeProgress:
     """Stub StageProgress so the rich live display never runs under pytest."""
     def __enter__(self): return self
