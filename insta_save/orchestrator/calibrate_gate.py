@@ -81,6 +81,14 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_
             raise SystemExit(f"calibrate gate: aborted for group {group!r} — nothing locked")
         print("Please answer 'y', 'edit', or 'abort'.")
 
+    if not proposed_path.exists():
+        # Manual-draft path (backend has no propose_vocab): the human accepted without
+        # writing the file. Fail with a clear instruction instead of a raw read error.
+        raise SystemExit(
+            f"calibrate gate: no proposed vocab at {proposed_path} for group {group!r} — "
+            f"write it (calibrate shape: content_type/groups/cross_group) before accepting."
+        )
+
     proposed = json.loads(proposed_path.read_text(encoding="utf-8"))
     lock_vocab(group, proposed, path=_tags_path())
     return load_vocab(path=_tags_path())
