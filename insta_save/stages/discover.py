@@ -177,5 +177,8 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
     # slug/numeric_id), so configuring them after the crawl is safe and matches the
     # crawl-everything-first design.
     if persist:
-        run_inline_select(collections_path, new_names, select_mode=select_mode)
+        unconfigured = [name for name, meta in merged["collections"].items()
+                        if meta.get("group", UNCATEGORIZED) == UNCATEGORIZED]
+        to_configure = sorted(set(new_names) | set(unconfigured))
+        run_inline_select(collections_path, to_configure, select_mode=select_mode)
     return {"new": new_names, "missing": missing, "index_complete": complete, "skipped": skipped}

@@ -30,7 +30,7 @@ def test_run_discover_runs_gate_outside_browser_context(monkeypatch, tmp_path):
     monkeypatch.setattr(sess, "ensure_authenticated",
                         lambda pw, env, headless: (_Browser(), object()))
     monkeypatch.setattr(discover, "refresh_collections_config",
-                        lambda *a, **k: ({}, ["A"], [], True))
+                        lambda *a, **k: ({"collections": {"A": {"group": "uncategorized"}}}, ["A"], [], True))
     monkeypatch.setattr(discover, "load_collections", lambda p: object())
     monkeypatch.setattr(discover, "crawl_all", lambda **k: order.append("crawl") or [])
     monkeypatch.setattr(discover, "run_inline_select", lambda *a, **k: order.append("gate"))
@@ -176,3 +176,32 @@ def test_inline_select_noop_when_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(tui, "select", lambda *a, **k: called.append("select") or "inline")
     run_inline_select(p, [], select_mode="inline")
     assert called == []
+
+
+def test_run_discover_configures_unconfigured_collections(monkeypatch, tmp_path):
+    from insta_save.stages import discover
+    seen = {}
+    class _PW:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    class _Browser:
+        def close(self): pass
+    import playwright.sync_api as pwmod
+    import insta_save.adapters.instagram.session as sess
+    monkeypatch.setattr(pwmod, "sync_playwright", lambda: _PW())
+    monkeypatch.setattr(sess, "prepare_display", lambda env: None)
+    monkeypatch.setattr(sess, "ensure_authenticated", lambda pw, env, headless: (_Browser(), object()))
+    # refresh returns NO new names but a merged file with an unconfigured (uncategorized) collection
+    merged = {"groups": ["uncategorized"], "collections": {
+        "A": {"group": "Biz", "extract": True, "slug": "a", "numeric_id": "1"},
+        "B": {"group": "uncategorized", "extract": False, "slug": "b", "numeric_id": "2"}}}
+    monkeypatch.setattr(discover, "refresh_collections_config",
+                        lambda *a, **k: (merged, [], [], True))
+    monkeypatch.setattr(discover, "load_collections", lambda p: object())
+    monkeypatch.setattr(discover, "crawl_all", lambda **k: [])
+    monkeypatch.setattr(discover, "run_inline_select",
+                        lambda path, names, **k: seen.update(names=list(names)))
+    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
+                          tmp_dir=str(tmp_path), headed=False)
+    assert seen["names"] == ["B"]      # the still-uncategorized one is offered, despite no new names
