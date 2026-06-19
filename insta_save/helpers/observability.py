@@ -23,6 +23,7 @@ Typical use:
 
 import logging
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +39,44 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.text import Text
+
+RULE_TOP = 56
+RULE_NESTED = 40
+INDENT = 3
+
+
+def render_rule(label, *, width, char="─", indent=0, index=None) -> str:
+    """Return a fixed-width rule string with the label centered between rule chars.
+
+    The returned string has exactly (indent + width) characters. indent pads the
+    left with spaces; width governs the rule+label region. index, when given,
+    appends a "(n/total)" suffix to the label before centering.
+    """
+    text = label if index is None else f"{label} ({index[0]}/{index[1]})"
+    text = f" {text} "
+    if len(text) >= width:
+        return " " * indent + text[:width]
+    pad = width - len(text)
+    left = pad // 2
+    right = pad - left
+    return " " * indent + (char * left) + text + (char * right)
+
+
+@contextmanager
+def stage_section(label, *, width=RULE_TOP, char="─", indent=0, index=None, console=None):
+    """Context manager that prints a framed header/footer around a block of output.
+
+    Prints render_rule(label) on enter and render_rule("done · {label}") on exit.
+    Uses a plain Console() by default so callers can substitute a custom one (e.g.
+    a forced-width console in tests) via the console= kwarg.
+    """
+    con = console or Console()
+    con.print(render_rule(label, width=width, char=char, indent=indent, index=index))
+    try:
+        yield
+    finally:
+        con.print(render_rule(f"done · {label}", width=width, char=char, indent=indent, index=index))
+
 
 _LOGS_DIR = Path(__file__).parent.parent / "logs"
 
