@@ -304,7 +304,7 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 
 ### 7.2 Calibration (per group, first-time)
 1. Query ~15–20 of the group's items; gather `caption + ocr_text + transcript`.
-2. **LLM proposes** a candidate vocab from the sample → **you refine** → lock into `tags.json`.
+2. **LLM proposes** a candidate vocab from the sample → **you refine interactively** → lock into `tags.json`.
 3. Run enrich on the sample, eyeball tag quality, adjust vocab, repeat until good.
 4. Lock; run the full-group enrich loop.
 
@@ -312,10 +312,17 @@ dedupes/clamps and blanks an invalid content-type (review escape hatch). Vocab l
 > routed through `Backend.fill()` — the vocab proposal is a human-reviewed gate, not a per-item
 > automated fill. `calibrate.sample` writes `tmp/calibrate/prompt.txt`; the interactive gate
 > (`orchestrator/calibrate_gate.py`) then checks whether the selected backend exposes
-> `propose_vocab(prompt, model) -> dict`. If so (e.g. `claude-p`), it auto-drafts `proposed_tags.json`
-> and prints it for review; if not, it prompts you to write the file manually. In both cases you
-> accept / edit / abort, then `lock_vocab` merges the result into `config/tags.json` (D18). So
-> `enrich.backend` determines whether the draft is auto-generated, but the human lock always applies.
+> `propose_vocab(prompt, model) -> dict`. If so (e.g. `claude-p`) it auto-drafts the proposal;
+> otherwise it starts from an empty draft. Either way you enter an **interactive vocab editor**
+> (D28, built on `helpers/tui.py`): read-only cross-axis **context** → an **edit loop** (reject one
+> of the current group's granular topics / add a topic on any axis) → a merged **preview**
+> (`config/tags.py merge_vocab`, no write) → **Confirm / Go back / Edit current ($EDITOR on the
+> group proposal) / Edit all ($EDITOR on the whole `tags.json`) / Abort**. Confirm calls `lock_vocab`
+> (granular set outright, content-type/cross-group additive); removing or moving a **shared**
+> content-type/cross-group item is done via **Edit all** (the only path that writes `tags.json`
+> directly, since `lock_vocab` never removes a shared item). The gate is reachable inline (the
+> first-time loop) and **standalone** via `isa run --stage calibrate --group G`. So `enrich.backend`
+> determines whether the draft is auto-generated, but the human lock always applies (D18).
 
 ### 7.3 Cross-group items
 An item in collections spanning groups gets the **union** of its groups' granular vocab + cross-group,
@@ -467,6 +474,7 @@ keyboard-select prompts — see `helpers/tui.py` and D27.
 | D25 | `claude-p` automated backend (headless `claude -p`, Claude Max, default for the one-call orchestrator); the calibrate gate runs INLINE in both modes | Claude Max users have no API key; a headless subprocess gives `claude-code`-grade quality fully automated (`AUTOMATED=True`), vision-capable (reads slides by path), in-process with no relay. Running the calibrate gate inline (backend drafts via `propose_vocab` → human locks) makes `isa run --mode first-time` a true one-call pipeline (front-folds discover→ingest→select) instead of a multi-command manual sequence | `api`-only (needs a key); `claude-code` agent-filled loop (needs a driving session); incremental raising on uncalibrated groups (forces a separate first-time run) |
 | D26 | First-time runs confirm run-config interactively (seed `claude-p` default `run.json`, inline backend/model/effort or `$EDITOR` via `--select-mode`, then confirm); incremental stays silent | A truly fresh user must not silently run on the wrong backend — the loader defaults `enrich.backend` to `local` (title-only here) and requires the file to exist. This implements the long-documented §5/D7 "confirm model+effort at run start" as a gate, mirroring the select/calibrate gates. Incremental stays unattended/cron-able | Silent defaults (wrong backend, crash on missing file); a full field-by-field wizard (YAGNI — only backend/model/effort matter, rest via `$EDITOR`) |
 | D27 | Interactive gates use keyboard-select (questionary) via a shared `helpers/tui.py`: arrow-pick + per-option help + inline/`$EDITOR` mode-prompt + Proceed/Go back/Edit/Abort confirm (the collection gate adds a mid-loop "Edit the rest in $EDITOR" escape) | No-typing-by-default, self-documenting (per-option help), and consistent across the run-config and collection gates; tests monkeypatch the four `tui` primitives since questionary needs a TTY. The calibrate gate adopts the same helper next | Typed `input()` (error-prone, no discoverability); a full-screen prompt_toolkit form (YAGNI) |
+| D28 | Calibrate is an interactive vocab editor (context → reject/add → merged preview → confirm), reachable inline and via `--stage calibrate --group G`; `merge_vocab` (pure) powers both the preview and the lock; interactive reject is current-group granular only, shared-axis removal routes to "Edit all ($EDITOR)" | Structured reject/add with a live preview beats blind `$EDITOR` JSON editing; one merge definition means preview and lock can't drift; the additive `lock_vocab` cannot remove a shared content-type/cross-group item, so cross-group surgery is deliberately editor-only | Raw-JSON-only editing (no preview, error-prone); interactive cross-group removal (would need a non-additive lock, risking clobber across groups); a live multi-pane vocab TUI (YAGNI) |
 
 ---
 
