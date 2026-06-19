@@ -14,6 +14,7 @@ from insta_save.config.collections import (
     load_collections, merge_discovered, write_collections, UNCATEGORIZED,
 )
 from insta_save.helpers import tui
+from insta_save.helpers.observability import StageProgress
 from insta_save.snapshots import is_reusable, read_snapshot, write_snapshot
 
 # Sentinel values for the inline group picker — plain strings distinct from any real group name.
@@ -126,24 +127,35 @@ def _inline_pick_collections(collections_path, new_names) -> None:
 
 
 def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_collection,
-              fresh=False, names=None, max_age_min=360, now=None) -> list:
+              fresh=False, names=None, max_age_min=360, now=None, progress=None) -> list:
     """Crawl each collection grid → snapshot. Reuses complete+fresh snapshots unless
     `fresh`. `names` limits the set (None = all). Returns names skipped for missing ids."""
     targets = names or list(collections_cfg.collections)
     skipped = []
+    if progress is not None:
+        bar = progress.add_bar("crawling grids", total=len(targets))
     for name in targets:
         meta = collections_cfg.collections.get(name, {})
         slug, numeric_id = meta.get("slug"), meta.get("numeric_id")
         if not slug or not numeric_id:
             log.warning("discover: %s missing slug/numeric_id — skipping (run index first)", name)
             skipped.append(name)
+            if progress is not None:
+                progress.advance(bar)
             continue
+        if progress is not None:
+            progress.set_current("crawl", slug)
         if not fresh and is_reusable(read_snapshot(tmp_dir, slug), max_age_min, now=now):
             log.info("discover: reusing snapshot for %s", slug)
+            if progress is not None:
+                progress.advance(bar)
             continue
         posts, complete = crawl_fn(context, ig_username, slug, numeric_id)
         write_snapshot(tmp_dir, name=name, slug=slug, numeric_id=numeric_id,
                        posts=posts, complete=complete, now=now)
+        if progress is not None:
+            progress.bump("crawled", len(posts))
+            progress.advance(bar)
     return skipped
 
 
@@ -167,8 +179,10 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
             merged, new_names, missing, complete = refresh_collections_config(
                 context, ig_username, collections_path=collections_path, persist=persist)
             cfg = load_collections(collections_path)
-            skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
-                                tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min)
+            with StageProgress("discover") as progress:
+                skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
+                                    tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min,
+                                    progress=progress)
         finally:
             browser.close()
     # The collection gate runs OUTSIDE the Playwright context: questionary (tui) drives a

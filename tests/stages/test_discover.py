@@ -205,3 +205,18 @@ def test_run_discover_configures_unconfigured_collections(monkeypatch, tmp_path)
     discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
                           tmp_dir=str(tmp_path), headed=False)
     assert seen["names"] == ["B"]      # the still-uncategorized one is offered, despite no new names
+
+
+def test_crawl_all_advances_progress_per_collection(tmp_path):
+    from insta_save.stages import discover
+    cfg = type("C", (), {"collections": {
+        "A": {"slug": "a", "numeric_id": "1"}, "B": {"slug": "b", "numeric_id": "2"}}})()
+    bumps = {"n": 0, "current": []}
+    class _P:
+        def add_bar(self, d, total): return 1
+        def advance(self, bar): bumps["n"] += 1
+        def set_current(self, s, item): bumps["current"].append(item)
+        def bump(self, *a, **k): pass
+    discover.crawl_all(context=object(), ig_username="u", collections_cfg=cfg,
+                       tmp_dir=str(tmp_path), crawl_fn=lambda *a, **k: ([], True), progress=_P())
+    assert bumps["n"] == 2 and bumps["current"] == ["a", "b"]
