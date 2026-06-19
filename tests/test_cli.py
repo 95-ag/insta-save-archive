@@ -983,3 +983,17 @@ def test_mode_passes_nested_progress_factory(monkeypatch):
     from insta_save.helpers.observability import StageProgress
     prog = captured["pf"]("Extract · G")
     assert isinstance(prog, StageProgress) and prog._indent == 3
+
+
+def test_dispatch_mode_exits_cleanly_on_run_stopped(monkeypatch, capsys):
+    from insta_save.orchestrator.run_control import RunStopped
+    import insta_save.orchestrator.pipeline as pipeline_mod
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)
+    def _boom(*a, **k):
+        raise RunStopped()
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _boom)
+    isa._dispatch_mode(args)                          # must NOT raise (clean exit)
+    out = capsys.readouterr().out
+    assert "resume" in out.lower() and "isa run --mode first-time" in out

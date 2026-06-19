@@ -411,13 +411,20 @@ def _dispatch_mode(args) -> None:
         print(reminder)
 
     from insta_save.orchestrator.pipeline import run_pipeline
+    from insta_save.orchestrator import run_control
+    from insta_save.helpers.observability import flush_logs
     ig_username = env.ig_username or os.environ.get("IG_USERNAME", "")
-    plan = run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes,
-                        mode=args.mode, dry_run=args.dry_run,
-                        select_mode=getattr(args, "select_mode", "inline"),
-                        ig_username=ig_username, headed=args.headed,
-                        fresh=args.fresh, progress_factory=_nested_progress)
-
+    try:
+        with run_control.RunControl(mode=args.mode):
+            plan = run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes,
+                                mode=args.mode, dry_run=args.dry_run,
+                                select_mode=getattr(args, "select_mode", "inline"),
+                                ig_username=ig_username, headed=args.headed,
+                                fresh=args.fresh, progress_factory=_nested_progress)
+    except (run_control.RunStopped, KeyboardInterrupt):
+        flush_logs()
+        print(f"⏹  stopped · resume with: isa run --mode {args.mode}")
+        return
     _print_plan(plan, args.dry_run)
 
 
