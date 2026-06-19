@@ -90,3 +90,16 @@ def test_ensure_run_json_noop_when_present(tmp_path):
     _seed(p, backend="api")
     config_gate.ensure_run_json(p)
     assert json.loads(p.read_text(encoding="utf-8"))["enrich"]["backend"] == "api"
+
+
+def test_run_config_gate_framing(tmp_path, monkeypatch, capsys):
+    """Gate prints a stage_section header/footer rule and a ✔ outcome line."""
+    p = tmp_path / "run.json"
+    _seed(p, backend="cowork", model="m", effort="low")
+    _script(monkeypatch, selects=["inline", "claude-p", "high"],
+            others=["claude-sonnet", "english"], confirms=["proceed"])
+    config_gate.run_config_gate(load_run_config(p), path=p, select_mode="inline")
+    out = capsys.readouterr().out
+    assert "run config" in out          # stage_section header rule
+    assert "done · run config" in out   # stage_section footer rule
+    assert "✔" in out                   # outcome line printed

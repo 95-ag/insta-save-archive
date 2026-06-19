@@ -15,6 +15,7 @@ from pathlib import Path
 
 from insta_save.config.tags import lock_vocab, load_vocab, merge_vocab
 from insta_save.helpers import tui
+from insta_save.helpers.observability import stage_section, RULE_NESTED, INDENT
 from insta_save.stages import calibrate as _calibrate
 
 _SAMPLE_LIMIT = 20
@@ -161,41 +162,52 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
     proposed = _draft(env, run_cfg, backend, group)
     tags_path = _tags_path()
     current = json.loads(tags_path.read_text(encoding="utf-8")) if tags_path.exists() else {}
-    _print_context(proposed, group, current)
-    _edit_loop(proposed, group, current)
 
-    while True:                                    # preview <-> actions
-        merged = merge_vocab(current, group, proposed)
-        print(f"\n=== Preview: config/tags.json after locking {group} ===")
-        print(json.dumps(merged, ensure_ascii=False, indent=2))
-        action = tui.confirm_action("Lock this vocab?", [
-            ("Confirm", "confirm", "write it and continue"),
-            ("Go back", "back", "return to the edit loop"),
-            ("Edit current in $EDITOR", "edit_current", "hand-edit this group's proposal"),
-            ("Edit all in $EDITOR", "edit_all", "hand-edit the whole tags.json (can remove shared items)"),
-            ("Abort", "abort", "exit, nothing locked"),
-        ])
-        if action in (None, "abort"):
-            raise SystemExit(f"calibrate gate: aborted for group {group!r} — nothing locked")
-        if action == "confirm":
-            lock_vocab(group, proposed, path=tags_path)
-            return load_vocab(path=tags_path)
-        if action == "back":
-            _edit_loop(proposed, group, current)
-            continue
-        if action == "edit_current":
-            pp = _proposed_path(env)
-            pp.write_text(json.dumps(proposed, ensure_ascii=False, indent=2), encoding="utf-8")
-            _editor(pp)
-            try:
-                proposed = json.loads(pp.read_text(encoding="utf-8"))
-            except (ValueError, json.JSONDecodeError) as exc:
-                print(f"  invalid proposed JSON: {exc} — discarding that edit")
-            continue
-        if action == "edit_all":
-            _editor(tags_path)
-            try:
-                return load_vocab(path=tags_path)   # the editor IS the write; nothing to lock
-            except Exception as exc:
-                print(f"  invalid tags.json: {exc} — re-edit")
+    pad = " " * INDENT
+    with stage_section(f"calibrate · {group}", width=RULE_NESTED, indent=INDENT):
+        _print_context(proposed, group, current)
+        _edit_loop(proposed, group, current)
+
+        while True:                                    # preview <-> actions
+            merged = merge_vocab(current, group, proposed)
+            print(f"\n=== Preview: config/tags.json after locking {group} ===")
+            print(json.dumps(merged, ensure_ascii=False, indent=2))
+            action = tui.confirm_action("Lock this vocab?", [
+                ("Confirm", "confirm", "write it and continue"),
+                ("Go back", "back", "return to the edit loop"),
+                ("Edit current in $EDITOR", "edit_current", "hand-edit this group's proposal"),
+                ("Edit all in $EDITOR", "edit_all", "hand-edit the whole tags.json (can remove shared items)"),
+                ("Abort", "abort", "exit, nothing locked"),
+            ])
+            if action in (None, "abort"):
+                raise SystemExit(f"calibrate gate: aborted for group {group!r} — nothing locked")
+            if action == "confirm":
+                lock_vocab(group, proposed, path=tags_path)
+                vocab = load_vocab(path=tags_path)
+                n_types = len(vocab.content_types)
+                n_topics = len(vocab.group_topics(group))
+                print(f"{pad}✔ locked {n_types} types · {n_topics} topics")
+                return vocab
+            if action == "back":
+                _edit_loop(proposed, group, current)
                 continue
+            if action == "edit_current":
+                pp = _proposed_path(env)
+                pp.write_text(json.dumps(proposed, ensure_ascii=False, indent=2), encoding="utf-8")
+                _editor(pp)
+                try:
+                    proposed = json.loads(pp.read_text(encoding="utf-8"))
+                except (ValueError, json.JSONDecodeError) as exc:
+                    print(f"  invalid proposed JSON: {exc} — discarding that edit")
+                continue
+            if action == "edit_all":
+                _editor(tags_path)
+                try:
+                    vocab = load_vocab(path=tags_path)   # the editor IS the write; nothing to lock
+                    n_types = len(vocab.content_types)
+                    n_topics = len(vocab.group_topics(group)) if vocab.has_group(group) else 0
+                    print(f"{pad}✔ locked {n_types} types · {n_topics} topics")
+                    return vocab
+                except Exception as exc:
+                    print(f"  invalid tags.json: {exc} — re-edit")
+                    continue

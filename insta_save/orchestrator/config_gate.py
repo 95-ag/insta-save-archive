@@ -12,6 +12,7 @@ from pathlib import Path
 
 from insta_save.config.run import load_run_config, _DEFAULT_RUN
 from insta_save.helpers import tui
+from insta_save.helpers.observability import stage_section, RULE_TOP
 
 DEFAULT_RUN_TEMPLATE = {
     "mode": "first-time",
@@ -101,24 +102,27 @@ def run_config_gate(run_cfg, *, path=_DEFAULT_RUN, select_mode="inline"):
     ], default=("editor" if select_mode == "editor" else "inline"))
     if mode is None:
         raise SystemExit("run-config gate: aborted")
-    while True:
-        if mode == "editor":
-            _editor_edit(path)
-        else:
-            _inline_pick(path, run_cfg)
-        try:
-            run_cfg = load_run_config(path)
-        except (ValueError, json.JSONDecodeError) as exc:
-            print(f"  invalid run.json: {exc} — re-edit"); mode = "editor"; continue
-        _show(run_cfg)
-        action = tui.confirm_action("Proceed?", [
-            ("Confirm", "proceed", "preflight, then the pipeline"),
-            ("Go back", "back", "re-pick the fields inline"),
-            ("Edit in $EDITOR", "editor", "edit the whole run.json"),
-            ("Abort", "abort", "exit, nothing runs"),
-        ])
-        if action in (None, "abort"):
-            raise SystemExit("run-config gate: aborted")
-        if action == "proceed":
-            return run_cfg
-        mode = "inline" if action == "back" else "editor"
+    with stage_section("run config", width=RULE_TOP):
+        while True:
+            if mode == "editor":
+                _editor_edit(path)
+            else:
+                _inline_pick(path, run_cfg)
+            try:
+                run_cfg = load_run_config(path)
+            except (ValueError, json.JSONDecodeError) as exc:
+                print(f"  invalid run.json: {exc} — re-edit"); mode = "editor"; continue
+            _show(run_cfg)
+            action = tui.confirm_action("Proceed?", [
+                ("Confirm", "proceed", "preflight, then the pipeline"),
+                ("Go back", "back", "re-pick the fields inline"),
+                ("Edit in $EDITOR", "editor", "edit the whole run.json"),
+                ("Abort", "abort", "exit, nothing runs"),
+            ])
+            if action in (None, "abort"):
+                raise SystemExit("run-config gate: aborted")
+            if action == "proceed":
+                e = run_cfg.enrich
+                print(f"  ✔ {e.backend} / {e.model} / {e.effort} · {run_cfg.output_language}")
+                return run_cfg
+            mode = "inline" if action == "back" else "editor"

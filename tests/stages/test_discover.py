@@ -207,6 +207,37 @@ def test_run_discover_configures_unconfigured_collections(monkeypatch, tmp_path)
     assert seen["names"] == ["B"]      # the still-uncategorized one is offered, despite no new names
 
 
+def test_run_discover_collection_gate_framing(monkeypatch, tmp_path, capsys):
+    """Collection gate wraps run_inline_select in a stage_section — header and footer rules appear."""
+    class _PW:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Browser:
+        def close(self): pass
+
+    import playwright.sync_api as pwmod
+    import insta_save.adapters.instagram.session as sess
+    monkeypatch.setattr(pwmod, "sync_playwright", lambda: _PW())
+    monkeypatch.setattr(sess, "prepare_display", lambda env: None)
+    monkeypatch.setattr(sess, "ensure_authenticated", lambda pw, env, headless: (_Browser(), object()))
+    merged = {"groups": ["uncategorized"], "collections": {
+        "A": {"group": "uncategorized", "extract": False, "slug": "a", "numeric_id": "1"}}}
+    monkeypatch.setattr(discover, "refresh_collections_config",
+                        lambda *a, **k: (merged, ["A"], [], True))
+    monkeypatch.setattr(discover, "load_collections", lambda p: object())
+    monkeypatch.setattr(discover, "crawl_all", lambda **k: [])
+    # stub run_inline_select so no real tui interaction occurs
+    monkeypatch.setattr(discover, "run_inline_select", lambda *a, **k: None)
+
+    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
+                          tmp_dir=str(tmp_path), headed=False)
+    out = capsys.readouterr().out
+    assert "configure collections" in out           # stage_section header rule
+    assert "done · configure collections" in out    # stage_section footer rule
+
+
 def test_crawl_all_advances_progress_per_collection(tmp_path):
     from insta_save.stages import discover
     cfg = type("C", (), {"collections": {

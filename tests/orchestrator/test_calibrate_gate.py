@@ -122,3 +122,20 @@ def test_edit_all_loads_without_lock(tmp_path, monkeypatch):
     vocab = _run(tags, monkeypatch)
     assert vocab.group_topics("G") == ["edited"] and "shared" in vocab.cross_group_topics
     assert called["lock"] is False                # edit-all does NOT route through lock_vocab
+
+
+def test_calibrate_gate_framing(tmp_path, monkeypatch, capsys):
+    """Gate prints nested stage_section header/footer rules and an indented ✔ outcome line."""
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["done"])
+    _confirms(monkeypatch, ["confirm"])
+    _run(tags, monkeypatch)
+    out = capsys.readouterr().out
+    assert "calibrate · G" in out           # nested stage_section header rule
+    assert "done · calibrate · G" in out    # nested stage_section footer rule
+    assert "✔" in out                       # outcome line printed
+    # ✔ line is indented (leading spaces before the checkmark)
+    for line in out.splitlines():
+        if "✔" in line:
+            assert line.startswith(" "), "✔ outcome line must be indented"
+            break
