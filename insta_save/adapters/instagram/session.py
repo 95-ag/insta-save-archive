@@ -177,7 +177,10 @@ def ensure_authenticated(
     On first run: opens a browser window for manual login, saves cookies.
     On subsequent runs: loads cookies and validates — re-auths only if needed.
     Re-auth always runs headed (requires visible browser for manual login).
-    If called headless and cookies are expired, relaunches headed automatically.
+    If called headless and cookies are expired, relaunches headed automatically for
+    the login, then relaunches headless once cookies are saved — so only the login
+    prompt is visible and the crawl/extract that follows runs headless. An explicit
+    headed caller (--headed) stays headed throughout.
 
     The caller is responsible for closing the browser when done.
     """
@@ -214,6 +217,19 @@ def ensure_authenticated(
             time.sleep(1)
         log.info("session: status=expired — starting re-auth")
         _run_login(page, context, cookies_file)
+        if headless:
+            # Re-auth needs a visible window, but the caller asked for headless — switch
+            # back now that cookies are saved so the long crawl/extract runs headless
+            # (this mirrors a normal warm start: headless browser + saved cookies).
+            log.info("session: re-auth complete — relaunching headless for the run")
+            page.close()
+            browser.close()
+            browser = _launch_browser(playwright, env, headless=True)
+            context = _new_context(browser)
+            _load_cookies(context, cookies_file)
+            page = context.new_page()
+            page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+            time.sleep(1)
 
     page.close()
     return browser, context
