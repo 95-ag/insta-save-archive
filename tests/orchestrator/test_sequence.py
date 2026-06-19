@@ -519,3 +519,24 @@ def test_incremental_dry_run(monkeypatch):
 
     assert plan.next_action is not None
     assert calls == {"extract": [], "enrich": [], "route": []}
+
+
+# ---------------------------------------------------------------------------
+# _tally: Imported items NOT on extract path count in deterministic[g]
+# ---------------------------------------------------------------------------
+
+def test_tally_counts_deterministic_pending(monkeypatch):
+    from insta_save.orchestrator import sequence
+    cfg = type("C", (), {
+        "groups": ["Lifestyle"],
+        "group_of": lambda self, c: "Lifestyle",
+        "is_extract_path": lambda self, cols: False,   # deterministic branch
+        "enrich_group": lambda self, cols: None,
+    })()
+    pages = [{"status": "Imported", "collections": ["BLR"]},
+             {"status": "Imported", "collections": ["BLR"]}]
+    monkeypatch.setattr(sequence, "_parse_page",
+                        lambda p: (p["status"], p["collections"]))
+    queued, enrichable, tagged, deterministic = sequence._tally(pages, cfg)
+    assert deterministic == {"Lifestyle": 2}
+    assert queued == {} and enrichable == {} and tagged == {}

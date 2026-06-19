@@ -53,15 +53,17 @@ def _parse_page(page: dict) -> tuple[str | None, list[str]]:
     return status, collections
 
 
-def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict]:
-    """Single-pass tally: queued[g], enrichable[g], tagged[g] for all groups.
+def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict, dict]:
+    """Single-pass tally: queued[g], enrichable[g], tagged[g], deterministic[g] for all groups.
 
     queued and tagged use group membership (any collection in the group).
     enrichable uses enrich_group (the LAST extract group — cross-group assignment).
+    deterministic counts Imported items NOT on the extract path, bucketed by group membership.
     """
     queued: dict[str, int] = {}
     enrichable: dict[str, int] = {}
     tagged: dict[str, int] = {}
+    deterministic: dict[str, int] = {}
 
     for page in pages:
         status, collections = _parse_page(page)
@@ -89,7 +91,16 @@ def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict]:
                     seen_groups_t.add(g)
                     tagged[g] = tagged.get(g, 0) + 1
 
-    return queued, enrichable, tagged
+        elif status == "Imported":
+            if not collections_cfg.is_extract_path(collections):
+                seen_d: set[str] = set()
+                for c in collections:
+                    g = collections_cfg.group_of(c)
+                    if g not in seen_d:
+                        seen_d.add(g)
+                        deterministic[g] = deterministic.get(g, 0) + 1
+
+    return queued, enrichable, tagged, deterministic
 
 
 def _backend_name(backend) -> str:
@@ -165,7 +176,7 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
     routing_enabled = bool(routes.by_tag or routes.by_collection or routes.by_group)
 
     pages = query_all_pages(env)
-    queued, enrichable, tagged = _tally(pages, collections_cfg)
+    queued, enrichable, tagged, deterministic = _tally(pages, collections_cfg)
 
     steps = [
         _step_for_group(group, queued, enrichable, tagged, vocab, backend, routing_enabled)
