@@ -359,6 +359,12 @@ def _has_collections() -> bool:
     return Path("config/collections.json").exists()
 
 
+def _nested_progress(label: str):
+    """Factory for nested (level=1) StageProgress bars used by the sequencer's per-group stages."""
+    from insta_save.helpers.observability import StageProgress, RULE_NESTED
+    return StageProgress(label, width=RULE_NESTED, level=1)
+
+
 def _dispatch_mode(args) -> None:
     """Run the pipeline in first-time or incremental mode (no --stage given)."""
     env = _load_env()
@@ -410,7 +416,7 @@ def _dispatch_mode(args) -> None:
                         mode=args.mode, dry_run=args.dry_run,
                         select_mode=getattr(args, "select_mode", "inline"),
                         ig_username=ig_username, headed=args.headed,
-                        fresh=args.fresh)
+                        fresh=args.fresh, progress_factory=_nested_progress)
 
     _print_plan(plan, args.dry_run)
 

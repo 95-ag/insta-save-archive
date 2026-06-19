@@ -963,3 +963,23 @@ def test_mode_agent_enrich_gate_prints_dry_run_label(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "NEXT (manual)" in out
     assert "(dry-run)" in out
+
+
+def test_mode_passes_nested_progress_factory(monkeypatch):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)
+    captured = {}
+    import insta_save.orchestrator.pipeline as pipeline_mod
+
+    def _fake_pipeline(env, run_cfg, cols, vocab, backend, routes, *, mode, dry_run=False,
+                       select_mode="inline", ig_username=None, headed=False, fresh=False,
+                       progress_factory=None):
+        captured["pf"] = progress_factory
+        return plan
+
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)
+    isa._dispatch_mode(args)
+    from insta_save.helpers.observability import StageProgress
+    prog = captured["pf"]("Extract · G")
+    assert isinstance(prog, StageProgress) and prog._indent == 3
