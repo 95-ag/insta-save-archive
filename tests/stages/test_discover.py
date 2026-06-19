@@ -238,6 +238,53 @@ def test_run_discover_collection_gate_framing(monkeypatch, tmp_path, capsys):
     assert "done · configure collections" in out    # stage_section footer rule
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _disc_recording_cm(events):
+    events.append("enter")
+    try:
+        yield
+    finally:
+        events.append("exit")
+
+
+def test_run_discover_wraps_collection_gate_in_run_control_gate(monkeypatch, tmp_path):
+    from insta_save.stages import discover
+    from insta_save.orchestrator import run_control
+    events = []
+    monkeypatch.setattr(run_control, "gate", lambda: _disc_recording_cm(events))
+
+    class _PW:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Browser:
+        def close(self): pass
+
+    import playwright.sync_api as pwmod
+    import insta_save.adapters.instagram.session as sess
+    monkeypatch.setattr(pwmod, "sync_playwright", lambda: _PW())
+    monkeypatch.setattr(sess, "prepare_display", lambda env: None)
+    monkeypatch.setattr(sess, "ensure_authenticated", lambda pw, env, headless: (_Browser(), object()))
+    # refresh returns NO new names but a merged file with an unconfigured (uncategorized) collection
+    merged = {"groups": ["uncategorized"], "collections": {
+        "A": {"group": "Biz", "extract": True, "slug": "a", "numeric_id": "1"},
+        "B": {"group": "uncategorized", "extract": False, "slug": "b", "numeric_id": "2"}}}
+    monkeypatch.setattr(discover, "refresh_collections_config",
+                        lambda *a, **k: (merged, [], [], True))
+    monkeypatch.setattr(discover, "load_collections", lambda p: object())
+    monkeypatch.setattr(discover, "crawl_all", lambda **k: [])
+    monkeypatch.setattr(discover, "run_inline_select",
+                        lambda *a, **k: events.append("gate-body"))
+
+    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
+                          tmp_dir=str(tmp_path), headed=False)
+    assert events == ["enter", "gate-body", "exit"]
+
+
 def test_crawl_all_advances_progress_per_collection(tmp_path):
     from insta_save.stages import discover
     cfg = type("C", (), {"collections": {

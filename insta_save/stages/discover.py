@@ -14,6 +14,7 @@ from insta_save.config.collections import (
     load_collections, merge_discovered, write_collections, UNCATEGORIZED,
 )
 from insta_save.helpers import tui
+from insta_save.orchestrator import run_control
 from insta_save.helpers.observability import StageProgress, stage_section, RULE_TOP
 from insta_save.snapshots import is_reusable, read_snapshot, write_snapshot
 
@@ -195,6 +196,7 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
                         if meta.get("group", UNCATEGORIZED) == UNCATEGORIZED]
         to_configure = sorted(set(new_names) | set(unconfigured))
         with stage_section("configure collections", width=RULE_TOP):
-            run_inline_select(collections_path, to_configure, select_mode=select_mode)
+            with run_control.gate():
+                run_inline_select(collections_path, to_configure, select_mode=select_mode)
             print(f"  ✔ collections.json updated · {len(to_configure)} collections")
     return {"new": new_names, "missing": missing, "index_complete": complete, "skipped": skipped}

@@ -25,6 +25,7 @@ from rich.console import Console
 
 from insta_save.adapters.notion import query_all_pages
 from insta_save.helpers.observability import RULE_TOP, render_rule
+from insta_save.orchestrator import run_control
 from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.stages import enrich as _enrich_stage
 from insta_save.stages.extract import run_extract_stage
@@ -239,6 +240,7 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     current_group: str | None = None
 
     while True:
+        run_control.checkpoint()
         plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
 
         if plan.done:
@@ -257,8 +259,9 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
 
         if not step.automated:
             if step.action == "calibrate" and interactive:
-                vocab = run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
-                                           backend=backend, group=step.group)
+                with run_control.gate():
+                    vocab = run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
+                                               backend=backend, group=step.group)
                 continue  # re-plan with the now-calibrated vocab; band stays open
             # Agent-filled enrich (or non-interactive): return the plan as a gate.
             _band(current_group, collections_cfg, done=True)

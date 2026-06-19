@@ -567,6 +567,52 @@ def test_tally_counts_deterministic_pending(monkeypatch):
 # Group bands: _run_loop emits ═ rules on group open and close
 # ---------------------------------------------------------------------------
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _recording_cm(events):
+    events.append("enter")
+    try:
+        yield
+    finally:
+        events.append("exit")
+
+
+def test_run_loop_stops_between_steps(monkeypatch):
+    from insta_save.orchestrator import sequence
+    from insta_save.orchestrator.run_control import RunControl, RunStopped
+    rc = RunControl(mode="first-time")
+    rc.request_stop()
+    monkeypatch.setattr(sequence, "compute_plan",
+                        lambda *a, **k: _plan([{"group": "G", "action": "extract", "automated": True}]))
+    monkeypatch.setattr(sequence, "_execute_step", lambda *a, **k: None)
+    cfg = type("C", (), {"groups": ["G"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    with rc:
+        with pytest.raises(RunStopped):
+            sequence._run_loop(object(), run_cfg, cfg, object(), object(), object())
+
+
+def test_run_loop_wraps_calibrate_gate_in_run_control_gate(monkeypatch):
+    from insta_save.orchestrator import sequence, run_control
+    events = []
+    monkeypatch.setattr(run_control, "gate", lambda: _recording_cm(events))
+    steps = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(steps))
+    monkeypatch.setattr(sequence, "run_calibrate_gate",
+                        lambda *a, **k: (events.append("gate-body"), object())[1])
+    cfg = type("C", (), {"groups": ["G"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence._run_loop(object(), run_cfg, cfg, object(), object(), object(), interactive=True)
+    assert events == ["enter", "gate-body", "exit"]
+
+
 def test_run_loop_prints_group_band_on_group_change(monkeypatch, capsys):
     from insta_save.orchestrator import sequence
     steps = iter([
