@@ -5,11 +5,12 @@ to its next pipeline action according to the rule table in the module docstring.
 The result is a Plan whose `next_action` the orchestrator runs next.
 
 Rule table (first match wins, per group):
-  1. queued[g] > 0                          → extract   (automated)
-  2. enrichable[g] > 0, NOT calibrated      → calibrate (human gate)
-  3. enrichable[g] > 0, calibrated          → enrich    (automated iff backend.AUTOMATED)
-  4. routing_enabled AND tagged[g] > 0      → route     (automated)
-  5. else                                   → done
+  1. queued[g] > 0                          → extract       (automated)
+  2. enrichable[g] > 0, NOT calibrated      → calibrate     (human gate)
+  3. enrichable[g] > 0, calibrated          → enrich        (automated iff backend.AUTOMATED)
+  4. deterministic[g] > 0                   → deterministic (automated iff title_mode=template)
+  5. routing_enabled AND tagged[g] > 0      → route         (automated)
+  6. else                                   → done
 
 Count semantics:
   queued[g]     — Queued items whose ANY collection maps to group g (membership)
@@ -32,7 +33,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class GroupStep:
     group: str
-    action: str    # "extract" | "calibrate" | "enrich" | "route" | "done"
+    action: str    # "extract" | "calibrate" | "enrich" | "deterministic" | "route" | "done"
     automated: bool  # True if the sequencer can run it now; False = human/agent gate
     detail: str    # human-facing one-liner
 
@@ -112,9 +113,11 @@ def _step_for_group(
     queued: dict,
     enrichable: dict,
     tagged: dict,
+    deterministic: dict,
     vocab,
     backend,
     routing_enabled: bool,
+    det_automated: bool = True,
 ) -> GroupStep:
     """Apply the rule table and return the GroupStep for one group."""
     name = _backend_name(backend)
@@ -141,6 +144,14 @@ def _step_for_group(
             action="enrich",
             automated=backend.AUTOMATED,
             detail=f"enrich {enrichable[group]} items via {name}",
+        )
+
+    if deterministic.get(group, 0) > 0:
+        return GroupStep(
+            group=group,
+            action="deterministic",
+            automated=det_automated,
+            detail=f"tag {deterministic[group]} deterministic items",
         )
 
     if routing_enabled and tagged.get(group, 0) > 0:
@@ -174,12 +185,15 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
         Plan with per-group steps in collections_cfg.groups order, next_action, and done flag.
     """
     routing_enabled = bool(routes.by_tag or routes.by_collection or routes.by_group)
+    det_title_mode = getattr(run_cfg, "deterministic_title_mode", "template") if run_cfg is not None else "template"
+    det_automated = det_title_mode == "template"
 
     pages = query_all_pages(env)
     queued, enrichable, tagged, deterministic = _tally(pages, collections_cfg)
 
     steps = [
-        _step_for_group(group, queued, enrichable, tagged, vocab, backend, routing_enabled)
+        _step_for_group(group, queued, enrichable, tagged, deterministic,
+                        vocab, backend, routing_enabled, det_automated)
         for group in collections_cfg.groups
     ]
 
@@ -266,6 +280,11 @@ def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
             env, run_cfg, collections_cfg, vocab, backend, step.group,
             progress_factory=progress_factory,
         )
+
+    elif step.action == "deterministic":
+        from insta_save.stages.deterministic import run_deterministic_stage
+        with pf(f"Deterministic · {step.group}") as progress:
+            run_deterministic_stage(env, collections_cfg, progress, group=step.group)
 
     elif step.action == "route":
         write_delay = getattr(env, "notion_write_delay", 0.0)

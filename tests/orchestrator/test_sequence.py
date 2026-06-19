@@ -525,6 +525,27 @@ def test_incremental_dry_run(monkeypatch):
 # _tally: Imported items NOT on extract path count in deterministic[g]
 # ---------------------------------------------------------------------------
 
+def test_step_for_group_returns_deterministic_when_pending():
+    from insta_save.orchestrator import sequence
+    vocab = type("V", (), {"has_group": lambda self, g: True})()
+    backend = SimpleNamespace(NAME="claude-p", AUTOMATED=True)
+    step = sequence._step_for_group("Lifestyle", {}, {}, {}, {"Lifestyle": 5},
+                                    vocab, backend, routing_enabled=False, det_automated=True)
+    assert step.action == "deterministic" and step.automated is True
+
+
+def test_execute_step_runs_deterministic_stage(monkeypatch):
+    from insta_save.orchestrator import sequence
+    called = {}
+    monkeypatch.setattr("insta_save.stages.deterministic.run_deterministic_stage",
+                        lambda env, cfg, progress, *, group=None: called.update(group=group))
+    step = sequence.GroupStep(group="Lifestyle", action="deterministic",
+                              automated=True, detail="")
+    sequence._execute_step(object(), SimpleNamespace(extract=None), object(), object(),
+                           SimpleNamespace(NAME="x", AUTOMATED=True), object(), step, None)
+    assert called["group"] == "Lifestyle"
+
+
 def test_tally_counts_deterministic_pending(monkeypatch):
     from insta_save.orchestrator import sequence
     cfg = type("C", (), {
