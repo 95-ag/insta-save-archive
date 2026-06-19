@@ -144,3 +144,31 @@ def test_write_delay_not_called_on_failure(monkeypatch):
 
     assert counts["failed"] == 1
     assert sleep_calls == []
+
+
+import pytest
+from insta_save.orchestrator.run_control import RunControl, RunStopped
+
+
+class _FakeProgress:
+    def add_bar(self, label, total): return 1
+    def advance(self, bar): pass
+    def set_current(self, *a): pass
+    def bump(self, *a, **k): pass
+
+
+def test_run_priority_stage_stops_between_items(monkeypatch):
+    rc = RunControl(mode="first-time")
+    processed = []
+    def _proc(env, item, ctx):
+        processed.append(item["page_id"])
+        rc.request_stop()                       # simulate 'q' during item 1
+        return "done"
+    # Two same-priority items so the second item's checkpoint fires.
+    monkeypatch.setattr(runner, "query_by_status_and_priority",
+                        lambda env, status, pri: ([{"page_id": "p1"}, {"page_id": "p2"}]
+                                                  if pri == "High" else []))
+    with rc:
+        with pytest.raises(RunStopped):
+            runner.run_priority_stage(object(), "Queued", _proc, _FakeProgress())
+    assert processed == ["p1"]                  # stopped before p2

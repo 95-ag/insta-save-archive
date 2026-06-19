@@ -26,6 +26,7 @@ import logging
 import time
 
 from insta_save.adapters.notion import query_by_status_and_priority
+from insta_save.orchestrator import run_control
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ def run_priority_stage(
 
     current_bucket = "__unset__"
     for item in items:
+        run_control.checkpoint()
         if item["priority"] != current_bucket:
             current_bucket = item["priority"]
             log.info("runner: bucket %s", _bucket_label(current_bucket))
