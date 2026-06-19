@@ -17,7 +17,7 @@ from insta_save.adapters.notion import (get_page_content, query_by_status_and_pr
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
 from insta_save.config.tags import allowed_topics, union_topics
-from insta_save.orchestrator import guardrails
+from insta_save.orchestrator import guardrails, run_control
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
@@ -264,6 +264,7 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
         stop_reason = "drained"
 
         while True:
+            run_control.checkpoint()
             progress_ctx = progress_factory(f"Enrich prepare · {lane_name}") \
                 if progress_factory else _NullContext()
             with progress_ctx as progress:

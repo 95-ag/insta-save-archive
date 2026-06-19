@@ -1,6 +1,7 @@
 # tests/stages/test_enrich.py
 import json
 import types
+import pytest
 from insta_save.stages import enrich
 from insta_save.config.collections import CollectionsConfig
 from insta_save.config.tags import Vocab
@@ -563,3 +564,36 @@ def test_drain_enrich_group_non_api_ignores_spend_cap(tmp_path, monkeypatch):
 
     enrich.drain_enrich_group(env, run_cfg, _Cols(), _vocab(), _NonApiBacked(), "Hustling")
     assert fill_called == [1], "fill must be called for non-api backend regardless of spend cap"
+
+
+def test_drain_enrich_group_stops_between_batches(tmp_path, monkeypatch):
+    """checkpoint() at the top of the while-True fires between batches: after apply writes,
+    before the next prepare/fill.  RunStopped propagates out and only one batch runs."""
+    from insta_save.orchestrator.run_control import RunControl, RunStopped
+
+    rc = RunControl(mode="first-time")
+    calls = {"prepare": 0, "apply": 0}
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return 1  # one item batched — never 0, so drain-check cannot fire
+
+    def _apply(*a, **k):
+        calls["apply"] += 1
+        rc.request_stop()  # simulate 'q' pressed during batch 1
+        return {"written": 1}  # written>0 so no-progress guard does NOT fire
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    monkeypatch.setattr(enrich, "apply", _apply)
+
+    backend = _fake_backend(vision_capable=False)
+
+    with rc:
+        with pytest.raises(RunStopped):
+            enrich.drain_enrich_group(
+                _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling"
+            )
+
+    # checkpoint fires at the TOP of iteration 2 → stopped before a 2nd prepare
+    assert calls["prepare"] == 1
+    assert calls["apply"] == 1
