@@ -391,7 +391,7 @@ def test_loop_runs_calibrate_gate_then_continues(monkeypatch):
     monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
     calls = _patch_stages(monkeypatch)
     gate_calls = {"n": 0}
-    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group):
         gate_calls["n"] += 1
         return _fake_vocab("G")  # now calibrated
     monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
@@ -469,7 +469,7 @@ def test_incremental_calibrate_runs_gate(monkeypatch):
     monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
     calls = _patch_stages(monkeypatch)
     gate_calls = {"n": 0}
-    def fake_gate(env, run_cfg, *, collections_cfg, backend, group, prompt_input=input):
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group):
         gate_calls["n"] += 1
         return _fake_vocab("G")
     monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
