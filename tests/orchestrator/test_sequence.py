@@ -561,3 +561,24 @@ def test_tally_counts_deterministic_pending(monkeypatch):
     queued, enrichable, tagged, deterministic = sequence._tally(pages, cfg)
     assert deterministic == {"Lifestyle": 2}
     assert queued == {} and enrichable == {} and tagged == {}
+
+
+# ---------------------------------------------------------------------------
+# Group bands: _run_loop emits ═ rules on group open and close
+# ---------------------------------------------------------------------------
+
+def test_run_loop_prints_group_band_on_group_change(monkeypatch, capsys):
+    from insta_save.orchestrator import sequence
+    steps = iter([
+        _plan([{"group": "Hustling", "action": "extract", "automated": True}]),
+        _plan([{"group": "Biz", "action": "extract", "automated": True}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(steps))
+    monkeypatch.setattr(sequence, "_execute_step", lambda *a, **k: None)
+    cfg = type("C", (), {"groups": ["Hustling", "Biz"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence._run_loop(object(), run_cfg, cfg, object(), object(), object())
+    out = capsys.readouterr().out
+    assert "Hustling" in out and "Biz" in out and out.count("═") > 0 and "done · Biz" in out

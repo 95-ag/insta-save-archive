@@ -21,7 +21,10 @@ Count semantics:
 import logging
 from dataclasses import dataclass
 
+from rich.console import Console
+
 from insta_save.adapters.notion import query_all_pages
+from insta_save.helpers.observability import RULE_TOP, render_rule
 from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.stages import enrich as _enrich_stage
 from insta_save.stages.extract import run_extract_stage
@@ -207,6 +210,17 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
 # Sequencer execution
 # ---------------------------------------------------------------------------
 
+_console = Console()
+
+
+def _band(group, collections_cfg, *, done: bool) -> None:
+    """Print a heavy ═ rule banding a group open (done=False) or closed (done=True)."""
+    idx = list(collections_cfg.groups).index(group) + 1
+    total = len(collections_cfg.groups)
+    label = f"done · {group}" if done else f"group · {group}"
+    _console.print(render_rule(label, width=RULE_TOP, char="═", index=(idx, total)))
+
+
 def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
               progress_factory=None, interactive=False) -> Plan:
     """Inner loop shared by run_first_time and run_incremental.
@@ -222,21 +236,32 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                      enrich steps always return as a gate regardless of this flag.
     """
     executed: set[tuple[str, str]] = set()
+    current_group: str | None = None
 
     while True:
         plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
 
         if plan.done:
+            if current_group is not None:
+                _band(current_group, collections_cfg, done=True)
             return plan
 
         step = plan.next_action
+
+        # Open/close group bands on group transitions.
+        if step.group != current_group:
+            if current_group is not None:
+                _band(current_group, collections_cfg, done=True)
+            _band(step.group, collections_cfg, done=False)
+            current_group = step.group
 
         if not step.automated:
             if step.action == "calibrate" and interactive:
                 vocab = run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
                                            backend=backend, group=step.group)
-                continue  # re-plan with the now-calibrated vocab
+                continue  # re-plan with the now-calibrated vocab; band stays open
             # Agent-filled enrich (or non-interactive): return the plan as a gate.
+            _band(current_group, collections_cfg, done=True)
             return plan
 
         key = (step.group, step.action)
@@ -249,6 +274,7 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                 "the stage ran but state did not advance; returning current plan",
                 step.group, step.action,
             )
+            _band(current_group, collections_cfg, done=True)
             return plan
 
         executed.add(key)
