@@ -41,3 +41,22 @@ def test_entering_runcontrol_activates_module_checkpoint():
 def test_gate_is_noop_context_when_inactive():
     with run_control.gate():
         pass                            # must not raise with no active control
+
+
+import signal
+
+
+def test_sigint_once_requests_stop(monkeypatch):
+    rc = RunControl(mode="first-time")
+    monkeypatch.setattr(signal, "signal", lambda *a, **k: signal.SIG_DFL)  # don't touch real handlers
+    rc._on_sigint(signal.SIGINT, None)
+    with pytest.raises(RunStopped):
+        rc.checkpoint()
+
+
+def test_sigint_twice_restores_and_raises(monkeypatch):
+    rc = RunControl(mode="first-time")
+    monkeypatch.setattr(signal, "signal", lambda *a, **k: signal.SIG_DFL)
+    rc._on_sigint(signal.SIGINT, None)
+    with pytest.raises(KeyboardInterrupt):
+        rc._on_sigint(signal.SIGINT, None)   # second press forces

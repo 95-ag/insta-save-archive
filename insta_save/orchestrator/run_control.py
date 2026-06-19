@@ -12,6 +12,7 @@ standalone ``--stage`` commands and tests are unaffected.
 Notion (client-per-call) and claude-p (subprocess-per-batch) hold nothing at the
 boundaries, so the only active teardown on pause/stop is an explicit log flush.
 """
+import signal
 import threading
 from contextlib import contextmanager
 
@@ -31,6 +32,8 @@ class RunControl:
         self._resume = threading.Event()
         self._resume.set()              # set = running, clear = paused
         self._stop = False
+        self._sigint_count = 0
+        self._prev_sigint = None
 
     # --- state transitions (called by the key-listener and the signal handler) ---
     def request_pause_toggle(self) -> None:
@@ -64,14 +67,39 @@ class RunControl:
     def resume_keys(self) -> None:
         pass
 
+    # --- SIGINT handler: first press = graceful stop, second = force ---
+    def _on_sigint(self, signum, frame) -> None:
+        self._sigint_count += 1
+        if self._sigint_count >= 2:
+            self._restore_sigint()
+            raise KeyboardInterrupt
+        print("\n⏹  stopping after the current batch… (Ctrl-C again to stop now)", flush=True)
+        self.request_stop()
+
+    def _install_sigint(self) -> None:
+        try:
+            self._prev_sigint = signal.signal(signal.SIGINT, self._on_sigint)
+        except (ValueError, OSError):
+            self._prev_sigint = None      # not on the main thread (e.g. some test runners)
+
+    def _restore_sigint(self) -> None:
+        if self._prev_sigint is not None:
+            try:
+                signal.signal(signal.SIGINT, self._prev_sigint)
+            except (ValueError, OSError):
+                pass
+            self._prev_sigint = None
+
     # --- lifecycle: activate/deactivate the module singleton ---
     def __enter__(self) -> "RunControl":
         global _active
         _active = self
+        self._install_sigint()
         return self
 
     def __exit__(self, *exc) -> bool:
         global _active
+        self._restore_sigint()
         _active = None
         return False
 
