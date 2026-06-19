@@ -60,3 +60,28 @@ def test_sigint_twice_restores_and_raises(monkeypatch):
     rc._on_sigint(signal.SIGINT, None)
     with pytest.raises(KeyboardInterrupt):
         rc._on_sigint(signal.SIGINT, None)   # second press forces
+
+
+def test_handle_key_p_toggles_pause():
+    rc = RunControl(mode="first-time")
+    rc._handle_key("p")
+    assert not rc._resume.is_set()      # paused
+    rc._handle_key("p")
+    assert rc._resume.is_set()          # resumed
+
+
+def test_handle_key_q_requests_stop():
+    rc = RunControl(mode="first-time")
+    rc._handle_key("q")
+    with pytest.raises(RunStopped):
+        rc.checkpoint()
+
+
+def test_listener_is_noop_without_a_tty(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    rc = RunControl(mode="first-time")
+    rc._start_listener()                # must not raise / must not start a thread
+    assert rc._listener is None
+    rc._stop_listener()                 # safe no-op
+    rc.suspend_keys(); rc.resume_keys()  # safe no-ops under non-tty

@@ -12,7 +12,9 @@ standalone ``--stage`` commands and tests are unaffected.
 Notion (client-per-call) and claude-p (subprocess-per-batch) hold nothing at the
 boundaries, so the only active teardown on pause/stop is an explicit log flush.
 """
+import select
 import signal
+import sys
 import threading
 from contextlib import contextmanager
 
@@ -34,6 +36,8 @@ class RunControl:
         self._stop = False
         self._sigint_count = 0
         self._prev_sigint = None
+        self._listener: threading.Thread | None = None
+        self._listener_stop = threading.Event()
 
     # --- state transitions (called by the key-listener and the signal handler) ---
     def request_pause_toggle(self) -> None:
@@ -60,12 +64,47 @@ class RunControl:
                 raise RunStopped()
             print("▶  resumed", flush=True)
 
-    # --- key-listener hooks (filled in Task 4) ---
+    # --- key-listener: char dispatch, thread lifecycle, cbreak stdin loop ---
+    def _handle_key(self, ch: str) -> None:
+        if ch == "p":
+            self.request_pause_toggle()
+        elif ch == "q":
+            self.request_stop()
+
+    def _start_listener(self) -> None:
+        if self._listener is not None or not sys.stdin.isatty():
+            return
+        self._listener_stop.clear()
+        self._listener = threading.Thread(target=self._listen, daemon=True)
+        self._listener.start()
+
+    def _stop_listener(self) -> None:
+        if self._listener is None:
+            return
+        self._listener_stop.set()
+        self._listener.join(timeout=1.0)
+        self._listener = None
+
+    def _listen(self) -> None:
+        import termios, tty  # lazy: keep POSIX-only imports off the module's top level
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while not self._listener_stop.is_set():
+                r, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if r:
+                    ch = sys.stdin.read(1)
+                    if ch:
+                        self._handle_key(ch)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
     def suspend_keys(self) -> None:
-        pass
+        self._stop_listener()
 
     def resume_keys(self) -> None:
-        pass
+        self._start_listener()
 
     # --- SIGINT handler: first press = graceful stop, second = force ---
     def _on_sigint(self, signum, frame) -> None:
@@ -95,10 +134,12 @@ class RunControl:
         global _active
         _active = self
         self._install_sigint()
+        self._start_listener()
         return self
 
     def __exit__(self, *exc) -> bool:
         global _active
+        self._stop_listener()
         self._restore_sigint()
         _active = None
         return False
