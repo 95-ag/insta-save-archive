@@ -177,8 +177,11 @@ class StageProgress:
     Not a logger: it owns the terminal exclusively while active.
     """
 
-    def __init__(self, title: str):
+    def __init__(self, title: str, *, width: int = RULE_TOP, level: int = 0, char: str = "─"):
         self._title = title
+        self._width = width
+        self._indent = level * INDENT
+        self._char = char
         self._console = Console()
         self._counters: dict[str, int] = {}
         self._current: str = ""
@@ -190,7 +193,7 @@ class StageProgress:
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[bold]{task.description}"),
-            BarColumn(),
+            BarColumn(bar_width=max(8, width - 30)),
             MofNCompleteColumn(),
             TextColumn("•"),
             TimeElapsedColumn(),
@@ -223,7 +226,7 @@ class StageProgress:
     # -- lifecycle ----------------------------------------------------------
 
     def __enter__(self) -> "StageProgress":
-        self._console.rule(f"[bold]{self._title}")
+        self._console.print(render_rule(self._title, width=self._width, char=self._char, indent=self._indent))
         self._live = Live(self._renderable(), console=self._console, refresh_per_second=8)
         self._live.start()
         self._retry_handler = _RetryWatcher(self._on_retry)
@@ -283,8 +286,9 @@ class StageProgress:
         if self._retries:
             counters["notion_retries"] = self._retries
         line = "  ".join(f"{k}={v}" for k, v in counters.items())
-        status = "[red]INTERRUPTED[/red]" if failed else "[green]DONE[/green]"
-        self._console.rule(f"{status} · {self._title}")
+        label = "interrupted" if failed else "done"
+        pad = " " * self._indent
+        self._console.print(render_rule(f"{label} · {self._title}", width=self._width, char=self._char, indent=self._indent))
         if line:
-            self._console.print(f"  {line}")
-        self._console.print(f"  elapsed {h}h {m}m {s}s")
+            self._console.print(f"{pad}  {line}")
+        self._console.print(f"{pad}  elapsed {h}h {m}m {s}s")

@@ -22,3 +22,17 @@ def test_stage_section_prints_header_and_done(capsys):
     lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
     assert "run config" in lines[0]
     assert "done" in lines[-1] and "run config" in lines[-1]
+
+
+def test_stageprogress_header_uses_sized_rule(capsys):
+    with obs.StageProgress("Ingest", width=30):
+        pass
+    head = [l for l in capsys.readouterr().out.splitlines() if "Ingest" in l and "done" not in l][0]
+    assert len(head.rstrip()) <= 30 and "Ingest" in head
+
+
+def test_stageprogress_nested_indents_done_rule(capsys):
+    with obs.StageProgress("Extract", width=24, level=1):
+        pass
+    done = [l for l in capsys.readouterr().out.splitlines() if "done" in l and "Extract" in l][0]
+    assert done.startswith("   ")
