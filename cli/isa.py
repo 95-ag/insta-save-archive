@@ -354,6 +354,11 @@ def dispatch_run(args) -> None:
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
+def _has_collections() -> bool:
+    """True if config/collections.json exists (patchable in tests)."""
+    return Path("config/collections.json").exists()
+
+
 def _dispatch_mode(args) -> None:
     """Run the pipeline in first-time or incremental mode (no --stage given)."""
     env = _load_env()
@@ -362,7 +367,20 @@ def _dispatch_mode(args) -> None:
     run_cfg = _load_run()
     if args.mode == "first-time":
         run_cfg = run_config_gate(run_cfg, select_mode=getattr(args, "select_mode", "inline"))
-    collections_cfg = _load_collections()
+    # True cold start: a first-time real run with no collections.json yet. The pipeline's
+    # front-fold discover builds it, so don't require it up front — defer the load and skip
+    # the pre-run item-cap guardrail (an unpopulated DB has nothing to cap; the guardrail
+    # re-engages on resume once collections.json exists). dry-run still needs it (it plans
+    # against current state with no discover), so it falls through to the clean-exit path.
+    cold_start = args.mode == "first-time" and not args.dry_run and not _has_collections()
+    if cold_start:
+        collections_cfg = None
+    else:
+        try:
+            collections_cfg = _load_collections()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))   # clean actionable exit, not an uncaught traceback
+
     vocab = load_vocab()
     backend = get_backend(run_cfg.enrich.backend)   # resolved AFTER the gate
     routes = load_routes()
@@ -373,13 +391,14 @@ def _dispatch_mode(args) -> None:
     # Preflight: backend reachable, Notion config present, engines importable, effort valid.
     preflight(env, run_cfg, stages={"extract", "enrich"})
 
-    # Guardrail cap: sum remaining (Imported+Queued+Extracted) across all groups as a
-    # conservative pre-run planned count. Uses build_status (one query_all_pages pass) —
-    # same cost as compute_plan's own query; no extra Notion round-trip.
-    status_rows = build_status(env, collections_cfg)
-    total_row = next((r for r in status_rows if r["group"] == "TOTAL"), None)
-    planned = total_row["remaining"] if total_row else 0
-    guardrails.check_item_cap(planned, run_cfg)
+    if not cold_start:
+        # Guardrail cap: sum remaining (Imported+Queued+Extracted) across all groups as a
+        # conservative pre-run planned count. Uses build_status (one query_all_pages pass) —
+        # same cost as compute_plan's own query; no extra Notion round-trip.
+        status_rows = build_status(env, collections_cfg)
+        total_row = next((r for r in status_rows if r["group"] == "TOTAL"), None)
+        planned = total_row["remaining"] if total_row else 0
+        guardrails.check_item_cap(planned, run_cfg)
 
     reminder = guardrails.usage_reminder(run_cfg)
     if reminder:

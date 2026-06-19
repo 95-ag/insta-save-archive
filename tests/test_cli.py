@@ -674,6 +674,7 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
                         lambda env, cols: [{"group": "TOTAL", "remaining": 5}])
     monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
     monkeypatch.setattr(isa, "run_config_gate", lambda run_cfg, **k: run_cfg)
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)   # warm path by default
 
     # _dispatch_mode now calls run_pipeline via a function-local import.
     # Patch the attribute on the pipeline module so the local import picks it up.
@@ -685,6 +686,7 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
         calls["dry_run"] = dry_run
         calls["select_mode"] = select_mode
         calls["fresh"] = fresh
+        calls["cols"] = cols
         return plan
 
     monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)
@@ -708,6 +710,40 @@ def test_mode_incremental_dispatches_run_pipeline(monkeypatch, capsys):
     isa._dispatch_mode(args)
     assert calls.get("mode") == "incremental"
     assert "All groups complete" in capsys.readouterr().out
+
+
+def test_load_collections_error_exits_cleanly(monkeypatch):
+    """When collections.json can't load on a non-cold run (incremental, or a corrupt file),
+    exit with the actionable message — not an uncaught RuntimeError traceback."""
+    import pytest
+    plan = _make_plan("done")
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+
+    def _raise():
+        raise RuntimeError("Collections config not found: config/collections.json\n"
+                           "Build it with `isa discover` (see docs/OPERATING.md).")
+    monkeypatch.setattr(isa, "_load_collections", _raise)
+    with pytest.raises(SystemExit) as exc:
+        isa._dispatch_mode(args)
+    assert "isa discover" in str(exc.value)
+
+
+def test_first_time_cold_start_bootstraps(monkeypatch):
+    """A first-time real run with no collections.json proceeds (the pipeline's front-fold
+    discover builds it): it must NOT load collections or run the pre-run guardrail, and it
+    passes collections_cfg=None to run_pipeline."""
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: False)   # cold
+
+    def _boom(*a, **k):
+        raise AssertionError("must not be called on a cold start")
+    monkeypatch.setattr(isa, "_load_collections", _boom)
+    monkeypatch.setattr(isa, "build_status", _boom)               # guardrail skipped
+
+    isa._dispatch_mode(args)
+    assert calls["mode"] == "first-time"
+    assert calls["cols"] is None
 
 
 def test_mode_dry_run_passes_through(monkeypatch, capsys):
