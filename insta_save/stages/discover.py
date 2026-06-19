@@ -166,11 +166,16 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
         try:
             merged, new_names, missing, complete = refresh_collections_config(
                 context, ig_username, collections_path=collections_path, persist=persist)
-            if persist:
-                run_inline_select(collections_path, new_names, select_mode=select_mode)
             cfg = load_collections(collections_path)
             skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
                                 tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min)
         finally:
             browser.close()
+    # The collection gate runs OUTSIDE the Playwright context: questionary (tui) drives a
+    # prompt_toolkit/asyncio event loop via .ask(), which cannot nest inside Playwright's
+    # sync event loop. group/extract aren't needed for the grid crawl above (it uses only
+    # slug/numeric_id), so configuring them after the crawl is safe and matches the
+    # crawl-everything-first design.
+    if persist:
+        run_inline_select(collections_path, new_names, select_mode=select_mode)
     return {"new": new_names, "missing": missing, "index_complete": complete, "skipped": skipped}

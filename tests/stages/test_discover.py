@@ -10,6 +10,39 @@ from insta_save.helpers import tui
 # helpers
 # ---------------------------------------------------------------------------
 
+def test_run_discover_runs_gate_outside_browser_context(monkeypatch, tmp_path):
+    """The collection gate (questionary) must run OUTSIDE the Playwright sync event loop —
+    questionary's asyncio.run() cannot nest inside it. Assert the gate is called after the
+    browser context exits, and the grid crawl happens inside it."""
+    order = []
+
+    class _PW:
+        def __enter__(self): order.append("pw_enter"); return self
+        def __exit__(self, *a): order.append("pw_exit"); return False
+
+    class _Browser:
+        def close(self): order.append("browser_close")
+
+    import playwright.sync_api as pwmod
+    import insta_save.adapters.instagram.session as sess
+    monkeypatch.setattr(pwmod, "sync_playwright", lambda: _PW())
+    monkeypatch.setattr(sess, "prepare_display", lambda env: None)
+    monkeypatch.setattr(sess, "ensure_authenticated",
+                        lambda pw, env, headless: (_Browser(), object()))
+    monkeypatch.setattr(discover, "refresh_collections_config",
+                        lambda *a, **k: ({}, ["A"], [], True))
+    monkeypatch.setattr(discover, "load_collections", lambda p: object())
+    monkeypatch.setattr(discover, "crawl_all", lambda **k: order.append("crawl") or [])
+    monkeypatch.setattr(discover, "run_inline_select", lambda *a, **k: order.append("gate"))
+
+    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
+                          tmp_dir=str(tmp_path), headed=False)
+
+    assert order.index("gate") > order.index("pw_exit")     # gate AFTER the browser context
+    assert order.index("crawl") < order.index("pw_exit")    # grid crawl INSIDE it
+
+
 def _seed(p):
     p.write_text(json.dumps({"groups": ["uncategorized", "Biz"], "collections": {
         "A": {"group": "uncategorized", "extract": False, "slug": "a", "numeric_id": "1"},
