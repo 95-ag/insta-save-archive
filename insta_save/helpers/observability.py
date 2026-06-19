@@ -141,6 +141,16 @@ def setup_logging(stage_name: str, level: int = logging.DEBUG) -> Path:
     return log_path
 
 
+def flush_logs() -> None:
+    """Flush every root logging handler to disk. Called at pause/stop boundaries so
+    no log record is left buffered if the user exits the process while paused."""
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
 class _RetryWatcher(logging.Handler):
     """
     Logging handler that counts library retry/timeout WARNINGs (notion_client/httpx)

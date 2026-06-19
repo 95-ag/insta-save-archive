@@ -36,3 +36,20 @@ def test_stageprogress_nested_indents_done_rule(capsys):
         pass
     done = [l for l in capsys.readouterr().out.splitlines() if "done" in l and "Extract" in l][0]
     assert done.startswith("   ")
+
+
+def test_flush_logs_flushes_all_root_handlers():
+    import logging
+    from insta_save.helpers import observability as obs
+    flushed = []
+    class _H(logging.Handler):
+        def emit(self, record): pass
+        def flush(self): flushed.append(True)
+    root = logging.getLogger()
+    h = _H()
+    root.addHandler(h)
+    try:
+        obs.flush_logs()
+        assert flushed == [True]
+    finally:
+        root.removeHandler(h)
