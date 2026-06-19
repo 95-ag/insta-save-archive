@@ -21,3 +21,10 @@ include = ["pipeline*", "insta_save*", "cli*"]
 # importlib mode gives each test file a path-unique identity, preventing basename
 # collisions between tests/ and legacy/tests/ (both have test_reconcile.py).
 addopts = "--import-mode=importlib"
+
+[tool.black]
+# 100 matches the existing v2 convention (most lines wrap at 100); Black's default
+# 88 would needlessly rewrap ~700 lines. legacy/ is frozen v1 — never reformat it.
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "/legacy/"
