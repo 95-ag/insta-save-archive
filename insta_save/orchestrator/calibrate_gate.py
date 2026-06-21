@@ -59,7 +59,14 @@ def _draft(env, run_cfg, backend, group) -> dict:
     proposed file. Always shaped content_type/groups[group]/cross_group."""
     prompt = _calibrate_prompt_path(env).read_text(encoding="utf-8")
     if hasattr(backend, "propose_vocab"):
-        proposed = backend.propose_vocab(prompt, run_cfg.enrich.model)
+        try:
+            proposed = backend.propose_vocab(prompt, run_cfg.enrich.model)
+        except Exception as exc:
+            # A flaky/malformed AI draft must never crash a multi-hour run — degrade to an
+            # empty draft and let the human build it via the edit loop.
+            print(f"Backend draft failed ({exc}) — starting from an empty draft for {group}. "
+                  f"Use 'Add a topic' or 'Edit current' to build it.")
+            proposed = {}
     else:
         print(f"Backend has no propose_vocab — starting from an empty draft for {group}. "
               f"Use 'Add a topic' or 'Edit current' to build it.")

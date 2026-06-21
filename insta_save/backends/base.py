@@ -58,6 +58,31 @@ def parse_results_array(text: str) -> list:
     return data
 
 
+def parse_results_object(text: str) -> dict:
+    """Extract a single JSON object from model output, tolerating a ```json fence and/or
+    surrounding prose (e.g. a `claude -p` reply that explains before/after the object).
+    Used by propose_vocab. Raises ValueError if no JSON object is found or it isn't a dict."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        # model wrapped the object in prose — pull out the outermost {...}
+        start, end = stripped.find("{"), stripped.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError(f"no JSON object found in model output: {stripped[:200]!r}")
+        data = json.loads(stripped[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+    return data
+
+
 def normalize_results(parsed, batch_items) -> list[dict]:
     """Trust the batch, not the model, for identity. Keep only results whose
     page_id is a real batch item (drops fabricated ids), de-dupe on first

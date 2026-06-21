@@ -13,8 +13,8 @@ import logging
 import subprocess
 from pathlib import Path
 
-from insta_save.backends.base import (Budgets, FillResult,
-                                       parse_results_array, normalize_results)
+from insta_save.backends.base import (Budgets, FillResult, parse_results_array,
+                                       parse_results_object, normalize_results)
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +56,11 @@ def _run_claude_p(prompt: str, model: str) -> str:
 def propose_vocab(prompt: str, model: str) -> dict:
     """Draft a calibrate vocab (content_type/groups/cross_group dict) from the calibrate
     prompt via `claude -p`. The human reviews/locks it — this only produces the draft.
-    _run_claude_p already unwraps the envelope `result` key and strips fences, so a bare
-    json.loads on its return value is correct and consistent with how fill uses parse_results_array
-    (which also calls json.loads internally on the same unwrapped text)."""
+    Uses parse_results_object (not a bare json.loads): a real `claude -p` reply often wraps
+    the object in prose/fences (e.g. 'here's the proposal: ```json …```'), so robust
+    extraction is required. Raises ValueError if no JSON object can be parsed."""
     text = _run_claude_p(prompt, model)
-    return json.loads(text)
+    return parse_results_object(text)
 
 
 def fill(env, run_cfg, enrich_dir) -> FillResult:

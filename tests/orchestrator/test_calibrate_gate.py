@@ -45,6 +45,27 @@ def _run(tags, monkeypatch):
         object(), _Run(), collections_cfg=object(), backend=_Backend(), group="G")
 
 
+def test_draft_degrades_to_empty_on_propose_failure(tmp_path, monkeypatch, capsys):
+    _wire(tmp_path, monkeypatch)
+
+    class _Boom:
+        @staticmethod
+        def propose_vocab(prompt, model):
+            raise RuntimeError("claude -p returned non-JSON")
+
+    proposed = calibrate_gate._draft(object(), _Run(), _Boom(), "G")
+    # never crashes — degrades to a usable empty skeleton + a clear message
+    assert proposed == {"content_type": {}, "groups": {"G": {}}, "cross_group": {}}
+    assert "empty draft" in capsys.readouterr().out.lower()
+
+
+def test_calibrate_prompt_requests_inline_json_not_a_file():
+    from pathlib import Path
+    t = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
+    assert "Write the proposal as JSON to tmp/calibrate" not in t   # old file-write idiom gone
+    assert "Return ONLY the JSON" in t                              # inline-return contract
+
+
 def test_confirm_locks_draft(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
     _selects(monkeypatch, ["done"])              # edit loop: straight to preview

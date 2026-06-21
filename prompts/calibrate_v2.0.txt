@@ -10,7 +10,8 @@ Propose three things, each tag with a one-line definition:
 Keep tags short, lowercase, hyphenated (e.g. "web-dev", "job-search"). Prefer fewer,
 high-signal tags over many overlapping ones.
 
-Write the proposal as JSON to tmp/calibrate/proposed_tags.json in this shape:
+Return ONLY the JSON object as your reply — no preamble, no explanation, no markdown code
+fences, and do NOT write any files. Reply with exactly this shape and nothing else:
   {
     "content_type": {"tool": "An app/site/repo to use.", ...},
     "groups": {"<GROUP>": {"web-dev": "Building websites/apps.", ...}},

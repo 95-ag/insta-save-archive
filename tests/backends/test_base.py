@@ -38,6 +38,33 @@ def test_parse_results_array_rejects_non_array():
         base.parse_results_array('{"not":"an array"}')
 
 
+def test_parse_results_object_reads_clean_object():
+    assert base.parse_results_object('{"a": 1}') == {"a": 1}
+
+
+def test_parse_results_object_strips_fence():
+    assert base.parse_results_object('```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_parse_results_object_extracts_from_prose_wrapped_output():
+    # the real claude -p crash case: prose preamble + fenced JSON + trailing notes
+    text = ("I don't have write permission to tmp/calibrate/. Here's the proposal:\n\n"
+            '```json\n{"content_type": {"tool": "x"}, "groups": {"G": {}}}\n```\n\n'
+            "**Notes:** some rationale prose after the object.")
+    out = base.parse_results_object(text)
+    assert out["content_type"]["tool"] == "x" and "G" in out["groups"]
+
+
+def test_parse_results_object_rejects_non_object():
+    with pytest.raises(ValueError):
+        base.parse_results_object('[1, 2, 3]')
+
+
+def test_parse_results_object_raises_on_no_object():
+    with pytest.raises(ValueError):
+        base.parse_results_object('just prose, no JSON object anywhere')
+
+
 def test_normalize_results_takes_identity_from_batch():
     # identity comes from the batch items, never from model output
     items = [{"page_id": "p1", "source_id": "src1"}]

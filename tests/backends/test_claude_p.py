@@ -61,3 +61,17 @@ def test_propose_vocab_parses_claude_p_json(monkeypatch):
     monkeypatch.setattr(claude_p, "_run_claude_p", fake_run)
     out = claude_p.propose_vocab("CALIBRATE PROMPT body", "claude-sonnet")
     assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]
+
+
+def test_propose_vocab_recovers_prose_wrapped_draft(monkeypatch):
+    # real claude -p (diagnostic-confirmed) returns the JSON wrapped in prose + a fence,
+    # not bare JSON — propose_vocab must recover the object, not crash on json.loads.
+    from insta_save.backends import claude_p
+    wrapped = ("I don't have write permission to tmp/calibrate/. Here's the proposal — "
+               "you can paste it in manually:\n\n"
+               '```json\n{"content_type":{"tool":"an app"},'
+               '"groups":{"G":{"web-dev":"sites"}},"cross_group":{"ai":"ai"}}\n```\n\n'
+               "**Notes on choices:** rationale prose after the object.")
+    monkeypatch.setattr(claude_p, "_run_claude_p", lambda p, m: wrapped)
+    out = claude_p.propose_vocab("CALIBRATE PROMPT body", "claude-sonnet")
+    assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]
