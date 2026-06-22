@@ -139,3 +139,33 @@ def test_keep_current_skips_field_prompts_and_editor(tmp_path, monkeypatch):
     assert out is run_cfg                        # same object, unchanged
     assert called["editor"] is False             # $EDITOR not opened
     assert called["select_count"] == 1           # only the mode prompt was called
+
+
+def test_run_config_divider_prints_before_mode_prompt(tmp_path, monkeypatch, capsys):
+    """The 'run config' header rule must print on the keep-current path.
+
+    Before this fix, keep-current returned BEFORE the stage_section opened, so no
+    divider printed at all on that path. After the fix, the section wraps the mode
+    prompt, so both the header rule and 'done · run config' footer appear even when
+    the user keeps current settings."""
+    p = tmp_path / "run.json"
+    _seed(p, backend="cowork", model="old-model", effort="low")
+    run_cfg = load_run_config(p)
+
+    monkeypatch.setattr(config_gate.tui, "select",
+                        lambda *a, **k: config_gate._KEEP_CURRENT)
+    monkeypatch.setattr(config_gate.tui, "select_or_other",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("select_or_other must not be called")))
+    monkeypatch.setattr(config_gate.tui, "confirm_action",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("confirm_action must not be called")))
+
+    result = config_gate.run_config_gate(run_cfg, path=p, select_mode="inline")
+    out = capsys.readouterr().out
+
+    # Both the open rule and the done-rule must appear — proving the section now wraps
+    # the mode prompt and the keep-current early return is inside the with-block.
+    assert "run config" in out, "header rule not printed on keep-current path"
+    assert "done" in out, "'done · run config' footer not printed on keep-current path"
+    assert result is run_cfg

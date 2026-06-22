@@ -101,17 +101,21 @@ def run_config_gate(run_cfg, *, path=_DEFAULT_RUN, select_mode="inline"):
     Raises SystemExit on abort (or Ctrl-C → tui returns None).
 
     Default (Enter) is keep-current: skips all field prompts and returns the loaded
-    run_cfg unchanged. Inline or editor choices enter the edit→confirm loop as before."""
-    mode = tui.select("Set run config via", [
-        ("Use existing config (run.json as-is)", _KEEP_CURRENT, "keep current settings, skip prompts"),
-        ("Inline picker", "inline", "pick fields here"),
-        ("Edit in $EDITOR", "editor", "edit the whole run.json"),
-    ], default=("editor" if select_mode == "editor" else _KEEP_CURRENT))
-    if mode is None:
-        raise SystemExit("run-config gate: aborted")
-    if mode == _KEEP_CURRENT:
-        return run_cfg
+    run_cfg unchanged. Inline or editor choices enter the edit→confirm loop as before.
+
+    The stage_section frame opens BEFORE the mode prompt so it encloses the entire
+    gate interaction — including the keep-current early return."""
     with stage_section("run config", width=RULE_TOP):
+        mode = tui.select("Set run config via", [
+            ("Use existing config (run.json as-is)", _KEEP_CURRENT, "keep current settings, skip prompts"),
+            ("Inline picker", "inline", "pick fields here"),
+            ("Edit in $EDITOR", "editor", "edit the whole run.json"),
+        ], default=("editor" if select_mode == "editor" else _KEEP_CURRENT))
+        if mode is None:
+            raise SystemExit("run-config gate: aborted")
+        if mode == _KEEP_CURRENT:
+            print("  ✔ kept current config")
+            return run_cfg
         while True:
             if mode == "editor":
                 _editor_edit(path)
