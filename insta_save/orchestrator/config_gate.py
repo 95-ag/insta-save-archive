@@ -48,6 +48,9 @@ _LANG_CHOICES = [("english", "english", "default"), ("spanish", "spanish", ""),
                  ("french", "french", ""), ("german", "german", ""), ("hindi", "hindi", "")]
 
 
+_KEEP_CURRENT = "keep_current"
+
+
 def ensure_run_json(path=_DEFAULT_RUN) -> None:
     """Write the claude-p default template if run.json is absent. No-op otherwise."""
     p = Path(path)
@@ -94,14 +97,20 @@ def _show(run_cfg) -> None:
 
 
 def run_config_gate(run_cfg, *, path=_DEFAULT_RUN, select_mode="inline"):
-    """Mode-prompt (inline/editor) -> edit -> 4-way confirm. Returns reloaded RunConfig.
-    Raises SystemExit on abort (or Ctrl-C → tui returns None)."""
+    """Mode-prompt (keep-current/inline/editor) -> edit -> 4-way confirm. Returns RunConfig.
+    Raises SystemExit on abort (or Ctrl-C → tui returns None).
+
+    Default (Enter) is keep-current: skips all field prompts and returns the loaded
+    run_cfg unchanged. Inline or editor choices enter the edit→confirm loop as before."""
     mode = tui.select("Set run config via", [
+        ("Use existing config (run.json as-is)", _KEEP_CURRENT, "keep current settings, skip prompts"),
         ("Inline picker", "inline", "pick fields here"),
         ("Edit in $EDITOR", "editor", "edit the whole run.json"),
-    ], default=("editor" if select_mode == "editor" else "inline"))
+    ], default=("editor" if select_mode == "editor" else _KEEP_CURRENT))
     if mode is None:
         raise SystemExit("run-config gate: aborted")
+    if mode == _KEEP_CURRENT:
+        return run_cfg
     with stage_section("run config", width=RULE_TOP):
         while True:
             if mode == "editor":

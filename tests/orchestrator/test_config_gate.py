@@ -103,3 +103,39 @@ def test_run_config_gate_framing(tmp_path, monkeypatch, capsys):
     assert "run config" in out          # stage_section header rule
     assert "done · run config" in out   # stage_section footer rule
     assert "✔" in out                   # outcome line printed
+
+
+def test_keep_current_skips_field_prompts_and_editor(tmp_path, monkeypatch):
+    """Mode prompt returns the keep-current sentinel -> run_cfg returned unchanged,
+    no inline field-prompts and no $EDITOR invoked."""
+    p = tmp_path / "run.json"
+    _seed(p, backend="cowork", model="old-model", effort="low")
+    run_cfg = load_run_config(p)
+
+    called = {"editor": False, "select_count": 0}
+
+    def fake_editor(path):
+        called["editor"] = True
+
+    monkeypatch.setattr(config_gate, "_editor_edit", fake_editor)
+
+    # tui.select: first call is the mode prompt — return the keep-current sentinel.
+    # Any subsequent call (field prompts) increments the counter so we can detect them.
+    sel_iter = iter([config_gate._KEEP_CURRENT])
+
+    def fake_select(*args, **kwargs):
+        called["select_count"] += 1
+        return next(sel_iter)
+
+    monkeypatch.setattr(tui, "select", fake_select)
+    # select_or_other and confirm_action must not be called either
+    monkeypatch.setattr(tui, "select_or_other", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("select_or_other must not be called in keep-current path")))
+    monkeypatch.setattr(tui, "confirm_action", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("confirm_action must not be called in keep-current path")))
+
+    out = config_gate.run_config_gate(run_cfg, path=p, select_mode="inline")
+
+    assert out is run_cfg                        # same object, unchanged
+    assert called["editor"] is False             # $EDITOR not opened
+    assert called["select_count"] == 1           # only the mode prompt was called
