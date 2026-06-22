@@ -65,6 +65,20 @@ def test_parse_results_object_raises_on_no_object():
         base.parse_results_object('just prose, no JSON object anywhere')
 
 
+def test_parse_results_array_extracts_from_prose_wrapped_output():
+    text = ("I don't have write permission to tmp/enrich/. Here's the array:\n\n"
+            '```json\n[{"page_id": "p1", "content_type": "tool", "topics": ["x"]}]\n```\n\n'
+            "**Note:** done.")
+    out = base.parse_results_array(text)
+    assert out[0]["page_id"] == "p1"
+
+
+def test_parse_results_array_raises_when_no_array():
+    import pytest
+    with pytest.raises(ValueError):
+        base.parse_results_array("just prose, no array here")
+
+
 def test_normalize_results_takes_identity_from_batch():
     # identity comes from the batch items, never from model output
     items = [{"page_id": "p1", "source_id": "src1"}]

@@ -63,6 +63,23 @@ def test_propose_vocab_parses_claude_p_json(monkeypatch):
     assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]
 
 
+def test_run_claude_p_appends_inline_output_override(monkeypatch):
+    from insta_save.backends import claude_p
+    sent = {}
+    class _Proc:
+        returncode = 0
+        stdout = '{"result": "[]", "is_error": false}'
+        stderr = ""
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):
+        sent["input"] = input
+        return _Proc()
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    claude_p._run_claude_p("MY ENRICH PROMPT", "claude-sonnet")
+    assert "MY ENRICH PROMPT" in sent["input"]
+    low = sent["input"].lower()
+    assert "do not write" in low and ("return only" in low or "as your reply" in low)
+
+
 def test_propose_vocab_recovers_prose_wrapped_draft(monkeypatch):
     # real claude -p (diagnostic-confirmed) returns the JSON wrapped in prose + a fence,
     # not bare JSON — propose_vocab must recover the object, not crash on json.loads.

@@ -52,7 +52,14 @@ def parse_results_array(text: str) -> list:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
-    data = json.loads(stripped)
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        # model wrapped the array in prose — pull out the outermost [...]
+        start, end = stripped.find("["), stripped.rfind("]")
+        if start == -1 or end <= start:
+            raise ValueError(f"no JSON array found in model output: {stripped[:200]!r}")
+        data = json.loads(stripped[start:end + 1])
     if not isinstance(data, list):
         raise ValueError(f"expected a JSON array, got {type(data).__name__}")
     return data

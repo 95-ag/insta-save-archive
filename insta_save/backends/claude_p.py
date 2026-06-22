@@ -22,6 +22,8 @@ NAME = "claude-p"
 AUTOMATED = True
 VISION_CAPABLE = True
 _TIMEOUT_S = 600
+_INLINE_OVERRIDE = ("\n\nIMPORTANT: Do NOT write any files. Return ONLY the JSON result as "
+                    "your reply — no prose, no explanation, no markdown code fences.")
 
 
 def batch_budgets(run_cfg) -> Budgets:
@@ -41,7 +43,7 @@ def _run_claude_p(prompt: str, model: str) -> str:
     Raises RuntimeError on non-zero exit or an error envelope."""
     proc = subprocess.run(
         ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"],
-        input=prompt, capture_output=True, text=True, timeout=_TIMEOUT_S,
+        input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True, timeout=_TIMEOUT_S,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")
