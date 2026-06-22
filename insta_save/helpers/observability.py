@@ -40,8 +40,8 @@ from rich.progress import (
 )
 from rich.text import Text
 
-RULE_TOP = 56
-RULE_NESTED = 40
+RULE_TOP = 64
+RULE_NESTED = 48
 INDENT = 3
 
 
