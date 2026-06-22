@@ -17,7 +17,8 @@ For EACH post below, produce these fields:
     Categories: Tools, Brands, Creators, Links, Techniques, Locations. Omit empty categories.
     Include full URLs exactly as they appear. If nothing qualifies, use an empty string.
 - content_type: choose EXACTLY ONE from the CONTENT-TYPE list below.
-- topics: choose 0 to 3 from the TOPICS list below. Only values from the list — do not invent.
+- topics: pick 3-4 from GROUP TOPICS and 1-2 from CROSS-GROUP TOPICS (if applicable),
+    up to 6 total — only values from the lists, do not invent.
 
 {vocab_block}
 

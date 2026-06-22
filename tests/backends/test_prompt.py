@@ -93,3 +93,22 @@ def test_build_prompt_groups_single_equals_no_groups():
     without_groups = prompt.build_prompt("Hustling", items, vocab, tmpl)
     with_groups = prompt.build_prompt("Hustling", items, vocab, tmpl, groups=["Hustling"])
     assert without_groups == with_groups
+
+
+def test_vocab_block_splits_group_and_cross_group_lists():
+    """_vocab_block renders two labelled topic sections: GROUP TOPICS and CROSS-GROUP TOPICS."""
+    from insta_save.backends import prompt as P
+    from insta_save.config.tags import Vocab
+    vocab = Vocab(content_types=["tool"], cross_group_topics=["ai"],
+                  _group_topics={"Hustle": ["seo"]},
+                  definitions={"tool": "App.", "ai": "AI.", "seo": "Search."})
+    block = P._vocab_block("Hustle", vocab)
+    assert "GROUP TOPICS" in block and "CROSS-GROUP TOPICS" in block
+    # granular tag appears under GROUP TOPICS, cross tag appears under CROSS-GROUP TOPICS
+    g_idx = block.index("GROUP TOPICS")
+    c_idx = block.index("CROSS-GROUP TOPICS")
+    assert g_idx < c_idx, "GROUP TOPICS section must come before CROSS-GROUP TOPICS section"
+    assert block.index("seo") > g_idx and block.index("seo") < c_idx, \
+        "granular tag 'seo' must appear between GROUP TOPICS and CROSS-GROUP TOPICS"
+    assert block.index("ai") > c_idx, \
+        "cross-group tag 'ai' must appear after CROSS-GROUP TOPICS label"
