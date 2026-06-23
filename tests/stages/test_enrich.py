@@ -597,3 +597,21 @@ def test_drain_enrich_group_stops_between_batches(tmp_path, monkeypatch):
     # checkpoint fires at the TOP of iteration 2 → stopped before a 2nd prepare
     assert calls["prepare"] == 1
     assert calls["apply"] == 1
+
+
+def test_drain_enrich_group_degrades_on_fill_error(tmp_path, monkeypatch):
+    """A malformed backend response (fill raises) must NOT crash the run — the lane
+    degrades with stop_reason 'fill_error' and items stay Extracted (resumable)."""
+    # prepare always returns a batch (never 0) so only the fill-error break can stop the loop
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: 2)
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise ValueError("Expecting ',' delimiter: line 1 column 1590")
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling")
+    assert result["lanes"]["text"]["stop_reason"] == "fill_error"
+    assert result["written"] == 0

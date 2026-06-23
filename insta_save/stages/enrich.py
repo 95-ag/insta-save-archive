@@ -288,7 +288,14 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 char_total = len((enrich_dir / "prompt.txt").read_text(encoding="utf-8"))
                 guardrails.check_spend_cap(char_total, run_cfg)
 
-            backend.fill(env, run_cfg, enrich_dir)
+            try:
+                backend.fill(env, run_cfg, enrich_dir)
+            except Exception as exc:  # noqa: BLE001 — never crash a long run on one bad batch
+                log.error(
+                    "drain_enrich_group: backend.fill failed for group %s lane=%s — %s "
+                    "(items stay Extracted; resolve and re-run)", group, lane_name, exc)
+                stop_reason = "fill_error"
+                break
 
             progress_ctx = progress_factory(f"Enrich apply · {lane_name}") \
                 if progress_factory else _NullContext()
