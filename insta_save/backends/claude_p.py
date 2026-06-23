@@ -48,14 +48,21 @@ def _clean_cwd() -> str:
     return d
 
 
-def _run_claude_p(prompt: str, model: str) -> str:
+def _run_claude_p(prompt: str, model: str, clean_cwd: bool = True) -> str:
     """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
     Prompt goes on stdin. `--model` controls cost (default fast/Opus is ~5x sonnet).
-    Raises RuntimeError on non-zero exit or an error envelope."""
+    Raises RuntimeError on non-zero exit or an error envelope.
+
+    clean_cwd=True (default, text/calibrate batches): runs from an empty dir outside the repo
+    so `claude -p` finds no project CLAUDE.md to auto-discover (~30k tokens saved per call).
+    clean_cwd=False (vision batches): cwd=None inherits the parent process cwd (the repo root
+    for the `isa` CLI) so Claude Code can read slide images — it restricts file reads to its
+    workspace, so a non-repo cwd blocks absolute paths under the repo."""
+    cwd = _clean_cwd() if clean_cwd else None
     proc = subprocess.run(
         ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"],
         input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True, timeout=_TIMEOUT_S,
-        cwd=_clean_cwd(),
+        cwd=cwd,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")
@@ -82,7 +89,8 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     items = batch["items"]
     prompt = (d / "prompt.txt").read_text(encoding="utf-8")
-    text = _run_claude_p(prompt, run_cfg.enrich.model)
+    has_images = any(it.get("slide_images") for it in items)
+    text = _run_claude_p(prompt, run_cfg.enrich.model, clean_cwd=not has_images)
     results = normalize_results(parse_results_array(text), items)
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
