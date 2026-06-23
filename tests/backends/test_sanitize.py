@@ -53,3 +53,19 @@ def test_keeps_vX_Y_x_version_present_in_source():
     text = "Requires v2.1.x or later."
     clean, removed = scrub_fabricated(text, "you need v2.1.x to use this")
     assert "v2.1.x" in clean and removed == []
+
+
+def test_keeps_at_handle_ending_in_tld():
+    text = "[Creators]\n  @alassafi.ai — creator demonstrating the feature"
+    clean, removed = scrub_fabricated(text, "a post by someone")
+    assert "@alassafi.ai" in clean      # handle preserved whole, no dangling '@'
+    assert "@ " not in clean
+    assert removed == []
+
+
+def test_strips_bare_domain_but_keeps_same_token_as_handle():
+    # bare domain (fabricated) stripped; identical token as an @handle kept
+    text = "See github.com/foo/bar and follow @github.io for updates."
+    clean, removed = scrub_fabricated(text, "no urls in source here")
+    assert "github.com/foo/bar" not in clean
+    assert "@github.io" in clean        # the @handle form is preserved

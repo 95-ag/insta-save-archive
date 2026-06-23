@@ -11,7 +11,7 @@ import re
 
 _URL_RE = re.compile(
     r"https?://[^\s)\]\"'>]+"
-    r"|\b[\w.-]+\.(?:com|io|ai|gov|org|net|dev|co|app|xyz|video)\b[^\s)\]\"'>]*",
+    r"|(?<!@)\b[\w.-]+\.(?:com|io|ai|gov|org|net|dev|co|app|xyz|video)\b[^\s)\]\"'>]*",
     re.IGNORECASE)
 _VERSION_RE = re.compile(r"\bv\d+(?:\.\d+)+(?:\.x)?\+?\b|\b\d+\.\d+\.\d+\b", re.IGNORECASE)
 
