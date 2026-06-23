@@ -615,3 +615,25 @@ def test_drain_enrich_group_degrades_on_fill_error(tmp_path, monkeypatch):
         _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling")
     assert result["lanes"]["text"]["stop_reason"] == "fill_error"
     assert result["written"] == 0
+
+
+def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkeypatch):
+    """apply() must scrub source-absent URLs from summary + externals before writing."""
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"],
+                    "caption": "a skill shared on GitHub", "transcript": "", "ocr_text": ""}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T",
+         "summary": "Xiaohei (github.com/helloianneo/x) is great.",
+         "externals": "[Tools]\n  Xiaohei — github.com/helloianneo/x",
+         "content_type": "tool", "topics": ["seo"]}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="m", collections_cfg=_Cols())
+    f = written["p1"]
+    assert "github.com/helloianneo/x" not in f["summary"]
+    assert "github.com/helloianneo/x" not in f["externals"]
+    assert "Xiaohei" in f["summary"]

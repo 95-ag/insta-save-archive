@@ -16,6 +16,7 @@ from insta_save.adapters.notion import (get_page_content, query_by_status_and_pr
                                         write_enrichment)
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
+from insta_save.backends.sanitize import scrub_fabricated
 from insta_save.config.tags import allowed_topics, union_topics
 from insta_save.orchestrator import guardrails, run_control
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
@@ -133,6 +134,11 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
             f"{results_file} not found — have a Claude session write results from {d / 'prompt.txt'} first")
 
     batch = json.loads(batch_file.read_text(encoding="utf-8"))
+    batch_source = {
+        i["page_id"]: " ".join(filter(None, (i.get("caption"), i.get("transcript"),
+                                             i.get("ocr_text"))))
+        for i in batch.get("items", [])
+    }
     group = batch["group"]
     version = f"{model}/{env.enrich_version}/{group}"
 
@@ -169,10 +175,16 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
 
         content_type, topics = enrich_schema.validate_item(
             item, vocab.content_types, topics_allowed)
+        src_text = batch_source.get(page_id, "")
+        summary, sum_removed = scrub_fabricated(item.get("summary"), src_text)
+        externals, ext_removed = scrub_fabricated(item.get("externals") or "", src_text)
+        if sum_removed or ext_removed:
+            log.info("enrich.apply: scrubbed fabricated tokens from %s — summary=%s externals=%s",
+                     sid, sum_removed, ext_removed)
         fields = {
             "title": item.get("title"),
-            "summary": item.get("summary"),
-            "externals": item.get("externals") or "",
+            "summary": summary,
+            "externals": externals,
             "tags": enrich_schema.tags_for(content_type, topics),
         }
         try:
