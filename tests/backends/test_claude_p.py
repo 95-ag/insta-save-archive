@@ -24,8 +24,8 @@ def test_fill_parses_claude_p_envelope_and_writes_results(tmp_path, monkeypatch)
     (d / "batch.json").write_text(json.dumps({"group": "G", "items": items}), encoding="utf-8")
     (d / "prompt.txt").write_text("ENRICH PROMPT", encoding="utf-8")
 
-    # stub the CLI helper (signature: prompt, model, clean_cwd). fill passes run_cfg.enrich.model RAW.
-    def fake_run(prompt, model, clean_cwd=True):
+    # stub the CLI helper (signature: prompt, model, add_dirs). fill passes run_cfg.enrich.model RAW.
+    def fake_run(prompt, model, add_dirs=None):
         assert model == "claude-sonnet"
         return json.dumps([{"page_id": "p1", "source_id": "WRONG", "content_type": "tutorial",
                             "topics": ["x"], "title": "t", "summary": "s", "externals": None}])
@@ -94,59 +94,61 @@ def test_propose_vocab_recovers_prose_wrapped_draft(monkeypatch):
     assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]
 
 
-def test_run_claude_p_clean_cwd_false_inherits_parent_cwd(monkeypatch):
-    """clean_cwd=False -> cwd=None (inherit parent = repo root) so vision can read images."""
+def test_run_claude_p_passes_add_dir_and_keeps_clean_cwd(monkeypatch):
     sent = {}
-
     class _Proc:
-        returncode = 0
-        stdout = '{"result": "[]", "is_error": false}'
-        stderr = ""
-
+        returncode = 0; stdout = '{"result": "[]", "is_error": false}'; stderr = ""
     def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
-        sent["cwd"] = cwd
+        sent["cmd"] = cmd; sent["cwd"] = cwd
         return _Proc()
-
     monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
-    claude_p._run_claude_p("PROMPT", "claude-sonnet", clean_cwd=False)
-    assert sent["cwd"] is None
+    claude_p._run_claude_p("P", "claude-sonnet", add_dirs=["/t/slides/a", "/t/slides/b"])
+    assert sent["cwd"].endswith("isa-claude-cwd")          # ALWAYS clean cwd
+    assert "--add-dir" in sent["cmd"]
+    assert "/t/slides/a" in sent["cmd"] and "/t/slides/b" in sent["cmd"]
 
 
-def test_fill_uses_repo_cwd_for_vision_batch(tmp_path, monkeypatch):
-    """A batch with slide_images is a vision batch -> fill must call _run_claude_p with
-    clean_cwd=False (so images resolve)."""
+def test_run_claude_p_no_add_dir_flag_when_none(monkeypatch):
+    sent = {}
+    class _Proc:
+        returncode = 0; stdout = '{"result": "[]", "is_error": false}'; stderr = ""
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["cmd"] = cmd
+        return _Proc()
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    claude_p._run_claude_p("P", "claude-sonnet")
+    assert "--add-dir" not in sent["cmd"]
+
+
+def test_fill_vision_batch_passes_slide_dirs_as_add_dir(tmp_path, monkeypatch):
     import json
     d = tmp_path / "enrich"; d.mkdir()
-    items = [{"page_id": "p1", "source_id": "s1", "slide_images": ["/abs/x.jpg"]}]
+    items = [{"page_id": "p1", "source_id": "s1",
+              "slide_images": ["/abs/slides/p1/a.jpg", "/abs/slides/p1/b.jpg"]}]
     (d / "batch.json").write_text(json.dumps({"group": "G", "items": items}), encoding="utf-8")
-    (d / "prompt.txt").write_text("VISION PROMPT", encoding="utf-8")
+    (d / "prompt.txt").write_text("VISION", encoding="utf-8")
     seen = {}
-
-    def fake_run(prompt, model, clean_cwd=True):
-        seen["clean_cwd"] = clean_cwd
+    def fake_run(prompt, model, add_dirs=None):
+        seen["add_dirs"] = add_dirs
         return "[]"
-
     monkeypatch.setattr(claude_p, "_run_claude_p", fake_run)
     claude_p.fill(_Env(tmp_path), _Run(), d)
-    assert seen["clean_cwd"] is False
+    assert seen["add_dirs"] == ["/abs/slides/p1"]
 
 
-def test_fill_uses_clean_cwd_for_text_batch(tmp_path, monkeypatch):
-    """A batch with NO slide_images is text -> fill calls _run_claude_p with clean_cwd=True."""
+def test_fill_text_batch_passes_no_add_dir(tmp_path, monkeypatch):
     import json
     d = tmp_path / "enrich"; d.mkdir()
     items = [{"page_id": "p1", "source_id": "s1", "caption": "c"}]
     (d / "batch.json").write_text(json.dumps({"group": "G", "items": items}), encoding="utf-8")
-    (d / "prompt.txt").write_text("TEXT PROMPT", encoding="utf-8")
+    (d / "prompt.txt").write_text("TEXT", encoding="utf-8")
     seen = {}
-
-    def fake_run(prompt, model, clean_cwd=True):
-        seen["clean_cwd"] = clean_cwd
+    def fake_run(prompt, model, add_dirs=None):
+        seen["add_dirs"] = add_dirs
         return "[]"
-
     monkeypatch.setattr(claude_p, "_run_claude_p", fake_run)
     claude_p.fill(_Env(tmp_path), _Run(), d)
-    assert seen["clean_cwd"] is True
+    assert seen["add_dirs"] is None
 
 
 def test_run_claude_p_runs_from_clean_cwd_outside_repo(monkeypatch):

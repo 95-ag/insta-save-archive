@@ -7,7 +7,7 @@ json` with the prompt on STDIN (enrich prompts exceed argv limits), parses the e
 Spike-confirmed (2026-06-18): envelope text key is `result`; no fences in practice; claude -p
 reads slide images by file path so the vision lane works with the same IMAGES:-path prompt
 contract as claude-code -> VISION_CAPABLE=True. fill is lane-agnostic (prompt.txt carries the
-image paths); claude -p must run with cwd=repo root so repo-relative image paths resolve."""
+image paths). claude -p always runs from a clean cwd (no project CLAUDE.md); vision batches pass --add-dir for the slide-image dirs so the Read tool can access them without loading project context."""
 import json
 import logging
 import os
@@ -48,21 +48,19 @@ def _clean_cwd() -> str:
     return d
 
 
-def _run_claude_p(prompt: str, model: str, clean_cwd: bool = True) -> str:
+def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
     """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
-    Prompt goes on stdin. `--model` controls cost (default fast/Opus is ~5x sonnet).
-    Raises RuntimeError on non-zero exit or an error envelope.
-
-    clean_cwd=True (default, text/calibrate batches): runs from an empty dir outside the repo
-    so `claude -p` finds no project CLAUDE.md to auto-discover (~30k tokens saved per call).
-    clean_cwd=False (vision batches): cwd=None inherits the parent process cwd (the repo root
-    for the `isa` CLI) so Claude Code can read slide images — it restricts file reads to its
-    workspace, so a non-repo cwd blocks absolute paths under the repo."""
-    cwd = _clean_cwd() if clean_cwd else None
+    Prompt goes on stdin. ALWAYS runs from a clean cwd outside the repo so no project
+    CLAUDE.md/skills/agents are auto-discovered (~30k+ tokens saved per call). `add_dirs`
+    grants the Read tool access to extra directories WITHOUT loading project context — vision
+    batches pass the slide-image dirs (Claude Code confines file reads to its workspace, so the
+    image dirs must be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+    cmd = ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"]
+    for d in add_dirs or []:
+        cmd += ["--add-dir", d]
     proc = subprocess.run(
-        ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"],
-        input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True, timeout=_TIMEOUT_S,
-        cwd=cwd,
+        cmd, input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True,
+        timeout=_TIMEOUT_S, cwd=_clean_cwd(),
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")
@@ -89,8 +87,11 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     items = batch["items"]
     prompt = (d / "prompt.txt").read_text(encoding="utf-8")
-    has_images = any(it.get("slide_images") for it in items)
-    text = _run_claude_p(prompt, run_cfg.enrich.model, clean_cwd=not has_images)
+    # Vision batches: grant the Read tool access to the slide-image dirs (still a clean cwd,
+    # so no project context loads). Text batches read no files -> no add_dirs (~30k lighter).
+    add_dirs = sorted({os.path.dirname(p)
+                       for it in items for p in (it.get("slide_images") or [])}) or None
+    text = _run_claude_p(prompt, run_cfg.enrich.model, add_dirs=add_dirs)
     results = normalize_results(parse_results_array(text), items)
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
