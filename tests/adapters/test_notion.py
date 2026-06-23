@@ -128,13 +128,15 @@ def test_write_deterministic_omits_empty_tags(monkeypatch):
 
 
 def test_slide_images_from_raw_resolves_paths():
+    import os
     raw = {"v2.0-base-tuned": {"carousel_slides": [
         {"slide": 1, "text": "A", "ocr_confidence": 0.9, "image": "slides/ab/slide1.jpg"},
         {"slide": 2, "text": None, "ocr_confidence": None, "image": "slides/ab/slide2.jpg"},
         {"slide": 3, "text": "C", "ocr_confidence": 0.8, "image": None},
     ]}}
     out = notion._slide_images_from_raw(raw, tmp_dir="tmp", extract_version="v2.0-base-tuned")
-    assert out == ["tmp/slides/ab/slide1.jpg", "tmp/slides/ab/slide2.jpg"]
+    assert out == [os.path.abspath(os.path.join("tmp", "slides/ab/slide1.jpg")),
+                   os.path.abspath(os.path.join("tmp", "slides/ab/slide2.jpg"))]
 
 
 def test_slide_images_from_raw_empty_when_no_slides():

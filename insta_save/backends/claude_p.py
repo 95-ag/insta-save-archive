@@ -10,7 +10,9 @@ contract as claude-code -> VISION_CAPABLE=True. fill is lane-agnostic (prompt.tx
 image paths); claude -p must run with cwd=repo root so repo-relative image paths resolve."""
 import json
 import logging
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from insta_save.backends.base import (Budgets, FillResult, parse_results_array,
@@ -37,6 +39,15 @@ def _cli_model(model: str) -> str:
     return model.removeprefix("claude-")
 
 
+def _clean_cwd() -> str:
+    """A stable empty dir OUTSIDE the repo tree so `claude -p` finds no project CLAUDE.md to
+    auto-discover (~30k tokens of session/tasks/lessons context per call). The global
+    ~/.claude/CLAUDE.md still loads; --bare would drop it too but forces API-key auth."""
+    d = os.path.join(tempfile.gettempdir(), "isa-claude-cwd")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def _run_claude_p(prompt: str, model: str) -> str:
     """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
     Prompt goes on stdin. `--model` controls cost (default fast/Opus is ~5x sonnet).
@@ -44,6 +55,7 @@ def _run_claude_p(prompt: str, model: str) -> str:
     proc = subprocess.run(
         ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"],
         input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True, timeout=_TIMEOUT_S,
+        cwd=_clean_cwd(),
     )
     if proc.returncode != 0:
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")

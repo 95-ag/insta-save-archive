@@ -70,7 +70,7 @@ def test_run_claude_p_appends_inline_output_override(monkeypatch):
         returncode = 0
         stdout = '{"result": "[]", "is_error": false}'
         stderr = ""
-    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
         sent["input"] = input
         return _Proc()
     monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
@@ -92,3 +92,26 @@ def test_propose_vocab_recovers_prose_wrapped_draft(monkeypatch):
     monkeypatch.setattr(claude_p, "_run_claude_p", lambda p, m: wrapped)
     out = claude_p.propose_vocab("CALIBRATE PROMPT body", "claude-sonnet")
     assert out["groups"]["G"]["web-dev"] == "sites" and "tool" in out["content_type"]
+
+
+def test_run_claude_p_runs_from_clean_cwd_outside_repo(monkeypatch):
+    """claude -p must run with cwd set to an empty dir OUTSIDE the repo so CLAUDE.md
+    auto-discovery finds nothing (~30k tokens of project context dropped per call)."""
+    import os
+    sent = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"result": "[]", "is_error": false}'
+        stderr = ""
+
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["cwd"] = cwd
+        return _Proc()
+
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    claude_p._run_claude_p("PROMPT", "claude-sonnet")
+    assert sent["cwd"] and sent["cwd"].endswith("isa-claude-cwd")
+    assert os.path.isdir(sent["cwd"])
+    # the clean cwd is NOT the repo (no CLAUDE.md to discover there)
+    assert "insta-save-archive" not in sent["cwd"]

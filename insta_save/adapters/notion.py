@@ -124,7 +124,7 @@ def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> lis
                 break
     if not isinstance(slides, list):
         return []
-    return [os.path.join(tmp_dir, s["image"]) for s in slides
+    return [os.path.abspath(os.path.join(tmp_dir, s["image"])) for s in slides
             if isinstance(s, dict) and s.get("image")]
 
 
