@@ -39,3 +39,17 @@ def test_ignores_two_part_model_version():
 def test_none_and_empty_safe():
     assert scrub_fabricated(None, "x") == (None, [])
     assert scrub_fabricated("", "x") == ("", [])
+
+
+def test_removes_full_vX_Y_x_version_no_stranded_suffix():
+    text = "The /btw feature added in v2.1.x recently."
+    clean, removed = scrub_fabricated(text, "claude code just added /btw")
+    assert "v2.1.x" not in clean and ".x" not in clean   # nothing stranded
+    assert "recently" in clean
+    assert removed == ["v2.1.x"]
+
+
+def test_keeps_vX_Y_x_version_present_in_source():
+    text = "Requires v2.1.x or later."
+    clean, removed = scrub_fabricated(text, "you need v2.1.x to use this")
+    assert "v2.1.x" in clean and removed == []

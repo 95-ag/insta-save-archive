@@ -13,7 +13,7 @@ _URL_RE = re.compile(
     r"https?://[^\s)\]\"'>]+"
     r"|\b[\w.-]+\.(?:com|io|ai|gov|org|net|dev|co|app|xyz|video)\b[^\s)\]\"'>]*",
     re.IGNORECASE)
-_VERSION_RE = re.compile(r"\bv\d+(?:\.\d+)+\+?\b|\b\d+\.\d+\.\d+\b", re.IGNORECASE)
+_VERSION_RE = re.compile(r"\bv\d+(?:\.\d+)+(?:\.x)?\+?\b|\b\d+\.\d+\.\d+\b", re.IGNORECASE)
 
 
 def _host(url: str) -> str:
@@ -38,7 +38,9 @@ def scrub_fabricated(text, source_text):
 
     def _ver_sub(m):
         tok = m.group(0)
-        if tok.lower().rstrip("+").rstrip(".x") in src or tok.lower() in src:
+        norm = tok.lower().rstrip("+")
+        norm = norm[:-2] if norm.endswith(".x") else norm   # v2.1.x -> v2.1 for source check
+        if norm in src or tok.lower() in src:
             return m.group(0)
         removed.append(tok)
         return ""
