@@ -599,22 +599,71 @@ def test_drain_enrich_group_stops_between_batches(tmp_path, monkeypatch):
     assert calls["apply"] == 1
 
 
-def test_drain_enrich_group_degrades_on_fill_error(tmp_path, monkeypatch):
-    """A malformed backend response (fill raises) must NOT crash the run — the lane
-    degrades with stop_reason 'fill_error' and items stay Extracted (resumable)."""
-    # prepare always returns a batch (never 0) so only the fill-error break can stop the loop
+def test_drain_retries_transient_fill_then_succeeds(tmp_path, monkeypatch):
+    """A transient fill error is retried; a later attempt succeeds and the batch applies."""
+    prep = iter([2, 0])  # one batch, then drained
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 2, "failed": 0})
+
+    attempts = {"n": 0}
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ValueError("Expecting ',' delimiter: line 24 column 156")  # transient
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+    assert attempts["n"] == 2                      # failed once, retried, succeeded
+    assert result["written"] == 2
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_marks_batch_failed_and_advances_when_retries_exhausted(tmp_path, monkeypatch):
+    """A persistently-malformed batch is marked Failed and the lane advances (not abandoned)."""
+    prep = iter([2, 0])  # one bad batch, then nothing left (Failed items leave the pool)
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    # batch.json must exist for _mark_batch_failed to read it
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(
+        '{"group": "Hustling", "items": [{"page_id": "p1"}, {"page_id": "p2"}]}')
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise ValueError("always malformed")
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+    assert failed == ["p1", "p2"]                  # whole batch marked Failed
+    assert result["failed"] == 2
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_raises_terminal_backend_error(tmp_path, monkeypatch):
+    """A terminal fill error (usage limit / auth) stops the run by propagating."""
+    from insta_save.backends.base import TerminalBackendError
     monkeypatch.setattr(enrich, "prepare", lambda *a, **k: 2)
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
 
     class _B(_fake_backend(vision_capable=False).__class__):
         @staticmethod
         def fill(env, run_cfg, enrich_dir):
-            raise ValueError("Expecting ',' delimiter: line 1 column 1590")
+            raise RuntimeError("Claude usage limit reached. Your limit will reset at 5pm")
 
-    result = enrich.drain_enrich_group(
-        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling")
-    assert result["lanes"]["text"]["stop_reason"] == "fill_error"
-    assert result["written"] == 0
+    with pytest.raises(TerminalBackendError):
+        enrich.drain_enrich_group(
+            _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+            sleep=lambda *_: None)
 
 
 def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkeypatch):

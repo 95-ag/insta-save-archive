@@ -12,16 +12,21 @@ import time
 from pathlib import Path
 
 from insta_save import enrich_schema
-from insta_save.adapters.notion import (get_page_content, query_by_status_and_priority,
-                                        write_enrichment)
+from insta_save.adapters.notion import (get_page_content, mark_failed,
+                                        query_by_status_and_priority, write_enrichment)
 from insta_save.backends import prompt
-from insta_save.backends.base import parse_results
+from insta_save.backends.base import (TerminalBackendError, is_terminal_error,
+                                       parse_results)
 from insta_save.backends.sanitize import scrub_fabricated
 from insta_save.config.tags import allowed_topics, union_topics
+from insta_save.helpers import observability
 from insta_save.orchestrator import guardrails, run_control
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
+
+_FILL_ATTEMPTS = 3       # 1 initial + 2 retries for a transient fill failure
+_RETRY_BACKOFF_S = 2.0   # linear backoff: attempt N waits N * this before retrying
 
 
 def _enrich_dir(env) -> Path:
@@ -213,9 +218,49 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
 # Reusable automated drain — used by the sequencer (run_first_time/run_incremental)
 # ---------------------------------------------------------------------------
 
+def _fill_with_retry(env, run_cfg, backend, enrich_dir, group, lane, batch_no, *,
+                     sleep=time.sleep) -> bool:
+    """Run backend.fill, retrying transient failures up to _FILL_ATTEMPTS.
+
+    Returns True on success, False when transient retries are exhausted. Raises
+    TerminalBackendError immediately on a terminal failure (usage limit / auth) —
+    retrying those within this run is pointless. `sleep` is injectable for tests."""
+    name = getattr(backend, "NAME", "backend")
+    for attempt in range(1, _FILL_ATTEMPTS + 1):
+        run_control.checkpoint()
+        try:
+            backend.fill(env, run_cfg, enrich_dir)
+            return True
+        except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
+            if is_terminal_error(exc):
+                raise TerminalBackendError(
+                    f"{name} hit a terminal error during enrich "
+                    f"(group {group}, lane {lane}): {exc}") from exc
+            log.warning("drain_enrich_group: fill attempt %d/%d failed (transient) for "
+                        "group %s lane=%s batch %d — %s",
+                        attempt, _FILL_ATTEMPTS, group, lane, batch_no, exc)
+            if attempt < _FILL_ATTEMPTS:
+                sleep(_RETRY_BACKOFF_S * attempt)
+    return False
+
+
+def _mark_batch_failed(env, enrich_dir, *, reason) -> int:
+    """Mark every item in the current batch.json as Failed so the next prepare advances
+    past them (a persistently-malformed batch must not strand the whole lane). Returns
+    the number of items marked. Recoverable later via `isa status --retry-failed`."""
+    batch = json.loads((Path(enrich_dir) / "batch.json").read_text(encoding="utf-8"))
+    items = batch.get("items", [])
+    note = f"enrich fill failed after {_FILL_ATTEMPTS} attempts: {reason[:300]}"
+    for it in items:
+        mark_failed(env, it["page_id"], note)
+    log.warning("drain_enrich_group: marked %d items Failed after exhausting fill retries "
+                "(recover with: isa status --retry-failed)", len(items))
+    return len(items)
+
+
 def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                        lanes: list | None = None,
-                       progress_factory=None) -> dict:
+                       progress_factory=None, sleep=time.sleep) -> dict:
     """Drain a single group via the automated backend.
 
     Loops prepare→fill→apply per lane until the lane is DRAINED (prepare returns 0)
@@ -268,15 +313,18 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
     lane_filter = set(lanes) if lanes is not None else None
     active_lanes = [l for l in all_lanes if lane_filter is None or l["name"] in lane_filter]
 
-    totals: dict[str, object] = {"written": 0, "lanes": {}}
+    totals: dict[str, object] = {"written": 0, "failed": 0, "lanes": {}}
 
     for lane in active_lanes:
         lane_name = lane["name"]
         lane_written = 0
+        lane_failed = 0
         stop_reason = "drained"
 
+        n_batch = 0
         while True:
             run_control.checkpoint()
+            n_batch += 1
             progress_ctx = progress_factory(f"Enrich prepare · {lane_name}") \
                 if progress_factory else _NullContext()
             with progress_ctx as progress:
@@ -300,14 +348,18 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 char_total = len((enrich_dir / "prompt.txt").read_text(encoding="utf-8"))
                 guardrails.check_spend_cap(char_total, run_cfg)
 
-            try:
-                backend.fill(env, run_cfg, enrich_dir)
-            except Exception as exc:  # noqa: BLE001 — never crash a long run on one bad batch
-                log.error(
-                    "drain_enrich_group: backend.fill failed for group %s lane=%s — %s "
-                    "(items stay Extracted; resolve and re-run)", group, lane_name, exc)
-                stop_reason = "fill_error"
-                break
+            with observability.spinner(
+                f"Enrich fill · {group} · {lane_name} · batch {n_batch} · {lane_written} written"
+            ):  # TTY-guarded: animates live, silent under pytest
+                ok = _fill_with_retry(env, run_cfg, backend, enrich_dir, group, lane_name,
+                                      n_batch, sleep=sleep)
+            if not ok:
+                # Transient retries exhausted: mark this batch Failed and advance the lane
+                # (the next prepare won't re-select Failed items). Never abandon the lane.
+                n_failed = _mark_batch_failed(env, enrich_dir, reason="malformed model output")
+                lane_failed += n_failed
+                totals["failed"] = totals["failed"] + n_failed
+                continue
 
             progress_ctx = progress_factory(f"Enrich apply · {lane_name}") \
                 if progress_factory else _NullContext()
@@ -330,7 +382,8 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 stop_reason = "no_progress"
                 break
 
-        totals["lanes"][lane_name] = {"written": lane_written, "stop_reason": stop_reason}
+        totals["lanes"][lane_name] = {"written": lane_written, "failed": lane_failed,
+                                      "stop_reason": stop_reason}
 
     return totals
 
