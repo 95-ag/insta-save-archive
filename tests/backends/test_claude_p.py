@@ -164,11 +164,50 @@ def test_run_claude_p_runs_from_clean_cwd_outside_repo(monkeypatch):
 
     def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
         sent["cwd"] = cwd
+        assert os.path.isdir(cwd)          # exists DURING the call
         return _Proc()
 
     monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
     claude_p._run_claude_p("PROMPT", "claude-sonnet")
     assert sent["cwd"] and sent["cwd"].endswith("isa-claude-cwd")
-    assert os.path.isdir(sent["cwd"])
     # the clean cwd is NOT the repo (no CLAUDE.md to discover there)
     assert "insta-save-archive" not in sent["cwd"]
+
+
+def test_run_claude_p_removes_clean_cwd_after_use(monkeypatch):
+    import os
+    sent = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"result": "[]", "is_error": false}'
+        stderr = ""
+
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["cwd"] = cwd
+        assert os.path.isdir(cwd)          # exists DURING the call
+        return _Proc()
+
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    claude_p._run_claude_p("P", "claude-sonnet")
+    assert not os.path.isdir(sent["cwd"])  # removed AFTER the call
+
+
+def test_run_claude_p_removes_clean_cwd_on_error(monkeypatch):
+    import os
+    import pytest
+    sent = {}
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["cwd"] = cwd
+        return _Proc()
+
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    with pytest.raises(RuntimeError):
+        claude_p._run_claude_p("P", "claude-sonnet")
+    assert not os.path.isdir(sent["cwd"])  # cleaned even though the call raised

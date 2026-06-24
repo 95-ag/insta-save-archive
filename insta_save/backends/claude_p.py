@@ -11,6 +11,7 @@ image paths). claude -p always runs from a clean cwd (no project CLAUDE.md); vis
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -51,17 +52,23 @@ def _clean_cwd() -> str:
 def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
     """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
     Prompt goes on stdin. ALWAYS runs from a clean cwd outside the repo so no project
-    CLAUDE.md/skills/agents are auto-discovered (~30k+ tokens saved per call). `add_dirs`
-    grants the Read tool access to extra directories WITHOUT loading project context — vision
-    batches pass the slide-image dirs (Claude Code confines file reads to its workspace, so the
-    image dirs must be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+    CLAUDE.md/skills/agents are auto-discovered (~30k+ tokens saved per call). The cwd is
+    removed after the call (try/finally) so no scratch files linger; _clean_cwd() recreates
+    it on the next call, keeping prompt-cache behaviour unchanged. `add_dirs` grants the Read
+    tool access to extra directories WITHOUT loading project context — vision batches pass the
+    slide-image dirs (Claude Code confines file reads to its workspace, so the image dirs must
+    be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
     cmd = ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"]
     for d in add_dirs or []:
         cmd += ["--add-dir", d]
-    proc = subprocess.run(
-        cmd, input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True,
-        timeout=_TIMEOUT_S, cwd=_clean_cwd(),
-    )
+    cwd = _clean_cwd()
+    try:
+        proc = subprocess.run(
+            cmd, input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True,
+            timeout=_TIMEOUT_S, cwd=cwd,
+        )
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)  # don't leave the scratch cwd behind
     if proc.returncode != 0:
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")
     envelope = json.loads(proc.stdout)
