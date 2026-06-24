@@ -15,6 +15,33 @@ from pathlib import Path
 from typing import Protocol
 
 
+class TerminalBackendError(Exception):
+    """A backend failure that retrying within this run cannot fix (Claude-Max usage
+    limit, not-logged-in, invalid key). Propagates out of the drain to stop the run
+    gracefully with a resume hint — as opposed to a transient malformed-JSON reply,
+    which the drain retries."""
+
+
+# Substrings (case-insensitive) that mark a backend error as TERMINAL for this run.
+# Kept deliberately narrow: anything not matched is treated as transient and retried.
+# A 429/overloaded/timeout is transient on purpose (retry usually succeeds); only a
+# usage-limit or auth failure is hopeless until the user acts.
+_TERMINAL_ERROR_MARKERS = (
+    "usage limit",
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "authentication",
+    "credit balance",
+)
+
+
+def is_terminal_error(exc: BaseException) -> bool:
+    """True when exc's message marks a terminal (non-retryable-this-run) backend failure."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TERMINAL_ERROR_MARKERS)
+
+
 @dataclass(frozen=True)
 class Budgets:
     """Batch-sizing knobs (D7). char_budget/max_items bound the rendered prompt;

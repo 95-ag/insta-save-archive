@@ -87,3 +87,25 @@ def test_normalize_results_takes_identity_from_batch():
                   "page_id": "p1", "source_id": "HACKED"}]
     out = base.normalize_results(model_out, items)
     assert out[0]["page_id"] == "p1" and out[0]["source_id"] == "src1"
+
+
+from insta_save.backends.base import TerminalBackendError, is_terminal_error
+
+
+def test_is_terminal_error_flags_usage_limit():
+    assert is_terminal_error(RuntimeError("Claude usage limit reached. Your limit will reset at 5pm"))
+
+
+def test_is_terminal_error_flags_auth():
+    assert is_terminal_error(RuntimeError("Not logged in. Please run /login"))
+    assert is_terminal_error(RuntimeError("authentication_error: invalid api key"))
+
+
+def test_is_terminal_error_transient_is_false():
+    # malformed JSON from a flaky model reply is transient (retryable)
+    assert not is_terminal_error(ValueError("Expecting ',' delimiter: line 24 column 156"))
+    assert not is_terminal_error(RuntimeError("claude -p exited 1: socket hang up"))
+
+
+def test_terminal_backend_error_is_exception():
+    assert issubclass(TerminalBackendError, Exception)
