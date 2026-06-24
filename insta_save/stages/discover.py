@@ -15,7 +15,7 @@ from insta_save.config.collections import (
 )
 from insta_save.helpers import tui
 from insta_save.orchestrator import run_control
-from insta_save.helpers.observability import StageProgress, stage_section, RULE_TOP
+from insta_save.helpers.observability import StageProgress, stage_section, RULE_TOP, spinner
 from insta_save.snapshots import is_reusable, read_snapshot, write_snapshot
 
 # Sentinel values for the inline group picker — plain strings distinct from any real group name.
@@ -175,7 +175,8 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
     from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
     prepare_display(env)  # set DISPLAY before the driver freezes the env (headed re-auth needs it)
     with sync_playwright() as pw:
-        browser, context = ensure_authenticated(pw, env, headless=not headed)
+        with spinner("Validating Instagram session…"):
+            browser, context = ensure_authenticated(pw, env, headless=not headed)
         try:
             merged, new_names, missing, complete = refresh_collections_config(
                 context, ig_username, collections_path=collections_path, persist=persist)

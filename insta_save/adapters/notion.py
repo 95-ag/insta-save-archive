@@ -12,6 +12,7 @@ from notion_client.errors import APIResponseError
 
 from insta_save.config.env import EnvConfig, validate_notion
 from insta_save.engines.ocr_clean import clean_ocr_text
+from insta_save.helpers import observability
 
 log = logging.getLogger(__name__)
 
@@ -480,14 +481,15 @@ def query_all_pages(env: EnvConfig) -> list[dict]:
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
     results, cursor = [], None
-    while True:
-        kwargs = {"start_cursor": cursor} if cursor else {}
-        resp = client.data_sources.query(ds_id, **kwargs)
-        for page in resp.get("results", []):
-            results.append({"page_id": page["id"], "properties": page.get("properties", {})})
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    with observability.spinner("Reading Notion…"):
+        while True:
+            kwargs = {"start_cursor": cursor} if cursor else {}
+            resp = client.data_sources.query(ds_id, **kwargs)
+            for page in resp.get("results", []):
+                results.append({"page_id": page["id"], "properties": page.get("properties", {})})
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
     log.info("notion: query_all_pages returned %d pages", len(results))
     return results
 
