@@ -40,6 +40,7 @@ class GroupStep:
     action: str    # "extract" | "calibrate" | "enrich" | "deterministic" | "route" | "done"
     automated: bool  # True if the sequencer can run it now; False = human/agent gate
     detail: str    # human-facing one-liner
+    count: int = 0  # for "enrich" steps: number of Extracted items to process (group total)
 
 
 @dataclass
@@ -149,6 +150,7 @@ def _step_for_group(
             action="enrich",
             automated=backend.AUTOMATED,
             detail=f"enrich {enrichable[group]} items via {name}",
+            count=enrichable.get(group, 0),
         )
 
     if deterministic.get(group, 0) > 0:
@@ -319,6 +321,7 @@ def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
         _enrich_stage.drain_enrich_group(
             env, run_cfg, collections_cfg, vocab, backend, step.group,
             progress_factory=progress_factory,
+            group_total=step.count,
         )
 
     elif step.action == "deterministic":

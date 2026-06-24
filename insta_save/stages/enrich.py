@@ -11,6 +11,8 @@ import logging
 import time
 from pathlib import Path
 
+from rich.console import Console
+
 from insta_save import enrich_schema
 from insta_save.adapters.notion import (get_page_content, mark_failed,
                                         query_by_status_and_priority, write_enrichment)
@@ -24,6 +26,7 @@ from insta_save.orchestrator import guardrails, run_control
 from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
+_console = Console()
 
 _FILL_ATTEMPTS = 3       # 1 initial + 2 retries for a transient fill failure
 _RETRY_BACKOFF_S = 2.0   # linear backoff: attempt N waits N * this before retrying
@@ -258,9 +261,23 @@ def _mark_batch_failed(env, enrich_dir, *, reason) -> int:
     return len(items)
 
 
+def _print_group_progress(group, group_total, totals) -> None:
+    """One persistent line after each batch: group-level enriched/total + estimated remaining.
+    No-op when group_total is unknown (e.g. a direct --stage call that didn't pass it)."""
+    if not group_total:
+        return
+    done = totals["written"] + totals["failed"]
+    remaining = max(group_total - done, 0)
+    msg = f"   {group} · enriched {totals['written']}/{group_total} · ~{remaining} left"
+    if totals["failed"]:
+        msg += f" · failed {totals['failed']}"
+    _console.print(msg)
+
+
 def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                        lanes: list | None = None,
-                       progress_factory=None, sleep=time.sleep) -> dict:
+                       progress_factory=None, sleep=time.sleep,
+                       group_total: int | None = None) -> dict:
     """Drain a single group via the automated backend.
 
     Loops prepare→fill→apply per lane until the lane is DRAINED (prepare returns 0)
@@ -281,10 +298,25 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                          which lanes execute — useful when the CLI runs a single lane.
         progress_factory: Optional callable ``(label: str) -> context manager`` returning
                          a StageProgress. Pass None to skip live progress bars.
+        group_total:     Total number of Extracted items for the group (from compute_plan's
+                         enrichable count). When provided, a group-level progress line is
+                         printed after each batch showing enriched/total and estimated
+                         remaining. None (default) when called directly via ``--stage enrich``
+                         — the counter is suppressed and no behavior change occurs.
 
     Returns:
-        dict with keys ``written`` (total items written), ``lanes`` (per-lane totals),
-        and ``stop_reason`` ("drained" | "no_progress") for each lane.
+        dict with keys:
+          ``written``    — total items written across all lanes.
+          ``failed``     — total items marked Failed across all lanes (persistently-malformed
+                          batches where fill retries were exhausted).
+          ``lanes``      — per-lane dict keyed by lane name, each containing:
+                            ``written``     — items written in this lane.
+                            ``failed``      — items marked Failed in this lane.
+                            ``stop_reason`` — "drained" (prepare returned 0, lane empty) or
+                                             "no_progress" (apply wrote 0, loop broke to avoid
+                                             an infinite spin). Terminal failures (usage limit /
+                                             auth) raise ``TerminalBackendError`` instead of
+                                             setting a stop_reason.
     """
     budgets = backend.batch_budgets(run_cfg)
     enrich_dir = Path(env.tmp_dir) / "enrich"
@@ -359,6 +391,7 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 n_failed = _mark_batch_failed(env, enrich_dir, reason="malformed model output")
                 lane_failed += n_failed
                 totals["failed"] = totals["failed"] + n_failed
+                _print_group_progress(group, group_total, totals)
                 continue
 
             progress_ctx = progress_factory(f"Enrich apply · {lane_name}") \
@@ -369,6 +402,7 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
 
             lane_written += counts["written"]
             totals["written"] = totals["written"] + counts["written"]
+            _print_group_progress(group, group_total, totals)
 
             if counts["written"] == 0:
                 # No-progress guard: items stay Extracted, next prepare re-selects them.

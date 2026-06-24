@@ -649,6 +649,41 @@ def test_drain_marks_batch_failed_and_advances_when_retries_exhausted(tmp_path, 
     assert result["lanes"]["text"]["stop_reason"] == "drained"
 
 
+def test_drain_marks_batch_failed_prints_group_progress(tmp_path, monkeypatch, capsys):
+    """On the exhausted-retries path, _print_group_progress fires with the failed count.
+
+    group_total=5, batch of 2 items all fail: written=0, failed=2, remaining=3.
+    The printed line must contain 'enriched 0/5', '~3 left', and 'failed 2'.
+    """
+    prep = iter([2, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(
+        '{"group": "Hustling", "items": [{"page_id": "p1"}, {"page_id": "p2"}]}')
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise ValueError("always malformed")
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        group_total=5, sleep=lambda *_: None)
+
+    assert failed == ["p1", "p2"]
+    assert result["failed"] == 2
+
+    out = capsys.readouterr().out
+    assert "enriched 0/5" in out
+    assert "~3 left" in out
+    assert "failed 2" in out
+
+
 def test_drain_raises_terminal_backend_error(tmp_path, monkeypatch):
     """A terminal fill error (usage limit / auth) stops the run by propagating."""
     from insta_save.backends.base import TerminalBackendError
@@ -664,6 +699,41 @@ def test_drain_raises_terminal_backend_error(tmp_path, monkeypatch):
         enrich.drain_enrich_group(
             _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
             sleep=lambda *_: None)
+
+
+def test_drain_prints_group_progress_counter(tmp_path, monkeypatch, capsys):
+    """When group_total is provided, drain prints a group-level enriched/total line after each batch."""
+    prep = iter([3, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    enrich.drain_enrich_group(_env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(),
+                              "Hustling", group_total=10, sleep=lambda *_: None)
+    out = capsys.readouterr().out
+    assert "enriched 3/10" in out
+    assert "left" in out
+
+
+def test_drain_no_group_progress_when_total_absent(tmp_path, monkeypatch, capsys):
+    """When group_total is not passed (back-compat / --stage enrich), no progress line is printed."""
+    prep = iter([3, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    enrich.drain_enrich_group(_env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(),
+                              "Hustling", sleep=lambda *_: None)
+    out = capsys.readouterr().out
+    assert "enriched" not in out
 
 
 def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkeypatch):

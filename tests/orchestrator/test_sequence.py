@@ -127,6 +127,26 @@ def test_enrich_agent_filled_backend(monkeypatch):
     assert step.automated is False
 
 
+def test_enrich_step_carries_pending_count(monkeypatch):
+    """The enrich GroupStep's .count must equal the number of Extracted items for the group."""
+    cfg = _collections_cfg("Hustling", "uncategorized")
+    # Three Extracted items in Hustling
+    _patch(monkeypatch, [
+        _page("Extracted", ["Hustling"]),
+        _page("Extracted", ["Hustling"]),
+        _page("Extracted", ["Hustling"]),
+    ])
+    vocab = _fake_vocab("Hustling")
+    backend = _backend(automated=True, name="api")
+    routes = Routes()
+
+    plan = sequence.compute_plan(None, None, cfg, vocab, backend, routes)
+
+    step = plan.steps[0]
+    assert step.action == "enrich"
+    assert step.count == 3
+
+
 # ---------------------------------------------------------------------------
 # route: Tagged + routing enabled → "route" automated=True
 #        routing disabled (empty Routes) → "done"
