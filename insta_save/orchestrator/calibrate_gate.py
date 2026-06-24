@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 from insta_save.config.tags import lock_vocab, load_vocab, merge_vocab
-from insta_save.helpers import tui
+from insta_save.helpers import observability, tui
 from insta_save.helpers.observability import stage_section, RULE_NESTED, INDENT
 from insta_save.stages import calibrate as _calibrate
 
@@ -60,7 +60,8 @@ def _draft(env, run_cfg, backend, group) -> dict:
     prompt = _calibrate_prompt_path(env).read_text(encoding="utf-8")
     if hasattr(backend, "propose_vocab"):
         try:
-            proposed = backend.propose_vocab(prompt, run_cfg.enrich.model)
+            with observability.spinner(f"Drafting vocab for {group} via the backend…"):
+                proposed = backend.propose_vocab(prompt, run_cfg.enrich.model)
         except Exception as exc:
             # A flaky/malformed AI draft must never crash a multi-hour run — degrade to an
             # empty draft and let the human build it via the edit loop.

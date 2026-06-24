@@ -15,7 +15,7 @@ from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
 from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.backup import backup, restore_check
-from insta_save.backends.base import get_backend
+from insta_save.backends.base import get_backend, TerminalBackendError
 from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
@@ -421,6 +421,12 @@ def _dispatch_mode(args) -> None:
                                 select_mode=getattr(args, "select_mode", "inline"),
                                 ig_username=ig_username, headed=args.headed,
                                 fresh=args.fresh, progress_factory=_nested_progress)
+    except TerminalBackendError as exc:
+        flush_logs()
+        print(f"\n⏹  stopped · {exc}")
+        print(f"   This won't resolve by retrying now (usage limit / auth). "
+              f"Resume later with: isa run --mode {args.mode}")
+        return
     except (run_control.RunStopped, KeyboardInterrupt):
         flush_logs()
         print(f"⏹  stopped · resume with: isa run --mode {args.mode}")
@@ -433,6 +439,13 @@ def _print_plan(plan, dry_run: bool) -> None:
     label = " (dry-run)" if dry_run else ""
     for step in plan.steps:
         print(f"  {step.group}: {step.action} — {step.detail}")
+
+    skipped = getattr(plan, "skipped", [])
+    if skipped:
+        print("\n⚠  skipped (no forward progress — re-run to retry, "
+              "or `isa status --retry-failed` for items marked Failed):")
+        for s in skipped:
+            print(f"  - {s['group']} ({s['action']}): {s['reason']}")
 
     if plan.done:
         print(f"All groups complete.{label}")
