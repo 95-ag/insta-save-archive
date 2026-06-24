@@ -73,3 +73,34 @@ def test_valid_session_does_not_relaunch(monkeypatch, tmp_path):
     browser, ctx = session.ensure_authenticated(object(), _env(tmp_path), headless=True)
     assert launches == [True]
     assert browser.headless is True
+
+
+# ---------------------------------------------------------------------------
+# _goto_with_retry tests
+# ---------------------------------------------------------------------------
+
+from insta_save.adapters.instagram import session as _session
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+
+class _FakePage:
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.calls = 0
+
+    def goto(self, url, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise PlaywrightTimeout("Timeout 20000ms exceeded")
+
+
+def test_goto_with_retry_succeeds_on_second_try():
+    page = _FakePage(fail_times=1)
+    assert _session._goto_with_retry(page, _session.INSTAGRAM_HOME) is True
+    assert page.calls == 2  # first timed out, retry succeeded
+
+
+def test_goto_with_retry_returns_false_after_two_timeouts():
+    page = _FakePage(fail_times=2)
+    assert _session._goto_with_retry(page, _session.INSTAGRAM_HOME) is False
+    assert page.calls == 2  # one retry only, then give up (caller falls to re-auth)

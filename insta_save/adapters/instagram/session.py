@@ -141,6 +141,27 @@ def _check_auth(page) -> bool:
         return False
 
 
+def _goto_with_retry(page, url, *, timeout=20_000, retry_timeout=45_000) -> bool:
+    """Navigate to `url`, retrying ONCE at a longer timeout on a Playwright timeout.
+
+    A transient slow load (IP throttle after a long crawl) used to crash the warm-start
+    cookie validation with a raw TimeoutError. Returns True if the page loaded, False after
+    a second timeout — the caller then falls to the existing re-auth path instead of crashing.
+    Reuses the warm session; never deletes cookies (a forced re-login is bot-detected)."""
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+        return True
+    except PlaywrightTimeout:
+        log.warning("session: goto %s timed out at %dms — retrying once at %dms",
+                    url, timeout, retry_timeout)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=retry_timeout)
+        return True
+    except PlaywrightTimeout:
+        log.warning("session: goto %s timed out again — treating as unauthenticated", url)
+        return False
+
+
 def _run_login(page, context: BrowserContext, cookies_file: Path) -> None:
     """
     Blocks until the user completes manual login (including any 2FA).
@@ -192,10 +213,10 @@ def ensure_authenticated(
     had_cookies = _load_cookies(context, cookies_file)
 
     page = context.new_page()
-    page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+    loaded = _goto_with_retry(page, INSTAGRAM_HOME)
     time.sleep(1)
 
-    authenticated = _check_auth(page)
+    authenticated = _check_auth(page) if loaded else False
 
     if authenticated:
         status = "valid" if had_cookies else "valid (no prior cookies)"
@@ -213,7 +234,7 @@ def ensure_authenticated(
             context = _new_context(browser)
             _load_cookies(context, cookies_file)
             page = context.new_page()
-            page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+            _goto_with_retry(page, INSTAGRAM_HOME)
             time.sleep(1)
         log.info("session: status=expired — starting re-auth")
         _run_login(page, context, cookies_file)
@@ -228,7 +249,7 @@ def ensure_authenticated(
             context = _new_context(browser)
             _load_cookies(context, cookies_file)
             page = context.new_page()
-            page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+            _goto_with_retry(page, INSTAGRAM_HOME)
             time.sleep(1)
 
     page.close()
