@@ -53,3 +53,32 @@ def test_flush_logs_flushes_all_root_handlers():
         assert flushed == [True]
     finally:
         root.removeHandler(h)
+
+
+import io
+from rich.console import Console
+from insta_save.helpers.observability import spinner
+
+
+def test_spinner_disabled_is_a_silent_noop(capsys):
+    with spinner("Working…", enabled=False):
+        pass
+    assert "Working" not in capsys.readouterr().out  # disabled -> renders nothing
+
+
+def test_spinner_noops_when_not_a_tty():
+    # Default stdout under pytest is not a terminal -> spinner must be a silent no-op.
+    entered = False
+    with spinner("Querying Notion…"):
+        entered = True
+    assert entered  # still yields, just doesn't render
+
+
+def test_spinner_renders_when_console_is_a_terminal():
+    # force_terminal makes is_terminal True -> the animate path runs without raising.
+    buf = io.StringIO()
+    con = Console(force_terminal=True, file=buf)
+    entered = False
+    with spinner("Asking Claude…", console=con):
+        entered = True
+    assert entered

@@ -78,6 +78,27 @@ def stage_section(label, *, width=RULE_TOP, char="─", indent=0, index=None, co
         con.print(render_rule(f"done · {label}", width=width, char=char, indent=indent, index=index))
 
 
+@contextmanager
+def spinner(label, *, enabled=True, console=None):
+    """An indeterminate live spinner for ANY blocking op without a progress bar that
+    takes more than a second or two (claude -p fill, the calibrate draft, a full Notion
+    scan, session validation). rich's Console.status runs its own refresh thread, so the
+    spinner keeps animating while the calling thread is blocked in subprocess.run / a
+    network call.
+
+    Auto-no-op when stdout is not a TTY (tests, pipes, redirected logs) or when
+    enabled=False — so it's safe to apply broadly and stays silent under pytest. Never
+    open a spinner while a StageProgress Live is active (rich allows one Live per console);
+    apply it only at points with no enclosing stage display.
+    """
+    con = console or Console()
+    if not enabled or not con.is_terminal:
+        yield
+        return
+    with con.status(label, spinner="dots"):
+        yield
+
+
 _LOGS_DIR = Path(__file__).parent.parent / "logs"
 
 # Noisy third-party loggers — pinned to the file handler only, never the terminal.
