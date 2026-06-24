@@ -19,7 +19,7 @@ Count semantics:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rich.console import Console
 
@@ -47,6 +47,7 @@ class Plan:
     steps: list         # list[GroupStep], one per group, in collections_cfg.groups order
     next_action: object # first GroupStep whose action != "done", or None
     done: bool          # True iff every step's action == "done"
+    skipped: list = field(default_factory=list)  # [{group, action, reason}] groups skipped on no-progress
 
 
 def _parse_page(page: dict) -> tuple[str | None, list[str]]:
@@ -222,6 +223,12 @@ def _band(group, collections_cfg, *, done: bool) -> None:
     _console.print(render_rule(label, width=RULE_TOP, char="═", index=(idx, total)))
 
 
+def _next_unstuck(plan, stuck_groups):
+    """First step that is neither done nor in a stuck group — None if none remain."""
+    return next((s for s in plan.steps
+                 if s.action != "done" and s.group not in stuck_groups), None)
+
+
 def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
               progress_factory=None, interactive=False) -> Plan:
     """Inner loop shared by run_first_time and run_incremental.
@@ -237,18 +244,21 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                      enrich steps always return as a gate regardless of this flag.
     """
     executed: set[tuple[str, str]] = set()
+    stuck_groups: set[str] = set()
+    skipped: list[dict] = []
     current_group: str | None = None
 
     while True:
         run_control.checkpoint()
         plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
 
-        if plan.done:
+        step = _next_unstuck(plan, stuck_groups)
+        if step is None:
+            # Nothing left that isn't done or stuck.
             if current_group is not None:
                 _band(current_group, collections_cfg, done=True)
+            plan.skipped = skipped
             return plan
-
-        step = plan.next_action
 
         # Open/close group bands on group transitions.
         if step.group != current_group:
@@ -265,20 +275,21 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                 continue  # re-plan with the now-calibrated vocab; band stays open
             # Agent-filled enrich (or non-interactive): return the plan as a gate.
             _band(current_group, collections_cfg, done=True)
+            plan.skipped = skipped
             return plan
 
         key = (step.group, step.action)
         if key in executed:
-            # No-progress guard: this (group, action) was already executed in this
-            # loop iteration but Notion state didn't advance enough to move past it.
-            # Returning prevents an infinite spin; caller/logs surface the issue.
+            # This (group, action) already ran but state didn't advance. Skip the GROUP
+            # and keep driving the others — one stuck group must not halt the whole run.
             log.warning(
-                "sequencer: no-progress guard triggered for group=%r action=%r — "
-                "the stage ran but state did not advance; returning current plan",
-                step.group, step.action,
+                "sequencer: no progress for group=%r action=%r — skipping this group, "
+                "continuing with the rest", step.group, step.action,
             )
-            _band(current_group, collections_cfg, done=True)
-            return plan
+            stuck_groups.add(step.group)
+            skipped.append({"group": step.group, "action": step.action,
+                            "reason": "stage ran but Notion state did not advance"})
+            continue
 
         executed.add(key)
 

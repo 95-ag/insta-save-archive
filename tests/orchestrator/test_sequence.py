@@ -628,3 +628,31 @@ def test_run_loop_prints_group_band_on_group_change(monkeypatch, capsys):
     sequence._run_loop(object(), run_cfg, cfg, object(), object(), object())
     out = capsys.readouterr().out
     assert "Hustling" in out and "Biz" in out and out.count("═") > 0 and "done · Biz" in out
+
+
+# ---------------------------------------------------------------------------
+# Stuck-group skip: one stuck group must not halt the whole run
+# ---------------------------------------------------------------------------
+
+def test_stuck_group_is_skipped_others_still_run(monkeypatch):
+    """When group A's enrich makes no progress, the sequencer skips A and still runs B."""
+    cfg = _collections_cfg("A", "B")  # group order A, B
+    vocab = _fake_vocab("A", "B")
+    backend = _backend(automated=True)
+    routes = Routes()
+
+    # compute_plan always returns the same plan: A enrich (will stick), B extract.
+    stuck_plan = _plan([
+        {"group": "A", "action": "enrich", "automated": True},
+        {"group": "B", "action": "extract", "automated": True},
+    ], next_idx=0)
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: stuck_plan)
+    calls = _patch_stages(monkeypatch)
+
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
+
+    assert calls["enrich"] == ["A"]          # A's enrich ran once
+    assert len(calls["extract"]) == 1        # B's extract ran despite A being stuck
+    assert any(s["group"] == "A" for s in result.skipped)
