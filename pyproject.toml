@@ -21,6 +21,9 @@ include = ["pipeline*", "insta_save*", "cli*"]
 # importlib mode gives each test file a path-unique identity, preventing basename
 # collisions between tests/ and legacy/tests/ (both have test_reconcile.py).
 addopts = "--import-mode=importlib"
+# Scope collection to tests/ so a bare `pytest` never collects stray *_test.py scratch
+# under tmp/ (which can run live code on import). The suite lives entirely in tests/.
+testpaths = ["tests"]
 
 [tool.black]
 # 100 matches the existing v2 convention (most lines wrap at 100); Black's default
