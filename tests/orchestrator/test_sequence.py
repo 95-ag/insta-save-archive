@@ -676,3 +676,21 @@ def test_stuck_group_is_skipped_others_still_run(monkeypatch):
     assert calls["enrich"] == ["A"]          # A's enrich ran once
     assert len(calls["extract"]) == 1        # B's extract ran despite A being stuck
     assert any(s["group"] == "A" for s in result.skipped)
+
+
+def test_stuck_group_skip_is_printed(monkeypatch, capsys):
+    cfg = _collections_cfg("A", "B")
+    vocab = _fake_vocab("A", "B")
+    backend = _backend(automated=True)
+    routes = Routes()
+    stuck_plan = _plan([
+        {"group": "A", "action": "enrich", "automated": True},
+        {"group": "B", "action": "extract", "automated": True},
+    ], next_idx=0)
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: stuck_plan)
+    _patch_stages(monkeypatch)
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
+    out = capsys.readouterr().out
+    assert "skipped" in out.lower() and "A" in out

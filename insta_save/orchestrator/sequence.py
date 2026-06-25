@@ -288,6 +288,9 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                 "sequencer: no progress for group=%r action=%r — skipping this group, "
                 "continuing with the rest", step.group, step.action,
             )
+            _console.print(
+                f"   ⚠ skipped {step.group} ({step.action}) — no forward progress; "
+                f"continuing with the other groups")
             stuck_groups.add(step.group)
             skipped.append({"group": step.group, "action": step.action,
                             "reason": "stage ran but Notion state did not advance"})

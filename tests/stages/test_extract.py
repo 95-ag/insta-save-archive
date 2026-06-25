@@ -136,3 +136,17 @@ class _Holder:
 
 def _holder_raises(): return _Holder(None)
 def _holder_returns(ctx): return _Holder(ctx)
+
+
+def test_lazy_browser_close_swallows_teardown_error():
+    """A browser.close() failure during interrupt teardown must not propagate (it masked
+    the clean RunStopped exit with a raw traceback)."""
+    from insta_save.stages.extract import _LazyBrowser
+
+    lb = _LazyBrowser(playwright=None, env=None, headless=True)
+
+    class _B:
+        def close(self): raise RuntimeError("Connection closed while reading from the driver")
+
+    lb._browser = _B()
+    lb.close()  # must NOT raise

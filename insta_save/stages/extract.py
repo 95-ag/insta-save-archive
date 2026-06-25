@@ -40,12 +40,18 @@ class _LazyBrowser:
         return self._ctx
 
     def close(self):
+        # Teardown must never raise — on a stop/interrupt the playwright connection may
+        # already be down, and a close() error here would mask the clean RunStopped exit
+        # with a raw traceback.
         if self._browser is not None:
-            self._browser.close()
+            try:
+                self._browser.close()
+            except Exception as exc:  # noqa: BLE001 — teardown best-effort
+                log.warning("extract: browser close failed during teardown — %s", exc)
 
 
 def run_extract_item(env, run_extract_cfg, browser, item) -> str:
-    """Extract one item; write results; return a counter name ('extracted'/'no_content')."""
+    """Extract one item; write results; return a counter name ('extracted'/'caption_only'/'no_slides')."""
     ig_link, page_id = item["ig_link"], item["page_id"]
     if not ig_link:
         raise ValueError("ig_link is None — cannot extract")
