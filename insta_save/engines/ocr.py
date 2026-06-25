@@ -8,6 +8,7 @@ so a vision-capable enrich stage can read them directly — no flagging or escal
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -19,8 +20,17 @@ from insta_save.adapters.instagram.cookies import json_cookies_to_netscape
 log = logging.getLogger(__name__)
 
 CAROUSEL_NEXT_SEL = "button[aria-label='Next']"
-_CONTENT_PATH_MARKERS = ("/t51.82787-15/", "/t51.71878-15/")
+# IG content/slide images live under /t51.<host>-15/; the <host> number rotates over time
+# (82787, 71878, 75761, …) so we match the stable -15 suffix rather than hardcoded numbers.
+# -19 (e.g. t51.2885-19, t51.82787-19) is profile/avatar; t39 is video — both excluded.
+_CONTENT_MARKER_RE = re.compile(r"/t51\.\d+-15/")
 _PAGE_LOAD_PAUSE = 2.5
+
+
+def _is_content_image(src: str) -> bool:
+    """True for an IG content/slide image URL (CDN -15 family), excluding profile (-19)
+    and video (t39) assets."""
+    return bool(_CONTENT_MARKER_RE.search(src or ""))
 
 
 # --- pure, unit-tested ------------------------------------------------------
@@ -82,7 +92,7 @@ def _content_image_urls(page, scope: str = "img") -> list[str]:
     urls = []
     for img in imgs:
         src = img.get_attribute("src") or ""
-        if any(m in src for m in _CONTENT_PATH_MARKERS) and src not in seen:
+        if _is_content_image(src) and src not in seen:
             seen.add(src)
             urls.append(src)
     return urls

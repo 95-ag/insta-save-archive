@@ -99,3 +99,17 @@ def test_ocr_cookies_reads_expires_not_expirationDate(tmp_path):
         "Expires field is 0 — converter is still reading `expirationDate`; "
         "should read `expires`"
     )
+
+
+def test_is_content_image_matches_15_family_excludes_profile_and_video():
+    from insta_save.engines.ocr import _is_content_image
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    # content slides: -15 family, rotating host number
+    assert _is_content_image(f"{base}/t51.82787-15/abc_n.jpg")
+    assert _is_content_image(f"{base}/t51.71878-15/abc_n.jpg")
+    assert _is_content_image(f"{base}/t51.75761-15/abc_n.jpg")  # the rotated marker that was missed
+    # excluded: -19 profile/avatar (incl. same host number as a -19), and t39 video thumbs
+    assert not _is_content_image(f"{base}/t51.2885-19/abc_n.jpg")
+    assert not _is_content_image(f"{base}/t51.82787-19/abc_n.jpg")
+    assert not _is_content_image(f"{base}/t39.30808-6/abc_n.jpg")
+    assert not _is_content_image("")
