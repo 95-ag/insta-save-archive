@@ -76,3 +76,27 @@ def test_gate_accepts_exactly_three_words():
 
 def test_gate_accepts_language_prob_at_threshold():
     assert tr._gate("one two three", 0.5) is True
+
+
+def test_extract_transcript_passes_stdin_devnull(monkeypatch, tmp_path):
+    """yt-dlp must not inherit the controlling TTY stdin (else ffmpeg eats run-control keys)."""
+    import subprocess
+    from insta_save.engines import transcript
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(transcript.subprocess, "run", _fake_run)
+    monkeypatch.setattr(transcript, "_prepare_cookies", lambda *a, **k: None)
+    monkeypatch.setattr(transcript, "transcribe", lambda *a, **k: ("hi there now", True, "en"))
+
+    transcript.extract_transcript(ig_link="https://x/reel/AB/", shortcode="AB",
+                                  tmp_dir=str(tmp_path), cookies_json="c.json")
+    assert captured["kwargs"].get("stdin") is subprocess.DEVNULL

@@ -28,6 +28,33 @@ def test_ocr_score_text_without_scores():
     assert ocr.ocr_score([[None, "hello", None]]) == ("hello", None)
 
 
+def test_extract_ocr_frames_subprocesses_use_devnull(monkeypatch, tmp_path):
+    """Both yt-dlp and ffmpeg must get stdin=DEVNULL; ffmpeg also -nostdin."""
+    import subprocess
+    from insta_save.engines import ocr
+
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Result()
+
+    monkeypatch.setattr(ocr.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ocr, "json_cookies_to_netscape", lambda *a, **k: None)
+    ocr.extract_ocr_frames(ig_link="https://x/reel/AB/", shortcode="AB",
+                           tmp_dir=str(tmp_path), cookies_json="c.json")
+    assert len(calls) == 2, f"Expected 2 subprocess.run calls, got {len(calls)}"
+    yt_cmd, yt_kw = calls[0]
+    ff_cmd, ff_kw = calls[1]
+    assert yt_kw.get("stdin") is subprocess.DEVNULL
+    assert ff_kw.get("stdin") is subprocess.DEVNULL
+    assert "-nostdin" in ff_cmd
+
+
 def test_ocr_cookies_reads_expires_not_expirationDate(tmp_path):
     """extract_ocr_frames must produce a Netscape cookies file that carries the
     real `expires` timestamp, not 0.  The old private _netscape_cookies read

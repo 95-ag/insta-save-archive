@@ -245,16 +245,18 @@ def extract_ocr_frames(
             capture_output=True,
             text=True,
             timeout=120,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp (video) failed: {result.stderr.strip()}")
 
         # Sample 1 frame per second via ffmpeg
         subprocess.run(
-            ["ffmpeg", "-i", video_path, "-vf", "fps=1",
+            ["ffmpeg", "-nostdin", "-i", video_path, "-vf", "fps=1",
              str(frames_dir / "frame_%04d.jpg"), "-loglevel", "error"],
             check=True,
             timeout=120,
+            stdin=subprocess.DEVNULL,
         )
 
         seen_lines: set[str] = set()

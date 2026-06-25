@@ -63,7 +63,7 @@ def extract_transcript(ig_link: str, shortcode: str, tmp_dir: str, cookies_json:
         result = subprocess.run(
             [yt, "--cookies", cookies_txt, "--extract-audio", "--audio-format", "mp3",
              "--output", audio_path, "--quiet", "--no-warnings", ig_link],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
