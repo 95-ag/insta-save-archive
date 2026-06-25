@@ -83,8 +83,21 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
 
     has_content = bool(results["transcript"] or results["ocr_text"] or results["carousel_slides"])
     if not has_content:
-        log.warning("extract: %s — no content, stays Queued", item.get("source_id"))
-        return "no_content"
+        if post_type in ("Reel", "IGTV"):
+            # No transcript/OCR (music-only / no on-screen text). Advance to Extracted so
+            # the text lane enriches it from its caption — leaving it Queued would pin the
+            # group on the extract action (queued>0 shadows the calibrate/enrich rules).
+            write_extraction(env, page_id, results)
+            time.sleep(env.notion_write_delay)
+            log.info("extract: %s — no transcript/OCR; Extracted for caption-only enrich",
+                     item.get("source_id"))
+            return "caption_only"
+        # Carousel/Post with no slides: extraction genuinely failed (rotated CDN marker, or
+        # video slides we can't OCR). Mark Failed so it leaves Queued and is recoverable via
+        # `isa status --retry-failed` once the selector/feature lands.
+        mark_failed(env, page_id, "no slides extracted (carousel/post)")
+        log.warning("extract: %s — no slides extracted, marked Failed", item.get("source_id"))
+        return "no_slides"
     write_extraction(env, page_id, results)
     time.sleep(env.notion_write_delay)
     return "extracted"
