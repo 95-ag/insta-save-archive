@@ -211,7 +211,10 @@ def test_retry_failed_no_failed_pages(monkeypatch):
 
 
 def test_retry_failed_continues_past_a_bad_requeue(monkeypatch):
-    """One failing requeue must not abort the whole retry loop."""
+    """One failing requeue must not abort the whole retry loop, and its item
+    must NOT be counted in the success counters."""
+    # p1 (has_raw=False) -> target Queued, but requeue raises -> NOT counted
+    # p2 (has_raw=False) -> target Queued, requeue succeeds  -> counted in to_queued
     pages = [
         _page("p1", "Failed", ["Reels"], has_raw=False),
         _page("p2", "Failed", ["Fashion"], has_raw=False),
@@ -225,8 +228,12 @@ def test_retry_failed_continues_past_a_bad_requeue(monkeypatch):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(status_report, "requeue", _requeue)
-    status_report.retry_failed(env=None)      # must not raise
-    assert "p1" in calls and "p2" in calls   # p2 still attempted after p1 failed
+    result = status_report.retry_failed(env=None)   # must not raise
+    assert "p1" in calls and "p2" in calls          # p2 still attempted after p1 failed
+    # p1's failed requeue must NOT bump any counter — only p2 counts
+    assert result["requeued"] == 1
+    assert result["to_queued"] == 1
+    assert result["to_extracted"] == 0
 
 
 def test_retry_failed_only_processes_failed_pages(monkeypatch):
