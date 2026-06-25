@@ -9,7 +9,7 @@ from pathlib import Path
 from insta_save.config.env import load_env as _load_env
 from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
-from insta_save.config.tags import load_vocab
+from insta_save.config.tags import load_vocab, load_vocab_or_empty
 from insta_save.adapters.notion import ensure_schema
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
@@ -407,7 +407,7 @@ def _dispatch_mode(args) -> None:
         except RuntimeError as exc:
             raise SystemExit(str(exc))   # clean actionable exit, not an uncaught traceback
 
-    vocab = load_vocab()
+    vocab = _guard(load_vocab_or_empty)
     backend = get_backend(run_cfg.enrich.backend)   # resolved AFTER the gate
     routes = load_routes()
 

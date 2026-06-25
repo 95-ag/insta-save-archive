@@ -26,6 +26,12 @@ class Vocab:
             raise KeyError(f"tags: no topics for group {group!r}")
         return self._group_topics[group]
 
+    @classmethod
+    def empty(cls) -> "Vocab":
+        """The cold-start vocabulary: no content-types / topics / groups. has_group() is
+        False for every group, so the first-time run's per-group calibrate gate builds it."""
+        return cls(content_types=[], cross_group_topics=[], _group_topics={}, definitions={})
+
 
 def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
     p = Path(path)
@@ -52,6 +58,16 @@ def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
         _group_topics=groups,
         definitions=definitions,
     )
+
+
+def load_vocab_or_empty(path=_DEFAULT_TAGS) -> Vocab:
+    """Run-path vocab loader: a MISSING tags.json yields an empty Vocab (cold-start — the
+    per-group calibrate gate builds it during the run), but a PRESENT-but-malformed tags.json
+    still raises (don't silently discard a corrupt locked vocab). The --stage enrich/calibrate
+    commands use load_vocab() directly, which raises on missing so the user is told to calibrate."""
+    if not Path(path).exists():
+        return Vocab.empty()
+    return load_vocab(path)
 
 
 def merge_vocab(current: dict, group: str, proposed: dict) -> dict:

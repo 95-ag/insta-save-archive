@@ -162,3 +162,39 @@ def test_lock_vocab_still_matches_merge(tmp_path):
     proposed = {"content_type": {}, "groups": {"N": {"w": "b"}}, "cross_group": {}}
     tagcfg.lock_vocab("N", proposed, path=p)
     assert json.loads(p.read_text(encoding="utf-8")) == tagcfg.merge_vocab(current, "N", proposed)
+
+
+# load_vocab_or_empty + Vocab.empty tests
+
+def test_vocab_empty_has_no_groups():
+    from insta_save.config.tags import Vocab
+    v = Vocab.empty()
+    assert v.content_types == [] and v.cross_group_topics == []
+    assert v.has_group("Hustle") is False
+
+
+def test_load_vocab_or_empty_missing_returns_empty(tmp_path):
+    from insta_save.config.tags import load_vocab_or_empty
+    v = load_vocab_or_empty(path=str(tmp_path / "nope.json"))
+    assert v.has_group("anything") is False
+    assert v.content_types == []
+
+
+def test_load_vocab_or_empty_present_valid_loads(tmp_path):
+    import json
+    from insta_save.config.tags import load_vocab_or_empty
+    p = tmp_path / "tags.json"
+    p.write_text(json.dumps({"content_type": {"tool": "x"}, "cross_group": {"ai": "y"},
+                             "groups": {"Hustle": {"seo": "z"}}}))
+    v = load_vocab_or_empty(path=str(p))
+    assert v.has_group("Hustle") is True
+    assert "tool" in v.content_types
+
+
+def test_load_vocab_or_empty_present_malformed_raises(tmp_path):
+    import json
+    from insta_save.config.tags import load_vocab_or_empty
+    p = tmp_path / "tags.json"
+    p.write_text(json.dumps({"content_type": {"tool": "x"}}))  # missing groups/cross_group
+    with pytest.raises(RuntimeError):
+        load_vocab_or_empty(path=str(p))
