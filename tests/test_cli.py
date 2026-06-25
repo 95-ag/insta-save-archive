@@ -997,3 +997,54 @@ def test_dispatch_mode_exits_cleanly_on_run_stopped(monkeypatch, capsys):
     isa._dispatch_mode(args)                          # must NOT raise (clean exit)
     out = capsys.readouterr().out
     assert "resume" in out.lower() and "isa run --mode first-time" in out
+
+
+# ---------------------------------------------------------------------------
+# B1: CLI secondary-command config-error guards
+# Each test patches a loader on the `isa` module to raise its known error type
+# and asserts the handler converts it to a clean SystemExit (not a raw traceback).
+# ---------------------------------------------------------------------------
+
+def test_status_load_env_error_raises_system_exit(monkeypatch):
+    """isa status: _load_env raising ValueError -> clean SystemExit, not raw traceback."""
+    monkeypatch.setattr(isa, "_load_env", lambda: (_ for _ in ()).throw(ValueError("bad .env: NOTION_TOKEN missing")))
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+
+    import types as _t
+    _args = _t.SimpleNamespace(command="status", retry_failed=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None): return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    with pytest.raises(SystemExit):
+        isa.main()
+
+
+def test_status_load_collections_error_raises_system_exit(monkeypatch):
+    """isa status: _load_collections raising RuntimeError -> clean SystemExit."""
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_collections",
+                        lambda: (_ for _ in ()).throw(RuntimeError("Collections config not found")))
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+
+    import types as _t
+    _args = _t.SimpleNamespace(command="status", retry_failed=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None): return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    with pytest.raises(SystemExit):
+        isa.main()
+
+
+def test_stage_extract_load_run_error_raises_system_exit(monkeypatch):
+    """isa run --stage extract: _load_run raising FileNotFoundError -> clean SystemExit."""
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run",
+                        lambda: (_ for _ in ()).throw(FileNotFoundError("config/run.json not found")))
+
+    args = isa.build_parser().parse_args(["run", "--stage", "extract"])
+    with pytest.raises(SystemExit):
+        isa.dispatch_run(args)

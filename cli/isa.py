@@ -1,6 +1,7 @@
 """isa — Insta-Save v2 CLI entrypoint. Arg surface only; stages are stubbed until built."""
 
 import argparse
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,16 @@ from insta_save.orchestrator.status_report import build_status, retry_failed as 
 from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+
+
+def _guard(load, *args, **kwargs):
+    """Call a config loader, converting its known errors into a clean, actionable SystemExit
+    instead of a raw traceback. Used on the secondary commands / --stage handlers (the
+    `isa run` path has its own targeted handling)."""
+    try:
+        return load(*args, **kwargs)
+    except (RuntimeError, FileNotFoundError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise SystemExit(str(exc))
 
 
 def _rel(p: str) -> str:
@@ -93,9 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def dispatch_run(args) -> None:
     if args.stage == "extract":
-        env = _load_env()
-        run_cfg = _load_run()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         log_path = setup_logging("extract")
         print(f"Logging to {_rel(log_path)}")
@@ -110,9 +121,9 @@ def dispatch_run(args) -> None:
         # sample -> backend drafts -> you reject/add + preview -> lock into config/tags.json.
         if not args.group:
             raise SystemExit("isa run --stage calibrate: --group is required")
-        env = _load_env()
-        run_cfg = _load_run()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
         backend = get_backend(run_cfg.enrich.backend)
         print(f"Logging to {_rel(setup_logging('calibrate'))}")
         run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
@@ -124,8 +135,8 @@ def dispatch_run(args) -> None:
         # validate args BEFORE loading config/vocab (fail fast; agent-filled --apply reads
         # the group from batch.json, so it needs no --group). load_vocab() must not run for a
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
-        env = _load_env()
-        run_cfg = _load_run()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
         backend = base.get_backend(run_cfg.enrich.backend)
         budgets = backend.batch_budgets(run_cfg)
 
@@ -139,7 +150,7 @@ def dispatch_run(args) -> None:
             if not args.group:
                 raise SystemExit("isa run --stage enrich --status: --group is required")
             from insta_save.backends import cowork
-            collections_cfg = _load_collections()
+            collections_cfg = _guard(_load_collections)
             print(f"{args.group}: {cowork.status(env, collections_cfg, args.group)} "
                   f"enrichable remaining")
             return
@@ -161,8 +172,8 @@ def dispatch_run(args) -> None:
             if not args.group:
                 raise SystemExit("isa run --stage enrich: --group is required for the "
                                  f"{backend.NAME!r} backend (drains the group in one run)")
-            vocab = load_vocab()
-            collections_cfg = _load_collections()
+            vocab = _guard(load_vocab)
+            collections_cfg = _guard(_load_collections)
             log_path = setup_logging("enrich")
             print(f"Logging to {_rel(log_path)}")
             totals = enrich.drain_enrich_group(
@@ -184,20 +195,23 @@ def dispatch_run(args) -> None:
             raise SystemExit("isa run --stage enrich: pass exactly one of --prepare/--apply")
         if not args.apply and not args.group:
             raise SystemExit("isa run --stage enrich --prepare: --group is required")
-        vocab = load_vocab()
+        vocab = _guard(load_vocab)
         if args.apply:
             log_path = setup_logging("enrich-apply")
             print(f"Logging to {_rel(log_path)}")
-            collections_cfg = _load_collections()
+            collections_cfg = _guard(_load_collections)
             with StageProgress("Enrich apply") as progress:
-                counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
-                                      collections_cfg=collections_cfg, progress=progress)
+                try:
+                    counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                                          collections_cfg=collections_cfg, progress=progress)
+                except FileNotFoundError as exc:
+                    raise SystemExit(str(exc))
             print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
             return
         # prepare (group guaranteed present by the guard above)
         log_path = setup_logging("enrich-prepare")
         print(f"Logging to {_rel(log_path)}")
-        collections_cfg = _load_collections()
+        collections_cfg = _guard(_load_collections)
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
                                char_budget=budgets.char_budget, max_items=budgets.max_items,
@@ -216,8 +230,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "ingest":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         log_path = setup_logging("ingest")
         print(f"Logging to {_rel(log_path)}")
@@ -235,8 +249,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "select":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         log_path = setup_logging("select")
         print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.select import run_select_stage
@@ -249,9 +263,9 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "deterministic":
-        env = _load_env()
-        run_cfg = _load_run()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         from insta_save.stages import deterministic as det
         if run_cfg.deterministic_title_mode == "llm":
@@ -282,7 +296,10 @@ def dispatch_run(args) -> None:
                         break
                     backend.fill(env, run_cfg, det_dir)
                     with StageProgress("Deterministic apply") as progress:
-                        counts = det.apply(env, progress=progress)
+                        try:
+                            counts = det.apply(env, progress=progress)
+                        except FileNotFoundError as exc:
+                            raise SystemExit(str(exc))
                     print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
                     # No-progress guard: prepare batched items but apply wrote none, so those
                     # items stay Imported and the next prepare re-selects them — would spin
@@ -304,7 +321,10 @@ def dispatch_run(args) -> None:
                 log_path = setup_logging("deterministic-apply")
                 print(f"Logging to {_rel(log_path)}")
                 with StageProgress("Deterministic apply") as progress:
-                    counts = det.apply(env, progress=progress)
+                    try:
+                        counts = det.apply(env, progress=progress)
+                    except FileNotFoundError as exc:
+                        raise SystemExit(str(exc))
                 print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
                 return
             if not args.group:
@@ -336,8 +356,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "route":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         from insta_save.stages.route import run_route_stage
         routes = load_routes()
@@ -487,22 +507,25 @@ def main() -> None:
         dispatch_run(args)
         return
     if args.command == "discover":
-        env = _load_env()
+        env = _guard(_load_env)
         ig_username = args.ig_username or env.ig_username
         log_path = setup_logging("discover")
         print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.discover import run_discover
         names = [args.collection] if args.collection else None
-        summary = run_discover(env, ig_username=ig_username,
-                               collections_path="config/collections.json",
-                               tmp_dir=env.tmp_dir, headed=args.headed,
-                               fresh=args.fresh, names=names)
+        try:
+            summary = run_discover(env, ig_username=ig_username,
+                                   collections_path="config/collections.json",
+                                   tmp_dir=env.tmp_dir, headed=args.headed,
+                                   fresh=args.fresh, names=names)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))
         print(f"Discover: {len(summary['new'])} new, {len(summary['missing'])} missing, "
               f"index_complete={summary['index_complete']}, skipped={summary['skipped']}")
         return
     if args.command == "backup":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         log_path = setup_logging("backup")
         print(f"Logging to {_rel(log_path)}")
         out_dir = Path(env.tmp_dir) / "backups"
@@ -525,13 +548,12 @@ def main() -> None:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = backup(env, out_dir=out_dir, ts=ts)
             # Re-read count from the written file so we don't need backup() to return it.
-            import json as _json
-            written_count = _json.loads(path.read_text(encoding="utf-8"))["count"]
+            written_count = json.loads(path.read_text(encoding="utf-8"))["count"]
             print(f"Backup: wrote {path} ({written_count} pages)")
         return
     if args.command == "status":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         setup_logging("status")
         if args.retry_failed:
             r = _retry_failed(env)
