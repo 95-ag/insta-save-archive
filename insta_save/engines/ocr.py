@@ -33,6 +33,16 @@ def _is_content_image(src: str) -> bool:
     return bool(_CONTENT_MARKER_RE.search(src or ""))
 
 
+# Video carousel slides render as poster thumbnails under /t39.<host>-6/ (not t51.*-15
+# content images). yt-dlp can't enumerate carousel slides, so we OCR the poster cover frame.
+_VIDEO_POSTER_RE = re.compile(r"/t39\.\d+-6/")
+
+
+def _is_video_poster(src: str) -> bool:
+    """True for an IG video-slide poster thumbnail URL (CDN t39 family)."""
+    return bool(_VIDEO_POSTER_RE.search(src or ""))
+
+
 # --- pure, unit-tested ------------------------------------------------------
 def ocr_score(rapid_result) -> tuple[str, float | None]:
     """From a RapidOCR result ([[box, text, score], ...]) -> (joined_text, mean_confidence|None)."""
@@ -79,20 +89,25 @@ def _download_image(url: str, dest: str, cookie_header: str) -> None:
             f.write(resp.read())
 
 
-def _content_image_urls(page, scope: str = "img") -> list[str]:
+def _content_image_urls(page, scope: str = "img", include_video_posters: bool = False) -> list[str]:
     """
     Return content image URLs from the page, scoped to a CSS selector.
     Filters on content path markers to exclude profile pics and UI assets.
 
     Use scope="ul img" for carousels — the carousel slides live in the single
     <ul> on the post page, scoping prevents picking up feed images below.
+
+    include_video_posters: also collect t39 video-slide poster thumbnails (carousels whose
+    slides are videos render posters, not -15 images). Off by default so single Posts and
+    image carousels are unaffected.
     """
     imgs = page.query_selector_all(scope)
     seen = set()
     urls = []
     for img in imgs:
         src = img.get_attribute("src") or ""
-        if _is_content_image(src) and src not in seen:
+        is_slide = _is_content_image(src) or (include_video_posters and _is_video_poster(src))
+        if is_slide and src not in seen:
             seen.add(src)
             urls.append(src)
     return urls
@@ -130,7 +145,7 @@ def extract_carousel(
         seen_urls: set[str] = set()
 
         def _collect_current():
-            for url in _content_image_urls(page, scope="ul img"):
+            for url in _content_image_urls(page, scope="ul img", include_video_posters=True):
                 if url not in seen_urls:
                     seen_urls.add(url)
                     slide_urls.append(url)

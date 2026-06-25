@@ -113,3 +113,34 @@ def test_is_content_image_matches_15_family_excludes_profile_and_video():
     assert not _is_content_image(f"{base}/t51.82787-19/abc_n.jpg")
     assert not _is_content_image(f"{base}/t39.30808-6/abc_n.jpg")
     assert not _is_content_image("")
+
+
+def test_is_video_poster_matches_t39_family():
+    from insta_save.engines.ocr import _is_video_poster
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    assert _is_video_poster(f"{base}/t39.30808-6/470_n.jpg")
+    assert not _is_video_poster(f"{base}/t51.82787-15/abc_n.jpg")  # content image, not a poster
+    assert not _is_video_poster(f"{base}/t51.2885-19/abc_n.jpg")   # profile
+    assert not _is_video_poster("")
+
+
+def test_content_image_urls_includes_video_posters_when_requested(monkeypatch):
+    """With include_video_posters=True, a carousel's t39 video posters are collected as slides."""
+    from insta_save.engines import ocr
+
+    class _Img:
+        def __init__(self, src): self._src = src
+        def get_attribute(self, _): return self._src
+
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    imgs = [_Img(f"{base}/t39.30808-6/v1.jpg"), _Img(f"{base}/t39.30808-6/v2.jpg"),
+            _Img(f"{base}/t51.2885-19/profile.jpg")]  # profile excluded
+
+    class _Page:
+        def query_selector_all(self, scope): return imgs
+
+    urls_default = ocr._content_image_urls(_Page(), scope="ul img")
+    urls_posters = ocr._content_image_urls(_Page(), scope="ul img", include_video_posters=True)
+    assert urls_default == []                       # posters NOT collected by default
+    assert len(urls_posters) == 2                   # both video posters, profile excluded
+    assert all("t39.30808-6" in u for u in urls_posters)
