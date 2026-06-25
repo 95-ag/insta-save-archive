@@ -146,6 +146,14 @@ def test_merge_vocab_group_set_outright_drops_rejected():
     assert merged["groups"]["G"] == {"a": "x"}   # 'b' dropped
 
 
+def test_load_vocab_malformed_missing_key_raises_runtime_error(tmp_path):
+    """A tags.json missing a required key raises RuntimeError with an actionable message."""
+    p = tmp_path / "bad_tags.json"
+    p.write_text('{"content_type": {}}', encoding="utf-8")  # missing 'groups' and 'cross_group'
+    with pytest.raises(RuntimeError, match="malformed"):
+        tagcfg.load_vocab(p)
+
+
 def test_lock_vocab_still_matches_merge(tmp_path):
     """lock_vocab writes exactly what merge_vocab returns."""
     p = tmp_path / "tags.json"

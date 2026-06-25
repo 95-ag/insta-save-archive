@@ -32,9 +32,13 @@ def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
     if not p.exists():
         raise RuntimeError(f"Tag vocabulary not found: {p} (see docs/OPERATING.md).")
     data = json.loads(p.read_text(encoding="utf-8"))
-    content = data["content_type"]
-    cross = data["cross_group"]
-    groups = {g: list(t.keys()) for g, t in data["groups"].items()}
+    try:
+        content = data["content_type"]
+        cross = data["cross_group"]
+        groups = {g: list(t.keys()) for g, t in data["groups"].items()}
+    except KeyError as exc:
+        raise RuntimeError(
+            f"tags.json malformed — missing key {exc}; rebuild via the calibrate gate") from exc
 
     definitions: dict[str, str] = {}
     definitions.update(content)

@@ -83,8 +83,16 @@ def _rich_text_chunked(text: str) -> dict:
 
 
 def _get_data_source_id(client: Client, database_id: str) -> str:
-    db = client.databases.retrieve(database_id=database_id)
-    return db["data_sources"][0]["id"]
+    try:
+        db = client.databases.retrieve(database_id=database_id)
+        return db["data_sources"][0]["id"]
+    except APIResponseError as exc:
+        raise RuntimeError(
+            f"Notion API error for database {database_id} (check NOTION_TOKEN / "
+            f"NOTION_DATABASE_ID): {exc}") from exc
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(
+            f"Notion database {database_id} has no data_sources — check the database ID") from exc
 
 
 # --- pure helpers (unit-tested) --------------------------------------------

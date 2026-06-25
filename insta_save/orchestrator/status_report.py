@@ -108,7 +108,11 @@ def retry_failed(env) -> dict:
             continue
 
         target = "Extracted" if has_content else "Queued"
-        requeue(env, page_id, target)
+        try:
+            requeue(env, page_id, target)
+        except Exception as exc:  # noqa: BLE001 — one bad requeue must not abort the loop
+            log.error("status: requeue failed for %s — %s", page_id, exc)
+            continue
         if target == "Extracted":
             to_extracted += 1
         else:

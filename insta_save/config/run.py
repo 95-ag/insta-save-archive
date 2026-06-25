@@ -49,7 +49,11 @@ def _require(value, valid, label):
 
 
 def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Run config not found: {p} — run `isa run --mode first-time` to seed it")
+    data = json.loads(p.read_text(encoding="utf-8"))
 
     mode = _require(data.get("mode", "incremental"), VALID_MODES, "mode")
     enrich_raw = data.get("enrich", {})

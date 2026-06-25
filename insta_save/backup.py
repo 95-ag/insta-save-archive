@@ -83,7 +83,10 @@ def restore_check(env, backup_path: Path, collections_cfg) -> dict:
     _tallies). This is consistent with how the enrich stage groups items — an item in
     collections spanning two groups contributes to both group tallies.
     """
-    data = json.loads(Path(backup_path).read_text(encoding="utf-8"))
+    try:
+        data = json.loads(Path(backup_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"backup file unreadable ({backup_path}): {exc}") from exc
     backup_pages: list[dict] = data.get("pages", [])
     backup_count = len(backup_pages)
 

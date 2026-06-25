@@ -210,6 +210,25 @@ def test_retry_failed_no_failed_pages(monkeypatch):
     assert result == {"requeued": 0, "to_extracted": 0, "to_queued": 0}
 
 
+def test_retry_failed_continues_past_a_bad_requeue(monkeypatch):
+    """One failing requeue must not abort the whole retry loop."""
+    pages = [
+        _page("p1", "Failed", ["Reels"], has_raw=False),
+        _page("p2", "Failed", ["Fashion"], has_raw=False),
+    ]
+    monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
+    calls = []
+
+    def _requeue(env, pid, target):
+        calls.append(pid)
+        if pid == "p1":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(status_report, "requeue", _requeue)
+    status_report.retry_failed(env=None)      # must not raise
+    assert "p1" in calls and "p2" in calls   # p2 still attempted after p1 failed
+
+
 def test_retry_failed_only_processes_failed_pages(monkeypatch):
     pages = [
         _page("p1", "Failed", ["Reels"], has_raw=False),
