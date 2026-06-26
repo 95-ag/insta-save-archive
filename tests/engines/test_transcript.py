@@ -100,3 +100,45 @@ def test_extract_transcript_passes_stdin_devnull(monkeypatch, tmp_path):
     transcript.extract_transcript(ig_link="https://x/reel/AB/", shortcode="AB",
                                   tmp_dir=str(tmp_path), cookies_json="c.json")
     assert captured["kwargs"].get("stdin") is subprocess.DEVNULL
+
+
+def _stub_yt_dlp(monkeypatch, returncode, stderr):
+    from insta_save.engines import transcript
+
+    class _Result:
+        pass
+    _Result.returncode = returncode
+    _Result.stderr = stderr
+    monkeypatch.setattr(transcript.subprocess, "run", lambda cmd, **k: _Result())
+    monkeypatch.setattr(transcript, "_prepare_cookies", lambda *a, **k: None)
+
+
+def test_no_audio_stream_returns_unavailable_not_raise(monkeypatch, tmp_path):
+    """A reel with no audio stream (music stripped / silent) fails yt-dlp audio
+    postprocessing. That's a content property, not a failure — return no transcript so the
+    item advances to caption-only/OCR Extracted instead of being marked Failed (and
+    re-failing on every retry, since it is deterministic)."""
+    from insta_save.engines import transcript
+
+    _stub_yt_dlp(monkeypatch, 1,
+                 "ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe")
+    # transcribe must NOT be reached (there is no audio file to read).
+    monkeypatch.setattr(transcript, "transcribe",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("transcribe called")))
+
+    out = transcript.extract_transcript(ig_link="https://x/reel/AB/", shortcode="AB",
+                                        tmp_dir=str(tmp_path), cookies_json="c.json")
+    assert out == {"transcript": None, "transcript_available": False, "transcript_language": None}
+
+
+def test_transient_yt_dlp_error_still_raises(monkeypatch, tmp_path):
+    """Transient download errors (HTTP 4xx/5xx) must still raise → Failed → retryable later
+    (don't swallow them into a permanent no-transcript)."""
+    import pytest
+    from insta_save.engines import transcript
+
+    _stub_yt_dlp(monkeypatch, 1,
+                 "ERROR: unable to download video data: HTTP Error 429: Too Many Requests")
+    with pytest.raises(RuntimeError, match="yt-dlp failed"):
+        transcript.extract_transcript(ig_link="https://x/reel/AB/", shortcode="AB",
+                                      tmp_dir=str(tmp_path), cookies_json="c.json")
