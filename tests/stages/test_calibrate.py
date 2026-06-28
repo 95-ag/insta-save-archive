@@ -47,6 +47,26 @@ def test_sample_respects_limit(tmp_path, monkeypatch):
     assert n == 3
 
 
+class _Cols2:
+    def group_of(self, c):
+        return "G" if c in ("big", "small") else None
+
+    def collections_in_group(self, g):
+        return {"big", "small"} if g == "G" else set()
+
+
+def test_sample_round_robins_across_collections(tmp_path, monkeypatch):
+    stubs = {"High": [{"page_id": f"b{i}", "source_id": f"b{i}", "collections": ["big"]} for i in range(5)]
+                     + [{"page_id": "s0", "source_id": "s0", "collections": ["small"]}]}
+    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))
+    monkeypatch.setattr(calibrate, "get_page_content",
+                        lambda env, pid: {"page_id": pid, "source_id": pid, "type": "Reel"})
+    calibrate.sample(_env(tmp_path), group="G", collections_cfg=_Cols2(),
+                     limit=3, statuses=["Extracted"], prompt_template="{group}")
+    pids = [i["page_id"] for i in json.loads((tmp_path / "calibrate" / "sample.json").read_text())["items"]]
+    assert "s0" in pids and len(pids) == 3      # small collection represented despite big's 5
+
+
 def test_prompt_includes_collection_names(tmp_path, monkeypatch):
     stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
     monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))

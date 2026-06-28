@@ -48,6 +48,27 @@ def _group_stubs(env, statuses, group, collections_cfg):
                     yield stub
 
 
+def _balanced_order(stubs, group, collections_cfg):
+    """Round-robin across the group's collections so each is represented regardless of size.
+    Dedup by page_id; a stub in several group-collections is filed under its first (the item's
+    collection order). Priority order is preserved within each collection bucket."""
+    from collections import OrderedDict
+    buckets, seen = OrderedDict(), set()
+    for stub in stubs:
+        pid = stub["page_id"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        gcols = [c for c in stub.get("collections", []) if collections_cfg.group_of(c) == group]
+        buckets.setdefault(gcols[0] if gcols else group, []).append(stub)
+    out = []
+    while any(buckets.values()):
+        for k in list(buckets):
+            if buckets[k]:
+                out.append(buckets[k].pop(0))
+    return out
+
+
 def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, progress=None) -> int:
     """Collect up to `limit` items of the group across `statuses` (priority order),
     write sample.json + prompt.txt. Returns the sample size. Callers pass the extract
@@ -55,7 +76,8 @@ def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, pro
     Optional `progress` (StageProgress) shows a live per-item sample bar."""
     items = []
     bar = progress.add_bar(f"Calibrate sample · {group}", total=limit) if progress else None
-    for stub in _group_stubs(env, statuses, group, collections_cfg):
+    ordered = _balanced_order(_group_stubs(env, statuses, group, collections_cfg), group, collections_cfg)
+    for stub in ordered:
         if len(items) >= limit:
             break
         content = get_page_content(env, stub["page_id"])
