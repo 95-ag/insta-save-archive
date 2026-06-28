@@ -321,3 +321,34 @@ def test_editor_all_reedit_then_keep(tmp_path, monkeypatch):
     vocab = _run(tags, monkeypatch)
     assert calls["n"] == 2                       # editor called twice
     assert vocab.group_topics("G") == ["edited"]
+
+
+# ---- C1 review: guard keep branch when load_vocab fails -----------------------
+
+def test_editor_all_keep_with_invalid_json_reprompts(tmp_path, monkeypatch, capsys):
+    """editor_all: reedit writes garbage -> keep while still invalid -> must NOT raise (re-loops);
+    a subsequent reedit with valid JSON then keep returns the vocab."""
+    tags = _wire(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_editor(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First edit (initial editor_all): valid JSON
+            open(path, "w").write(json.dumps(
+                {"content_type": {}, "groups": {"G": {"v1": "d1"}}, "cross_group": {}}))
+        elif calls["n"] == 2:
+            # reedit: write garbage — load_vocab will fail
+            open(path, "w").write("{bad json")
+        else:
+            # Third call (reedit again): fix it
+            open(path, "w").write(json.dumps(
+                {"content_type": {}, "groups": {"G": {"recovered": "r"}}, "cross_group": {}}))
+    monkeypatch.setattr(calibrate_gate, "_editor", fake_editor)
+    _selects(monkeypatch, ["editor_all"])
+    # Initial edit valid -> reedit (writes garbage) -> keep (invalid file, must re-loop not crash)
+    # -> reedit (writes valid) -> keep (returns)
+    _confirms(monkeypatch, ["reedit", "keep", "reedit", "keep"])
+    vocab = _run(tags, monkeypatch)
+    assert "invalid tags.json" in capsys.readouterr().out
+    assert vocab.group_topics("G") == ["recovered"]

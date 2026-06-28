@@ -26,15 +26,8 @@ def select(message, choices, *, default=None):
     unwanted 'Description:' prefix, so we inline it instead."""
     qchoices = []
     for (label, value, help_) in choices:
-        if help_:
-            # Formatted-text title: label normal, hint dimmed inline.
-            # Fall back to a plain string if the list form misbehaves.
-            try:
-                title = [("", label), ("class:choice-hint", f"   {help_}")]
-            except Exception:
-                title = f"{label}   {help_}"
-        else:
-            title = label
+        # Formatted-text title: label normal, hint dimmed inline.
+        title = [("", label), ("class:choice-hint", f"   {help_}")] if help_ else label
         qchoices.append(Choice(title=title, value=value))
     return questionary.select(message, choices=qchoices, default=default,
                               style=_STYLE, show_description=False, qmark="?").ask()

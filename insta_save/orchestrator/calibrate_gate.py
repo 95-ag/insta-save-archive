@@ -92,17 +92,17 @@ def _draft(env, run_cfg, backend, group) -> dict:
 def _print_context(proposed, group, current) -> None:
     """Read-only orientation across the three axes."""
     pg = proposed.get("groups", {}).get(group, {})
-    print(f"\n=== Calibrate context: {group} ===")
-    print(f"Proposed granular for {group}: {', '.join(pg) or '(none)'}")
+    _console.print(f"\n[bold]=== Calibrate context: {group} ===[/bold]")
+    _console.print(f"Proposed granular for [bold]{group}[/bold]: {', '.join(pg) or '(none)'}")
     others = {g: list(t) for g, t in current.get("groups", {}).items() if g != group}
     if others:
-        print("Other groups' granular:")
+        _console.print("[dim]Other groups' granular:[/dim]")
         for g, topics in others.items():
-            print(f"  {g}: {', '.join(topics) or '(none)'}")
+            _console.print(f"[dim]  {g}: {', '.join(topics) or '(none)'}[/dim]")
     cross = sorted(set(current.get("cross_group", {})) | set(proposed.get("cross_group", {})))
-    print(f"Cross-group (current + proposed): {', '.join(cross) or '(none)'}")
+    _console.print(f"[dim]Cross-group (current + proposed): {', '.join(cross) or '(none)'}[/dim]")
     ctypes = sorted(set(current.get("content_type", {})) | set(proposed.get("content_type", {})))
-    print(f"Content-types: {', '.join(ctypes) or '(none)'}")
+    _console.print(f"[dim]Content-types: {', '.join(ctypes) or '(none)'}[/dim]")
 
 
 # ---- inline editing (back-aware at every level) -------------------------------
@@ -287,7 +287,7 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
             if mode == "editor_all":
                 _editor(tags_path)                     # the editor IS the write — load, don't lock
                 try:
-                    reloaded = load_vocab(path=tags_path)
+                    load_vocab(path=tags_path)  # validate — raises on malformed JSON
                 except Exception as exc:
                     print(f"  invalid tags.json: {exc} — re-edit")
                     continue
@@ -297,11 +297,17 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
                 while True:
                     dec = tui.confirm_action("Keep these edits?", _EDITALL_ACTIONS)
                     if dec == "keep":
-                        return _done(load_vocab(path=tags_path), group, pad)
+                        # Guard: the file may have become invalid after a failed reedit — re-loop
+                        # rather than crash so the user can fix it.
+                        try:
+                            return _done(load_vocab(path=tags_path), group, pad)
+                        except Exception as exc:
+                            print(f"  invalid tags.json: {exc} — re-edit")
+                            continue
                     if dec == "reedit":
                         _editor(tags_path)
                         try:
-                            load_vocab(path=tags_path)   # validate
+                            load_vocab(path=tags_path)  # validate — raises on malformed JSON
                         except Exception as exc:
                             print(f"  invalid tags.json: {exc} — re-edit")
                         # Show updated preview, loop back to the editall confirm menu.
