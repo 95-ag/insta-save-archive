@@ -24,8 +24,6 @@ from insta_save.helpers import observability, tui
 from insta_save.helpers.observability import stage_section, RULE_NESTED, INDENT
 from insta_save.stages import calibrate as _calibrate
 
-_SAMPLE_LIMIT = 20
-
 # Sentinel for a visible "← Back" choice. The gate treats both _BACK and None (Ctrl-C) as
 # "cancel this level / go up one" — so a back-out is discoverable AND keyboard-interrupt safe.
 _BACK = "__back__"
@@ -52,7 +50,7 @@ def _sample(env, group, collections_cfg) -> int:
         env,
         group=group,
         collections_cfg=collections_cfg,
-        limit=_SAMPLE_LIMIT,
+        limit=None,
         statuses=["Extracted"],
         prompt_template=template,
     )
@@ -274,7 +272,7 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
     """Sample -> draft -> upfront mode menu (accept / inline / $EDITOR / abort) -> compact
     preview -> lock for `group`. Returns the reloaded Vocab. Raises SystemExit on a confirmed
     abort or nothing to sample. Ctrl-C anywhere goes up one level, never aborts the run."""
-    with observability.spinner(f"Reading {_SAMPLE_LIMIT} sample items from {group}…"):
+    with observability.spinner(f"Reading a balanced sample from {group}…"):
         n = _sample(env, group, collections_cfg)
     if n == 0:
         raise SystemExit(f"calibrate gate: no Extracted items to sample for group {group!r}")
