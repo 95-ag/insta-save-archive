@@ -77,7 +77,8 @@ def test_calibrate_prompt_requests_inline_json_not_a_file():
 
 def test_accept_as_is_locks_draft_unchanged(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
-    _selects(monkeypatch, ["accept"])              # mode menu -> accept (fast path, no preview menu)
+    _selects(monkeypatch, ["accept"])              # mode menu -> accept -> preview -> confirm
+    _confirms(monkeypatch, ["confirm"])            # T4: accept now routes through preview+confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G") and set(vocab.group_topics("G")) == {"t1", "t2"}
     assert json.loads(tags.read_text())["groups"]["G"] == {"t1": "d1", "t2": "d2"}
@@ -103,6 +104,7 @@ def test_editor_draft_invalid_json_discards_edit_and_recovers(tmp_path, monkeypa
     tags = _wire(tmp_path, monkeypatch)
     monkeypatch.setattr(calibrate_gate, "_editor", lambda path: open(path, "w").write("{not json"))
     _selects(monkeypatch, ["editor_draft", "accept"])   # bad edit -> back to menu -> accept
+    _confirms(monkeypatch, ["confirm"])                  # T4: accept now goes through confirm
     vocab = _run(tags, monkeypatch)
     assert "discarding that edit" in capsys.readouterr().out
     assert set(vocab.group_topics("G")) == {"t1", "t2"}   # original draft, edit dropped
@@ -122,7 +124,8 @@ def test_editor_all_invalid_json_reprompts(tmp_path, monkeypatch, capsys):
             open(path, "w").write(json.dumps(           # second edit: valid, fixes it
                 {"content_type": {}, "groups": {"G": {"fixed": "f"}}, "cross_group": {}}))
     monkeypatch.setattr(calibrate_gate, "_editor", fake_editor)
-    _selects(monkeypatch, ["editor_all", "editor_all"])  # bad -> re-loop -> good -> return
+    _selects(monkeypatch, ["editor_all", "editor_all"])  # bad -> re-loop -> good -> keep
+    _confirms(monkeypatch, ["keep"])                     # T5: editor_all now shows preview+confirm
     vocab = _run(tags, monkeypatch)
     assert "invalid tags.json" in capsys.readouterr().out
     assert vocab.group_topics("G") == ["fixed"]
@@ -132,7 +135,7 @@ def test_ctrlc_at_preview_menu_returns_to_top_menu(tmp_path, monkeypatch):
     """Ctrl-C at the preview menu (confirm_action -> None) is treated as Back, not abort."""
     tags = _wire(tmp_path, monkeypatch)
     _selects(monkeypatch, ["inline", "done", "accept"])
-    _confirms(monkeypatch, [None])                       # Ctrl-C at preview -> top menu -> accept
+    _confirms(monkeypatch, [None, "confirm"])              # Ctrl-C at preview -> top menu -> accept -> confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G")
 
@@ -148,6 +151,7 @@ def test_editor_all_first_loads_without_lock(tmp_path, monkeypatch):
     called = {"lock": False}
     monkeypatch.setattr(calibrate_gate, "lock_vocab", lambda *a, **k: called.__setitem__("lock", True))
     _selects(monkeypatch, ["editor_all"])
+    _confirms(monkeypatch, ["keep"])                     # T5: editor_all now shows preview+confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.group_topics("G") == ["edited"] and "shared" in vocab.cross_group_topics
     assert called["lock"] is False
@@ -211,8 +215,9 @@ def test_add_blank_label_adds_nothing(tmp_path, monkeypatch):
 
 def test_ctrlc_in_edit_loop_returns_to_top_menu_not_systemexit(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
-    # inline -> edit loop Ctrl-C (None) -> back to top menu -> accept -> locks
+    # inline -> edit loop Ctrl-C (None) -> back to top menu -> accept -> confirm
     _selects(monkeypatch, ["inline", None, "accept"])
+    _confirms(monkeypatch, ["confirm"])                          # T4: accept now routes through confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G")
 
@@ -220,27 +225,20 @@ def test_ctrlc_in_edit_loop_returns_to_top_menu_not_systemexit(tmp_path, monkeyp
 def test_preview_back_returns_to_top_menu(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
     _selects(monkeypatch, ["inline", "done", "accept"])
-    _confirms(monkeypatch, ["back"])                            # preview -> back to menu -> accept
+    _confirms(monkeypatch, ["back", "confirm"])                  # preview -> back to menu -> accept -> confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G")
 
 
-def test_preview_show_full_json_then_confirm(tmp_path, monkeypatch, capsys):
-    tags = _wire(tmp_path, monkeypatch)
-    _selects(monkeypatch, ["inline", "done"])
-    _confirms(monkeypatch, ["full_json", "confirm"])
-    vocab = _run(tags, monkeypatch)
-    out = capsys.readouterr().out
-    assert '"groups"' in out and '"t1"' in out                 # full JSON was dumped on demand
-    assert vocab.has_group("G")
+# T4: "Show full JSON" option removed — delete test_preview_show_full_json_then_confirm
 
 
 # ---- abort = the only destructive exit, and it's confirmed --------------------
 
 def test_abort_keep_editing_does_not_exit(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
-    _selects(monkeypatch, ["abort", "accept"])                  # abort -> keep -> loop -> accept
-    _confirms(monkeypatch, ["keep"])
+    _selects(monkeypatch, ["abort", "accept"])                   # abort -> keep -> loop -> accept
+    _confirms(monkeypatch, ["keep", "confirm"])                  # T4: accept now routes through confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G")
 
@@ -264,7 +262,7 @@ def test_mode_menu_ctrlc_discard_exits(tmp_path, monkeypatch):
 def test_mode_menu_ctrlc_keep_loops(tmp_path, monkeypatch):
     tags = _wire(tmp_path, monkeypatch)
     _selects(monkeypatch, [None, "accept"])                    # Ctrl-C -> keep -> loop -> accept
-    _confirms(monkeypatch, ["keep"])
+    _confirms(monkeypatch, ["keep", "confirm"])                # T4: accept now routes through confirm
     vocab = _run(tags, monkeypatch)
     assert vocab.has_group("G")
 
@@ -282,6 +280,7 @@ def test_calibrate_gate_framing(tmp_path, monkeypatch, capsys):
     """Gate prints nested stage_section header/footer rules and an indented ✔ outcome line."""
     tags = _wire(tmp_path, monkeypatch)
     _selects(monkeypatch, ["accept"])
+    _confirms(monkeypatch, ["confirm"])                          # T4: accept now goes through confirm
     _run(tags, monkeypatch)
     out = capsys.readouterr().out
     assert "calibrate · G" in out           # nested stage_section header rule
@@ -291,3 +290,34 @@ def test_calibrate_gate_framing(tmp_path, monkeypatch, capsys):
         if "✔" in line:
             assert line.startswith(" "), "✔ outcome line must be indented"
             break
+
+
+# ---- T3: preview shows topic definitions ----------------------------------------
+
+def test_preview_shows_definitions(tmp_path, monkeypatch, capsys):
+    """The preview table must show both the topic name and its definition."""
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["accept"])
+    _confirms(monkeypatch, ["confirm"])        # accept -> preview -> confirm
+    _run(tags, monkeypatch)
+    out = capsys.readouterr().out
+    assert "t1" in out and "d1" in out         # topic AND its definition rendered
+
+
+# ---- T5: editor_all reedit-then-keep -------------------------------------------
+
+def test_editor_all_reedit_then_keep(tmp_path, monkeypatch):
+    """editor_all: reedit -> keep — editor should be called twice."""
+    tags = _wire(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def fake_editor(path):
+        calls["n"] += 1
+        open(path, "w").write(json.dumps(
+            {"content_type": {}, "groups": {"G": {"edited": "e"}}, "cross_group": {}}))
+    monkeypatch.setattr(calibrate_gate, "_editor", fake_editor)
+    _selects(monkeypatch, ["editor_all"])
+    _confirms(monkeypatch, ["reedit", "keep"])   # first: reedit; second: keep
+    vocab = _run(tags, monkeypatch)
+    assert calls["n"] == 2                       # editor called twice
+    assert vocab.group_topics("G") == ["edited"]

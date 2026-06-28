@@ -16,6 +16,9 @@ import os
 import subprocess
 from pathlib import Path
 
+from rich.console import Console
+from rich.table import Table
+
 from insta_save.config.tags import Vocab, lock_vocab, load_vocab, merge_vocab
 from insta_save.helpers import observability, tui
 from insta_save.helpers.observability import stage_section, RULE_NESTED, INDENT
@@ -26,6 +29,8 @@ _SAMPLE_LIMIT = 20
 # Sentinel for a visible "← Back" choice. The gate treats both _BACK and None (Ctrl-C) as
 # "cancel this level / go up one" — so a back-out is discoverable AND keyboard-interrupt safe.
 _BACK = "__back__"
+
+_console = Console()
 
 
 def _calibrate_prompt_path(env) -> Path:
@@ -145,11 +150,11 @@ def _add(proposed, group) -> None:
 
 
 _EDIT_ACTIONS = [
-    ("Reject a granular topic", "reject", "remove one of this group's granular topics"),
+    ("Remove a topic from this group", "reject", "remove one of this group's granular topics"),
     ("Add a topic", "add", "add a topic on any axis"),
-    ("Show context again", "context", "reprint the cross-axis context"),
-    ("Done — preview & lock", "done", "merge and preview before locking"),
-    ("← Back to menu", "back", "leave the inline editor without locking"),
+    ("Show the samples context again", "context", "reprint the cross-axis context"),
+    ("Done — review & lock", "done", "merge and preview before locking"),
+    ("← Back (lock nothing)", "back", "leave the inline editor without locking"),
 ]
 
 
@@ -174,12 +179,12 @@ def _edit_loop(proposed, group, current) -> bool:
 # ---- mode menu, preview, discard confirm --------------------------------------
 
 _MODE_ACTIONS = [
-    ("Accept draft as-is", "accept", "lock the drafted vocab immediately"),
-    ("Edit inline (guided)", "inline", "reject/add topics step by step"),
-    ("Edit this draft in $EDITOR", "editor_draft", "hand-edit the proposal JSON, then preview"),
-    ("Edit the whole tags.json in $EDITOR", "editor_all",
-     "hand-edit config/tags.json directly (can remove shared items)"),
-    ("Abort", "abort", "exit without locking (asks to confirm)"),
+    ("Accept the draft (review & lock)", "accept", "review the drafted vocab, then lock it"),
+    ("Edit topics step by step", "inline", "guided reject / add on each axis"),
+    ("Open the draft in a text editor", "editor_draft", "hand-edit the proposal JSON, then review"),
+    ("Open the full tag file in a text editor", "editor_all",
+     "edit config/tags.json directly — can remove shared topics"),
+    ("Cancel — lock nothing", "abort", "exit the gate without saving"),
 ]
 
 
@@ -191,38 +196,44 @@ def _mode_menu(group, proposed) -> str | None:
     return tui.select(msg, _MODE_ACTIONS)
 
 
-def _axis_diff_line(label, total, added, removed) -> str:
-    parts = []
-    if added:
-        parts.append("+ " + ", ".join(added))
-    if removed:
-        parts.append("− " + ", ".join(removed))
-    detail = "   " + "   ".join(parts) if parts else "   (no change)"
-    return f"  {label:<22} {total:>3}{detail}"
-
-
 def _preview_diff(current, proposed, group) -> dict:
-    """Print a compact per-axis diff (added / removed) and return the merged dict (for the
-    optional full-JSON dump). Granular is set outright; content-type/cross-group are additive."""
+    """Print a rich table with per-axis diff (added/removed, with definitions) and return the
+    merged dict. Granular is set outright; content-type/cross-group are additive."""
     merged = merge_vocab(current, group, proposed)
-    print(f"\n=== Preview — {group} ===")
+
+    table = Table(show_header=True, header_style="bold", box=None,
+                  padding=(0, 1), show_edge=False)
+    table.add_column("", style="bold", width=2)
+    table.add_column("Topic", style="")
+    table.add_column("Definition", style="dim")
+
+    # Granular axis (this group)
     cur_g = set(current.get("groups", {}).get(group, {}))
-    new_g = list(merged.get("groups", {}).get(group, {}))
-    added_g = [t for t in new_g if t not in cur_g]
-    removed_g = [t for t in cur_g if t not in set(new_g)]
-    print(_axis_diff_line("granular (this group)", len(new_g), added_g, removed_g))
-    for label, key in (("content-type (shared)", "content_type"), ("cross-group (shared)", "cross_group")):
-        cur = set(current.get(key, {}))
-        new = list(merged.get(key, {}))
-        print(_axis_diff_line(label, len(new), [t for t in new if t not in cur], []))
+    new_g_dict = merged.get("groups", {}).get(group, {})
+    removed_g = [t for t in cur_g if t not in new_g_dict]
+    for topic, defn in new_g_dict.items():
+        marker = "[green]+[/green]" if topic not in cur_g else " "
+        table.add_row(marker, topic, defn or "")
+    for topic in removed_g:
+        table.add_row("[red]−[/red]", topic, "")
+
+    # Content-type and cross-group: only show newly added rows
+    for key, axis_label in (("content_type", "content-type"), ("cross_group", "cross-group")):
+        cur_axis = set(current.get(key, {}))
+        merged_axis = merged.get(key, {})
+        for topic, defn in merged_axis.items():
+            if topic not in cur_axis:
+                table.add_row("[green]+[/green]", f"{topic}  [dim]({axis_label})[/dim]", defn or "")
+
+    print(f"\n=== Preview — {group} ===")
+    _console.print(table)
     return merged
 
 
 _PREVIEW_ACTIONS = [
-    ("Confirm — lock it", "confirm", "write it and continue"),
-    ("Show full JSON", "full_json", "print the entire merged tags.json"),
-    ("← Back to menu", "back", "return to the mode menu"),
-    ("Abort", "abort", "exit without locking (asks to confirm)"),
+    ("Lock it", "confirm", "write this vocab and continue"),
+    ("← Back to menu", "back", "return to the mode menu, lock nothing yet"),
+    ("Cancel", "abort", "exit without locking (asks to confirm)"),
 ]
 
 
@@ -253,7 +264,8 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
     """Sample -> draft -> upfront mode menu (accept / inline / $EDITOR / abort) -> compact
     preview -> lock for `group`. Returns the reloaded Vocab. Raises SystemExit on a confirmed
     abort or nothing to sample. Ctrl-C anywhere goes up one level, never aborts the run."""
-    n = _sample(env, group, collections_cfg)
+    with observability.spinner(f"Reading {_SAMPLE_LIMIT} sample items from {group}…"):
+        n = _sample(env, group, collections_cfg)
     if n == 0:
         raise SystemExit(f"calibrate gate: no Extracted items to sample for group {group!r}")
 
@@ -275,10 +287,33 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
             if mode == "editor_all":
                 _editor(tags_path)                     # the editor IS the write — load, don't lock
                 try:
-                    return _done(load_vocab(path=tags_path), group, pad)
+                    reloaded = load_vocab(path=tags_path)
                 except Exception as exc:
                     print(f"  invalid tags.json: {exc} — re-edit")
                     continue
+                # Show a preview of what was written and let the user confirm, re-edit, or back out.
+                reloaded_raw = json.loads(tags_path.read_text(encoding="utf-8"))
+                _preview_diff(current, reloaded_raw, group)
+                while True:
+                    dec = tui.confirm_action("Keep these edits?", _EDITALL_ACTIONS)
+                    if dec == "keep":
+                        return _done(load_vocab(path=tags_path), group, pad)
+                    if dec == "reedit":
+                        _editor(tags_path)
+                        try:
+                            load_vocab(path=tags_path)   # validate
+                        except Exception as exc:
+                            print(f"  invalid tags.json: {exc} — re-edit")
+                        # Show updated preview, loop back to the editall confirm menu.
+                        try:
+                            reloaded_raw = json.loads(tags_path.read_text(encoding="utf-8"))
+                            _preview_diff(current, reloaded_raw, group)
+                        except Exception:
+                            pass
+                        continue
+                    # back / None -> return to top menu
+                    break
+                continue
 
             if mode == "inline":
                 if not _edit_loop(proposed, group, current):
@@ -293,23 +328,24 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
                     print(f"  invalid proposed JSON: {exc} — discarding that edit")
                     continue
 
+            # All modes (accept, inline-done, editor_draft) fall through to preview+confirm.
             merged = _preview_diff(current, proposed, group)
-            if mode == "accept":                       # fast path: no extra confirm
-                lock_vocab(group, proposed, path=tags_path)
-                return _done(load_vocab(path=tags_path), group, pad)
 
             while True:                                # preview menu
                 dec = _preview_menu()
-                if dec == "full_json":
-                    print(json.dumps(merged, ensure_ascii=False, indent=2))
-                    continue
-                break
-            if dec == "confirm":
-                lock_vocab(group, proposed, path=tags_path)
-                return _done(load_vocab(path=tags_path), group, pad)
-            if dec in (None, "back"):
-                continue
-            if dec == "abort":
-                if _confirm_discard(group):
-                    raise SystemExit(f"calibrate gate: aborted for group {group!r} — nothing locked")
-                continue
+                if dec == "confirm":
+                    lock_vocab(group, proposed, path=tags_path)
+                    return _done(load_vocab(path=tags_path), group, pad)
+                if dec in (None, "back"):
+                    break                              # back to top menu
+                if dec == "abort":
+                    if _confirm_discard(group):
+                        raise SystemExit(f"calibrate gate: aborted for group {group!r} — nothing locked")
+                    break                              # discard declined → back to top menu
+
+
+_EDITALL_ACTIONS = [
+    ("Keep these edits", "keep", "tags.json is saved — finish"),
+    ("Re-edit", "reedit", "open the editor again"),
+    ("← Back to menu", "back", "return to the mode menu (edits stay on disk)"),
+]

@@ -16,15 +16,28 @@ _STYLE = Style([
     ("highlighted", "fg:#1D9E75 bold"),
     ("answer", "fg:#1D9E75"),
     ("instruction", "fg:#888780"),
+    ("choice-hint", "fg:#888780"),
 ])
 
 
 def select(message, choices, *, default=None):
-    """Arrow-select one option. `choices`: list of (label, value, help). Returns the value."""
-    qchoices = [Choice(title=label, value=value, description=help_)
-                for (label, value, help_) in choices]
+    """Arrow-select one option. `choices`: list of (label, value, help). The help is shown
+    inline (dimmed) in the option title — questionary's built-in description renders an
+    unwanted 'Description:' prefix, so we inline it instead."""
+    qchoices = []
+    for (label, value, help_) in choices:
+        if help_:
+            # Formatted-text title: label normal, hint dimmed inline.
+            # Fall back to a plain string if the list form misbehaves.
+            try:
+                title = [("", label), ("class:choice-hint", f"   {help_}")]
+            except Exception:
+                title = f"{label}   {help_}"
+        else:
+            title = label
+        qchoices.append(Choice(title=title, value=value))
     return questionary.select(message, choices=qchoices, default=default,
-                              style=_STYLE, show_description=True, qmark="?").ask()
+                              style=_STYLE, show_description=False, qmark="?").ask()
 
 
 def select_or_other(message, choices, *, default=None, other_label="Other…"):
