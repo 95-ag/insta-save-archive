@@ -1,6 +1,11 @@
 You are proposing a tag vocabulary for the "{group}" group of saved Instagram posts.
 Below is a sample of this group's content (captions, transcripts, OCR text).
 
+The collections the user filed under "{group}" are: {collections}
+These are the user's OWN labels — treat them as STRONG guidance for the granular topics. A
+well-named collection (e.g. "Photo booth", "3D printing") signals an intended tag; prefer
+granular topics that reflect these names wherever the sampled content supports them.
+
 Propose three things, each tag with a one-line definition:
 - GRANULAR TOPICS for this group (aim for 6-10): specific themes recurring in THIS group.
 - CROSS-GROUP TOPICS (only if clearly broad): themes that would span multiple groups.

@@ -24,8 +24,10 @@ def _calibrate_dir(env) -> Path:
     return d
 
 
-def _build_prompt(template, group, items) -> str:
-    lines = [template.replace("{group}", group), "", "=" * 60, ""]
+def _build_prompt(template, group, items, collection_names) -> str:
+    cols = ", ".join(sorted(collection_names)) or "(none)"
+    header = template.replace("{group}", group).replace("{collections}", cols)
+    lines = [header, "", "=" * 60, ""]
     for item in items:
         sid = item.get("source_id") or item["page_id"]
         lines.append(f"--- {sid} (page_id: {item['page_id']}) ---")
@@ -70,6 +72,7 @@ def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, pro
     (d / "sample.json").write_text(
         json.dumps({"group": group, "items": items}, ensure_ascii=False, indent=2),
         encoding="utf-8")
-    (d / "prompt.txt").write_text(_build_prompt(prompt_template, group, items), encoding="utf-8")
+    names = collections_cfg.collections_in_group(group)
+    (d / "prompt.txt").write_text(_build_prompt(prompt_template, group, items, names), encoding="utf-8")
     log.info("calibrate.sample: wrote %d items for group %s", len(items), group)
     return len(items)

@@ -8,6 +8,9 @@ class _Cols:
     def group_of(self, c):
         return {"hust-a": "Hustling"}.get(c)
 
+    def collections_in_group(self, g):
+        return {"hust-a", "Side Projects"} if g == "Hustling" else set()
+
 
 def _env(tmp_path):
     return types.SimpleNamespace(tmp_dir=str(tmp_path))
@@ -42,3 +45,14 @@ def test_sample_respects_limit(tmp_path, monkeypatch):
     n = calibrate.sample(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
                          limit=3, statuses=["Extracted"], prompt_template="CAL {group}")
     assert n == 3
+
+
+def test_prompt_includes_collection_names(tmp_path, monkeypatch):
+    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
+    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))
+    monkeypatch.setattr(calibrate, "get_page_content",
+                        lambda env, pid: {"page_id": pid, "source_id": "s1", "caption": "c", "type": "Reel"})
+    calibrate.sample(_env(tmp_path), group="Hustling", collections_cfg=_Cols(),
+                     limit=20, statuses=["Extracted"], prompt_template="CAL {group} COLS {collections}")
+    prompt = (tmp_path / "calibrate" / "prompt.txt").read_text()
+    assert "Side Projects" in prompt and "hust-a" in prompt
