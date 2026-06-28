@@ -119,6 +119,11 @@ def _inline_pick_collections(collections_path, new_names) -> None:
             ("Yes — transcript, OCR + enrich", True, ""),
             ("No — deterministic tag only", False, ""),
         ])
+        if extract is None:                              # Ctrl-C — don't silently record extract=false
+            data["groups"] = groups
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            batch_confirm(collections_path, new_names[i:])  # this collection + the rest go to the editor
+            return
         entry = dict(data["collections"].get(name, {}))
         entry["group"] = group
         entry["extract"] = bool(extract)

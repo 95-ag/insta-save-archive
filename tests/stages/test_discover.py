@@ -298,3 +298,18 @@ def test_crawl_all_advances_progress_per_collection(tmp_path):
     discover.crawl_all(context=object(), ig_username="u", collections_cfg=cfg,
                        tmp_dir=str(tmp_path), crawl_fn=lambda *a, **k: ([], True), progress=_P())
     assert bumps["n"] == 2 and bumps["current"] == ["a", "b"]
+
+
+def test_extract_pick_ctrlc_does_not_record_extract_false(tmp_path, monkeypatch):
+    import json as _json
+    from insta_save.stages import discover
+    p = tmp_path / "collections.json"
+    p.write_text(_json.dumps({"groups": ["Art"], "collections": {}}), encoding="utf-8")
+    seq = iter(["Art", None])    # group-pick -> "Art"; extract-pick -> None (Ctrl-C)
+    monkeypatch.setattr(discover.tui, "select", lambda *a, **k: next(seq))
+    called = {"batch": None}
+    monkeypatch.setattr(discover, "batch_confirm", lambda path, names: called.__setitem__("batch", list(names)))
+    discover._inline_pick_collections(str(p), ["NewColl"])
+    data = _json.loads(p.read_text())
+    assert data["collections"].get("NewColl", {}).get("extract") is None or "NewColl" not in data["collections"]
+    assert called["batch"] == ["NewColl"]
