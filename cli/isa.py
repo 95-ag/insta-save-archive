@@ -84,7 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--retry-failed", action="store_true")
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
-    run.add_argument("--calibrate-limit", type=int, default=20)
     run.add_argument("--collection", default=None)
     run.add_argument("--fresh", action="store_true")
     run.add_argument("--dry-run", action="store_true")

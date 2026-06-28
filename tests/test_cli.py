@@ -63,8 +63,7 @@ def test_run_unimplemented_stage_raises():
             "mode": "incremental", "stage": "discover", "group": None,
             "limit": None, "reextract": False, "retry_failed": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
-            "confirm_removed": None, "apply": False, "prepare": False,
-            "calibrate_limit": 20})())
+            "confirm_removed": None, "apply": False, "prepare": False})())
 
 
 def _fake_run():
