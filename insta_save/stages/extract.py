@@ -15,6 +15,7 @@ from insta_save.adapters.instagram.session import ensure_authenticated, prepare_
 from insta_save.adapters.notion import mark_failed, query_by_status_and_priority, write_extraction
 from insta_save.engines.ocr import extract_carousel, extract_ocr_frames, extract_post
 from insta_save.engines.transcript import extract_transcript
+from insta_save.helpers.observability import spinner
 from insta_save.orchestrator.runner import run_priority_stage
 
 log = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ class _LazyBrowser:
 
     def context(self):
         if self._ctx is None:
-            self._browser, self._ctx = ensure_authenticated(self._pw, self._env, headless=self._headless)
+            with spinner("Authenticating browser session…"):
+                self._browser, self._ctx = ensure_authenticated(self._pw, self._env, headless=self._headless)
         return self._ctx
 
     def close(self):
