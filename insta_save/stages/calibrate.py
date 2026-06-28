@@ -10,6 +10,7 @@ proposer, so calibrate behaves identically under every backend."""
 
 import json
 import logging
+from collections import OrderedDict
 from pathlib import Path
 
 from insta_save.adapters.notion import get_page_content, query_by_status_and_priority
@@ -52,7 +53,6 @@ def _balanced_order(stubs, group, collections_cfg):
     """Round-robin across the group's collections so each is represented regardless of size.
     Dedup by page_id; a stub in several group-collections is filed under its first (the item's
     collection order). Priority order is preserved within each collection bucket."""
-    from collections import OrderedDict
     buckets, seen = OrderedDict(), set()
     for stub in stubs:
         pid = stub["page_id"]
