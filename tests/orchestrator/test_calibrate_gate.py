@@ -292,6 +292,19 @@ def test_calibrate_gate_framing(tmp_path, monkeypatch, capsys):
             break
 
 
+# ---- T2: proposed granular as bulleted list with definitions --------------------
+
+def test_context_lists_proposed_topics_with_definitions(tmp_path, monkeypatch, capsys):
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["abort"])           # print context + mode menu, then bail
+    _confirms(monkeypatch, ["discard"])
+    with pytest.raises(SystemExit):
+        _run(tags, monkeypatch)
+    out = capsys.readouterr().out
+    assert "• t1" in out and "d1" in out
+    assert "• t2" in out and "d2" in out
+
+
 # ---- T3: preview shows topic definitions ----------------------------------------
 
 def test_preview_shows_definitions(tmp_path, monkeypatch, capsys):
@@ -302,6 +315,36 @@ def test_preview_shows_definitions(tmp_path, monkeypatch, capsys):
     _run(tags, monkeypatch)
     out = capsys.readouterr().out
     assert "t1" in out and "d1" in out         # topic AND its definition rendered
+
+
+# ---- T4: loop-coverage tests ---------------------------------------------------
+
+def test_editor_all_ctrlc_at_menu_returns_to_top(tmp_path, monkeypatch):
+    tags = _wire(tmp_path, monkeypatch)
+    monkeypatch.setattr(calibrate_gate, "_editor", lambda path: open(path, "w").write(json.dumps(
+        {"content_type": {}, "groups": {"G": {"e": "ed"}}, "cross_group": {}})))
+    _selects(monkeypatch, ["editor_all", "accept"])   # editor_all -> None at EDITALL menu -> top -> accept
+    _confirms(monkeypatch, [None, "confirm"])         # None at EDITALL menu = back to top; confirm locks
+    vocab = _run(tags, monkeypatch)
+    assert vocab.has_group("G")
+
+
+def test_edit_loop_multiple_actions_then_lock(tmp_path, monkeypatch):
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["inline", "add", "granular", "reject", "t1", "done"])
+    _texts(monkeypatch, ["t3", "d3"])
+    _confirms(monkeypatch, ["confirm"])
+    vocab = _run(tags, monkeypatch)
+    topics = vocab.group_topics("G")
+    assert "t3" in topics and "t1" not in topics
+
+
+def test_preview_back_then_inline_then_lock(tmp_path, monkeypatch):
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["accept", "inline", "done"])   # accept->preview->back->top->inline->done->preview
+    _confirms(monkeypatch, ["back", "confirm"])
+    vocab = _run(tags, monkeypatch)
+    assert vocab.has_group("G")
 
 
 # ---- T5: editor_all reedit-then-keep -------------------------------------------

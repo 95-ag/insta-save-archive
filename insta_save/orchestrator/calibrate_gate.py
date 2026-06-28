@@ -93,7 +93,12 @@ def _print_context(proposed, group, current) -> None:
     """Read-only orientation across the three axes."""
     pg = proposed.get("groups", {}).get(group, {})
     _console.print(f"\n[bold]=== Calibrate context: {group} ===[/bold]")
-    _console.print(f"Proposed granular for [bold]{group}[/bold]: {', '.join(pg) or '(none)'}")
+    _console.print(f"Proposed granular for [bold]{group}[/bold]:")
+    if pg:
+        for topic, defn in pg.items():
+            _console.print(f"  • {topic} — {defn}")
+    else:
+        _console.print("  (none)")
     others = {g: list(t) for g, t in current.get("groups", {}).items() if g != group}
     if others:
         _console.print("[dim]Other groups' granular:[/dim]")
