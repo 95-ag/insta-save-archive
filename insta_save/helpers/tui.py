@@ -20,12 +20,11 @@ _STYLE = Style([
 
 
 def select(message, choices, *, default=None):
-    """Arrow-select one option. `choices`: list of (label, value, help). The help is shown
-    inline in the option title (plain string so questionary's row highlight still applies —
-    a formatted-text title would override the highlight). show_description is off to avoid
-    questionary's hardcoded 'Description:' prefix."""
-    qchoices = [Choice(title=(f"{label}   {help_}" if help_ else label), value=value)
-                for (label, value, help_) in choices]
+    """Arrow-select one option. `choices`: list of (label, value, help). Only the label is
+    shown — questionary highlights a plain-string title's pointed row (an inline-hint title
+    would suppress that highlight). Labels must be self-contained; `help` is unused in the
+    display (kept for signature compatibility)."""
+    qchoices = [Choice(title=label, value=value) for (label, value, _help) in choices]
     return questionary.select(message, choices=qchoices, default=default,
                               style=_STYLE, show_description=False, qmark="?").ask()
 

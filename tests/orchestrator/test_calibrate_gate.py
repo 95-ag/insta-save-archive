@@ -301,8 +301,9 @@ def test_context_lists_proposed_topics_with_definitions(tmp_path, monkeypatch, c
     with pytest.raises(SystemExit):
         _run(tags, monkeypatch)
     out = capsys.readouterr().out
-    assert "• t1" in out and "d1" in out
-    assert "• t2" in out and "d2" in out
+    assert "t1" in out and "d1" in out
+    assert "t2" in out and "d2" in out
+    assert "—" not in out
 
 
 # ---- T3: preview shows topic definitions ----------------------------------------
@@ -315,6 +316,16 @@ def test_preview_shows_definitions(tmp_path, monkeypatch, capsys):
     _run(tags, monkeypatch)
     out = capsys.readouterr().out
     assert "t1" in out and "d1" in out         # topic AND its definition rendered
+    assert "—" not in out
+
+
+def test_context_reprinted_when_returning_to_menu(tmp_path, monkeypatch, capsys):
+    tags = _wire(tmp_path, monkeypatch)
+    _selects(monkeypatch, ["accept", "abort"])   # accept->preview->back->menu(context again)->abort
+    _confirms(monkeypatch, ["back", "discard"])
+    with pytest.raises(SystemExit):
+        _run(tags, monkeypatch)
+    assert capsys.readouterr().out.count("calibrate context") >= 2
 
 
 # ---- T4: loop-coverage tests ---------------------------------------------------

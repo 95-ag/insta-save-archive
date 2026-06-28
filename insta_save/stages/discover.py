@@ -116,8 +116,8 @@ def _inline_pick_collections(collections_path, new_names) -> None:
         if group not in groups:
             groups.append(group)
         extract = tui.select(f"extract {name}?", [
-            ("Yes", True, "transcript/OCR + enrich"),
-            ("No", False, "deterministic tag only"),
+            ("Yes — transcript, OCR + enrich", True, ""),
+            ("No — deterministic tag only", False, ""),
         ])
         entry = dict(data["collections"].get(name, {}))
         entry["group"] = group

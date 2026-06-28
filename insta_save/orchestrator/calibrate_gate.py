@@ -89,23 +89,33 @@ def _draft(env, run_cfg, backend, group) -> dict:
     return proposed
 
 
+def _topic_table(rows) -> Table:
+    """Build a shared-style rich Table with marker / topic / definition columns.
+    `rows` is an iterable of (marker_markup, topic, definition) tuples."""
+    table = Table(show_header=True, header_style="bold", box=None,
+                  padding=(0, 1), show_edge=False)
+    table.add_column("", style="bold", width=2)
+    table.add_column("Topic", style="")
+    table.add_column("Definition", style="dim")
+    for marker, topic, defn in rows:
+        table.add_row(marker, topic, defn or "")
+    return table
+
+
 def _print_context(proposed, group, current) -> None:
-    """Read-only orientation across the three axes."""
+    """Read-only orientation across the three axes. Rendered as a rich Table so the
+    layout matches the preview diff — no em-dash separators."""
     pg = proposed.get("groups", {}).get(group, {})
-    _console.print(f"\n[bold]=== Calibrate context: {group} ===[/bold]")
-    _console.print(f"Proposed granular for [bold]{group}[/bold]:")
-    if pg:
-        for topic, defn in pg.items():
-            _console.print(f"  • {topic} — {defn}")
-    else:
-        _console.print("  (none)")
+    _console.print(f"\n[bold]=== calibrate context: {group} ===[/bold]")
+    rows = [(f"[green]•[/green]", topic, defn) for topic, defn in pg.items()] if pg else [("", "(none)", "")]
+    _console.print(_topic_table(rows))
     others = {g: list(t) for g, t in current.get("groups", {}).items() if g != group}
     if others:
-        _console.print("[dim]Other groups' granular:[/dim]")
+        _console.print("[dim]Other groups:[/dim]")
         for g, topics in others.items():
             _console.print(f"[dim]  {g}: {', '.join(topics) or '(none)'}[/dim]")
     cross = sorted(set(current.get("cross_group", {})) | set(proposed.get("cross_group", {})))
-    _console.print(f"[dim]Cross-group (current + proposed): {', '.join(cross) or '(none)'}[/dim]")
+    _console.print(f"[dim]Cross-group: {', '.join(cross) or '(none)'}[/dim]")
     ctypes = sorted(set(current.get("content_type", {})) | set(proposed.get("content_type", {})))
     _console.print(f"[dim]Content-types: {', '.join(ctypes) or '(none)'}[/dim]")
 
@@ -129,10 +139,10 @@ def _reject(proposed, group) -> None:
 
 
 _AXES = [
-    ("granular (this group)", "granular", "a topic specific to this group"),
-    ("content-type (shared)", "content_type", "kind-of-item axis; additive across groups"),
-    ("cross-group (shared)", "cross_group", "a theme shared across groups; additive"),
-    ("← Back", _BACK, "cancel, add nothing"),
+    ("granular (this group)", "granular", ""),
+    ("content-type (shared, additive)", "content_type", ""),
+    ("cross-group (shared, additive)", "cross_group", ""),
+    ("← Back", _BACK, ""),
 ]
 
 
@@ -155,11 +165,11 @@ def _add(proposed, group) -> None:
 
 
 _EDIT_ACTIONS = [
-    ("Remove a topic from this group", "reject", "remove one of this group's granular topics"),
-    ("Add a topic", "add", "add a topic on any axis"),
-    ("Show the samples context again", "context", "reprint the cross-axis context"),
-    ("Done — review & lock", "done", "merge and preview before locking"),
-    ("← Back (lock nothing)", "back", "leave the inline editor without locking"),
+    ("Remove a topic from this group", "reject", ""),
+    ("Add a topic to any axis", "add", ""),
+    ("Show the context table again", "context", ""),
+    ("Done — review & lock", "done", ""),
+    ("← Back (lock nothing)", "back", ""),
 ]
 
 
@@ -184,12 +194,11 @@ def _edit_loop(proposed, group, current) -> bool:
 # ---- mode menu, preview, discard confirm --------------------------------------
 
 _MODE_ACTIONS = [
-    ("Accept the draft (review & lock)", "accept", "review the drafted vocab, then lock it"),
-    ("Edit topics step by step", "inline", "guided reject / add on each axis"),
-    ("Open the draft in a text editor", "editor_draft", "hand-edit the proposal JSON, then review"),
-    ("Open the full tag file in a text editor", "editor_all",
-     "edit config/tags.json directly — can remove shared topics"),
-    ("Cancel — lock nothing", "abort", "exit the gate without saving"),
+    ("Accept the draft, then review and lock", "accept", ""),
+    ("Edit topics one by one", "inline", ""),
+    ("Open the draft in a text editor", "editor_draft", ""),
+    ("Open the whole tag file in a text editor", "editor_all", ""),
+    ("Cancel — save nothing", "abort", ""),
 ]
 
 
@@ -203,24 +212,20 @@ def _mode_menu(group, proposed) -> str | None:
 
 def _preview_diff(current, proposed, group) -> dict:
     """Print a rich table with per-axis diff (added/removed, with definitions) and return the
-    merged dict. Granular is set outright; content-type/cross-group are additive."""
+    merged dict. Granular is set outright; content-type/cross-group are additive.
+    Uses the same _topic_table layout as _print_context — no em-dash separators."""
     merged = merge_vocab(current, group, proposed)
 
-    table = Table(show_header=True, header_style="bold", box=None,
-                  padding=(0, 1), show_edge=False)
-    table.add_column("", style="bold", width=2)
-    table.add_column("Topic", style="")
-    table.add_column("Definition", style="dim")
-
+    rows = []
     # Granular axis (this group)
     cur_g = set(current.get("groups", {}).get(group, {}))
     new_g_dict = merged.get("groups", {}).get(group, {})
     removed_g = [t for t in cur_g if t not in new_g_dict]
     for topic, defn in new_g_dict.items():
         marker = "[green]+[/green]" if topic not in cur_g else " "
-        table.add_row(marker, topic, defn or "")
+        rows.append((marker, topic, defn or ""))
     for topic in removed_g:
-        table.add_row("[red]−[/red]", topic, "")
+        rows.append(("[red]−[/red]", topic, ""))
 
     # Content-type and cross-group: only show newly added rows
     for key, axis_label in (("content_type", "content-type"), ("cross_group", "cross-group")):
@@ -228,17 +233,17 @@ def _preview_diff(current, proposed, group) -> dict:
         merged_axis = merged.get(key, {})
         for topic, defn in merged_axis.items():
             if topic not in cur_axis:
-                table.add_row("[green]+[/green]", f"{topic}  [dim]({axis_label})[/dim]", defn or "")
+                rows.append(("[green]+[/green]", f"{topic}  [dim]({axis_label})[/dim]", defn or ""))
 
-    print(f"\n=== Preview — {group} ===")
-    _console.print(table)
+    print(f"\n=== Preview: {group} ===")
+    _console.print(_topic_table(rows))
     return merged
 
 
 _PREVIEW_ACTIONS = [
-    ("Lock it", "confirm", "write this vocab and continue"),
-    ("← Back to menu", "back", "return to the mode menu, lock nothing yet"),
-    ("Cancel", "abort", "exit without locking (asks to confirm)"),
+    ("Lock it", "confirm", ""),
+    ("← Back to menu", "back", ""),
+    ("Cancel", "abort", ""),
 ]
 
 
@@ -247,8 +252,8 @@ def _preview_menu() -> str | None:
 
 
 _DISCARD_ACTIONS = [
-    ("Keep editing", "keep", "go back, nothing discarded"),
-    ("Discard & exit", "discard", "exit the gate, lock nothing"),
+    ("Keep editing", "keep", ""),
+    ("Discard & exit", "discard", ""),
 ]
 
 
@@ -280,9 +285,8 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
 
     pad = " " * INDENT
     with stage_section(f"calibrate · {group}", width=RULE_NESTED, indent=INDENT):
-        _print_context(proposed, group, current)
-
         while True:                                    # top menu
+            _print_context(proposed, group, current)
             mode = _mode_menu(group, proposed)
             if mode in (None, "abort"):
                 if _confirm_discard(group):
@@ -356,7 +360,7 @@ def run_calibrate_gate(env, run_cfg, *, collections_cfg, backend, group):
 
 
 _EDITALL_ACTIONS = [
-    ("Keep these edits", "keep", "tags.json is saved — finish"),
-    ("Re-edit", "reedit", "open the editor again"),
-    ("← Back to menu", "back", "return to the mode menu (edits stay on disk)"),
+    ("Keep these edits", "keep", ""),
+    ("Re-edit", "reedit", ""),
+    ("← Back to menu", "back", ""),
 ]

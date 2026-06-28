@@ -26,25 +26,25 @@ DEFAULT_RUN_TEMPLATE = {
 }
 
 _BACKEND_CHOICES = [
-    ("claude-p", "claude-p", "headless Claude CLI · Claude Max · no API key (default)"),
-    ("api", "api", "Anthropic API · needs ANTHROPIC_API_KEY · metered"),
-    ("local", "local", "Ollama · title-grade on this box"),
-    ("claude-code", "claude-code", "agent-filled Claude Code session loop"),
-    ("cowork", "cowork", "self-paced Cowork loop"),
+    ("claude-p  (Claude Max, no API key)", "claude-p", ""),
+    ("api  (Anthropic API, needs ANTHROPIC_API_KEY)", "api", ""),
+    ("local  (Ollama, title-grade)", "local", ""),
+    ("claude-code  (agent-filled session loop)", "claude-code", ""),
+    ("cowork  (self-paced loop)", "cowork", ""),
 ]
-_EFFORT_CHOICES = [("low", "low", "smaller context / cheaper"),
-                   ("medium", "medium", "balanced (default)"),
-                   ("high", "high", "largest context / batch")]
-_API_MODE_CHOICES = [("sync", "sync", "one request per batch (default)"),
-                     ("batches", "batches", "Message Batches API")]
+_EFFORT_CHOICES = [("low  (smaller context)", "low", ""),
+                   ("medium  (balanced, default)", "medium", ""),
+                   ("high  (largest context)", "high", "")]
+_API_MODE_CHOICES = [("sync  (one request per batch, default)", "sync", ""),
+                     ("batches  (Message Batches API)", "batches", "")]
 _MODEL_CHOICES = {
-    "local": [("qwen2.5:7b", "qwen2.5:7b", "default local model"),
-              ("qwen2.5:3b", "qwen2.5:3b", "smaller/faster")],
+    "local": [("qwen2.5:7b  (default local model)", "qwen2.5:7b", ""),
+              ("qwen2.5:3b  (smaller/faster)", "qwen2.5:3b", "")],
 }
-_DEFAULT_MODEL_CHOICES = [("claude-sonnet", "claude-sonnet", "balanced (default)"),
-                          ("claude-opus", "claude-opus", "highest quality"),
-                          ("claude-haiku", "claude-haiku", "fastest/cheapest")]
-_LANG_CHOICES = [("english", "english", "default"), ("spanish", "spanish", ""),
+_DEFAULT_MODEL_CHOICES = [("claude-sonnet  (balanced, default)", "claude-sonnet", ""),
+                          ("claude-opus  (highest quality)", "claude-opus", ""),
+                          ("claude-haiku  (fastest/cheapest)", "claude-haiku", "")]
+_LANG_CHOICES = [("english", "english", ""), ("spanish", "spanish", ""),
                  ("french", "french", ""), ("german", "german", ""), ("hindi", "hindi", "")]
 
 
