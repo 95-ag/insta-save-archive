@@ -201,6 +201,22 @@ def test_retry_failed_infers_extracted_when_has_content(monkeypatch):
     assert targets["p2"] == "Queued"
 
 
+def test_retry_failed_renders_progress_and_counters(monkeypatch, capsys):
+    pages = [
+        _page("p1", "Failed", ["Reels"], has_raw=True),    # -> Extracted
+        _page("p2", "Failed", ["Fashion"], has_raw=False),  # -> Queued
+    ]
+    monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
+    monkeypatch.setattr(status_report, "requeue", lambda env, pid, tgt: None)
+
+    result = status_report.retry_failed("env")
+
+    out = capsys.readouterr().out
+    assert "Retry Failed" in out                              # framed progress section rendered
+    assert "→Extracted=1" in out and "→Queued=1" in out       # per-target counters in the summary
+    assert result["requeued"] == 2                            # return contract unchanged
+
+
 def test_retry_failed_no_failed_pages(monkeypatch):
     pages = [_page("p1", "Tagged", ["Reels"])]
     monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
