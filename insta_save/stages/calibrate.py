@@ -47,11 +47,15 @@ def _build_prompt(template, group, items, collection_names) -> str:
 
 
 def _group_stubs(env, statuses, group, collections_cfg):
-    """Stubs across the given input statuses, priority order, filtered to the group."""
+    """Stubs across the given input statuses, priority order, filtered to items that will
+    ENRICH under this group — i.e. the group holds one of the item's extract=yes collections
+    (the same basis enrich uses). A det-collection-only membership is excluded: those items
+    either go the deterministic branch or, if cross-tagged into another group's extract=yes
+    collection, enrich under THAT group — so this group's vocab never tags them."""
     for status in statuses:
         for bucket in PRIORITY_BUCKETS:
             for stub in query_by_status_and_priority(env, status, bucket):
-                if any(collections_cfg.group_of(c) == group for c in stub.get("collections", [])):
+                if group in collections_cfg.extract_groups_of(stub.get("collections", [])):
                     yield stub
 
 
@@ -65,13 +69,16 @@ def _balanced_sample(stubs, group, collections_cfg, *, cap, per_collection):
     collections don't crowd out small ones and the result scales with actual content volume.
     When False (explicit `limit` path), no per-bucket sub-cap is applied (old behaviour).
     `cap` is the global ceiling on the returned list."""
+    ex_cols = collections_cfg.extract_collections_in_group(group)
     buckets, seen = OrderedDict(), set()
     for stub in stubs:
         pid = stub["page_id"]
         if pid in seen:
             continue
         seen.add(pid)
-        gcols = [c for c in stub.get("collections", []) if collections_cfg.group_of(c) == group]
+        # Balance across the group's extract=yes collections only — a det collection the
+        # item is also cross-tagged into contributes nothing to this group's enrich.
+        gcols = [c for c in stub.get("collections", []) if c in ex_cols]
         buckets.setdefault(gcols[0] if gcols else group, []).append(stub)
 
     # Per-collection sub-caps (size-aware path only).
@@ -146,7 +153,7 @@ def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, pro
     (d / "sample.json").write_text(
         json.dumps({"group": group, "items": items}, ensure_ascii=False, indent=2),
         encoding="utf-8")
-    names = collections_cfg.collections_in_group(group)
+    names = collections_cfg.extract_collections_in_group(group)
     (d / "prompt.txt").write_text(_build_prompt(prompt_template, group, items, names), encoding="utf-8")
     log.info("calibrate.sample: wrote %d items for group %s", len(items), group)
     return len(items)

@@ -30,6 +30,13 @@ class CollectionsConfig:
     def collections_in_group(self, group: str) -> set[str]:
         return {n for n, e in self.collections.items() if e["group"] == group}
 
+    def extract_collections_in_group(self, group: str) -> set[str]:
+        """The extract=yes collections in a group — the only ones whose items enrich
+        under this group, so the only meaningful vocab guidance for calibrate. A det
+        collection's items either go the deterministic branch or (when cross-tagged into
+        another group's extract=yes collection) enrich under THAT group, never here."""
+        return {n for n, e in self.collections.items() if e["group"] == group and e.get("extract")}
+
     def group_order_index(self, group: str) -> int:
         return self.groups.index(group) if group in self.groups else len(self.groups)
 
