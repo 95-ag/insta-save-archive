@@ -82,3 +82,35 @@ def test_spinner_renders_when_console_is_a_terminal():
     with spinner("Asking Claude…", console=con):
         entered = True
     assert entered
+
+
+def test_stageprogress_summary_interrupted_label_and_counters(capsys):
+    # An exception inside the block frames the footer as "interrupted" (not "done")
+    # and still reports the accumulated counters and elapsed line.
+    try:
+        with obs.StageProgress("Enrich", width=30) as p:
+            p.bump("tagged", 3)
+            p.bump("failed")
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    out = capsys.readouterr().out
+    assert "interrupted" in out and "Enrich" in out
+    assert "tagged=3" in out and "failed=1" in out
+    assert "elapsed" in out
+
+
+def test_retrywatcher_counts_matching_library_warnings_only():
+    import logging
+
+    calls = []
+    watcher = obs._RetryWatcher(lambda: calls.append(1))
+
+    def _record(name, msg):
+        return logging.LogRecord(name, logging.WARNING, __file__, 0, msg, None, None)
+
+    watcher.emit(_record("notion_client.client", "Request failed, retrying"))  # match
+    watcher.emit(_record("httpx", "Read timed out"))                           # match
+    watcher.emit(_record("myapp", "please retry"))          # ignored: not a library logger
+    watcher.emit(_record("notion_client", "all good"))      # ignored: no retry/timeout token
+    assert calls == [1, 1]
