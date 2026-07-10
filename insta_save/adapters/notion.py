@@ -232,20 +232,16 @@ def _row(page: dict) -> dict:
     }
 
 
-def query_by_status_and_priority(env: EnvConfig, status: str, priority) -> list[dict]:
-    """Pages where status==status AND priority bucket matches (None = is_empty). Paginates.
+def query_by_status(env: EnvConfig, status: str) -> list[dict]:
+    """Pages where status==status. Paginates.
     Each row: {page_id, source_id, author, ig_link, type, collections}."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
-    if priority is None:
-        pfilter = {"property": "priority", "select": {"is_empty": True}}
-    else:
-        pfilter = {"property": "priority", "select": {"equals": priority}}
 
     results, cursor = [], None
     while True:
-        kwargs = {"filter": {"and": [{"property": "status", "select": {"equals": status}}, pfilter]}}
+        kwargs = {"filter": {"property": "status", "select": {"equals": status}}}
         if cursor:
             kwargs["start_cursor"] = cursor
         resp = client.data_sources.query(ds_id, **kwargs)
@@ -482,7 +478,7 @@ def update_metadata(env: EnvConfig, page_id: str, metadata: dict) -> None:
 
 
 def query_all_pages(env: EnvConfig) -> list[dict]:
-    """Return every page in the DB with no status/priority filter (all statuses captured).
+    """Return every page in the DB with no status filter (all statuses captured).
     Each entry: {"page_id": <id>, "properties": <raw Notion properties dict>}.
     Raw properties are kept as-is so the snapshot is complete and avoids field-mapping drift."""
     validate_notion(env)

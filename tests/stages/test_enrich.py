@@ -39,13 +39,11 @@ def _env(tmp_path):
 
 def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
     # two Hustling stubs + one Other; max_items=1 -> batch has exactly the first Hustling item
-    stubs = {
-        "High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
-                 {"page_id": "p2", "source_id": "s2", "collections": ["hust-a"]}],
-        "Medium": [{"page_id": "p3", "source_id": "s3", "collections": ["other"]}],
-    }
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+             {"page_id": "p2", "source_id": "s2", "collections": ["hust-a"]},
+             {"page_id": "p3", "source_id": "s3", "collections": ["other"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid.replace("p", "s"),
                                           "caption": "c", "transcript": "", "ocr_text": "",
@@ -64,9 +62,9 @@ def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
 def test_prepare_prompt_rendered_through_prompt_module(tmp_path, monkeypatch):
     # prompt.txt is assembled by backends.prompt: the rendered vocab block carries
     # the group's locked topic, proving assembly routes through the prompt module.
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",
@@ -83,10 +81,10 @@ def test_prepare_budgets_on_rendered_prompt(tmp_path, monkeypatch):
     # char_budget bounds the RENDERED prompt (header + scaffolding + content), not
     # just raw content. Three identical items + a budget sized for exactly two.
     from insta_save.backends import claude_code as backend
-    stubs = {"High": [{"page_id": f"p{i}", "source_id": f"p{i}", "collections": ["hust-a"]}
-                      for i in range(3)]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": f"p{i}", "source_id": f"p{i}", "collections": ["hust-a"]}
+            for i in range(3)]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     base = {"caption": "c" * 40, "transcript": "", "ocr_text": "", "type": "Reel",
             "author": "a", "transcript_language": "en"}
     monkeypatch.setattr(enrich, "get_page_content",
@@ -126,11 +124,11 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
 
 def test_prepare_excludes_other_group(tmp_path, monkeypatch):
     # large cap so the cap never fires — only the group filter decides membership
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
-                      {"page_id": "p2", "source_id": "s2", "collections": ["other"]},
-                      {"page_id": "p3", "source_id": "s3", "collections": ["hust-a"]}]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+             {"page_id": "p2", "source_id": "s2", "collections": ["other"]},
+             {"page_id": "p3", "source_id": "s3", "collections": ["hust-a"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",
@@ -160,8 +158,7 @@ def test_ordered_stubs_filters_by_kind(monkeypatch):
         {"page_id": "k", "type": "Carousel", "collections": ["c"]},
         {"page_id": "p", "type": "Post", "collections": ["c"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "G", cfg, kinds={"Carousel", "Post"})]
     assert got == ["k", "p"]
@@ -171,8 +168,7 @@ def test_prepare_vision_lane_breaks_on_image_budget(monkeypatch, tmp_path):
     from insta_save.config.collections import CollectionsConfig
     cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
     stubs = [{"page_id": f"k{i}", "type": "Carousel", "collections": ["c"]} for i in range(3)]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(enrich, "get_page_content", lambda env, pid: {
         "page_id": pid, "source_id": pid, "type": "Carousel", "author": "a", "caption": "c",
         "slide_images": ["a.jpg", "b.jpg"], "transcript": None, "ocr_text": None,
@@ -227,8 +223,7 @@ def test_ordered_stubs_cross_group_excluded_from_first_group(monkeypatch):
         {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
         {"page_id": "pure-f", "type": "Reel", "collections": ["col-f"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "F", cfg)]
     # cross item's last extract group is G, not F -> excluded from F's drain
@@ -242,8 +237,7 @@ def test_ordered_stubs_cross_group_included_at_last_group(monkeypatch):
         {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
         {"page_id": "pure-g", "type": "Reel", "collections": ["col-g"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "G", cfg)]
     assert set(got) == {"cross", "pure-g"}
@@ -284,8 +278,7 @@ def test_prepare_cross_group_prompt_contains_union_vocab(tmp_path, monkeypatch):
     cfg = _cross_cfg()
     vocab = _cross_vocab()
     stubs = [{"page_id": "p1", "type": "Reel", "collections": ["col-f", "col-g"]}]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs if pr is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",

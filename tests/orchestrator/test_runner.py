@@ -13,37 +13,37 @@ class _Progress:
 
 
 def _fake_query(rows):
-    def q(env, status, priority):
-        return [r for r in rows if r["priority"] == priority]
+    def q(env, status):
+        return list(rows)
     return q
 
 
-def test_processes_high_to_low(monkeypatch):
+def test_processes_all_items(monkeypatch):
     rows = [
         {"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-         "collections": ["c1"], "priority": None},
+         "collections": ["c1"]},
         {"page_id": "b", "source_id": "B", "ig_link": "y", "type": "Reel",
-         "collections": ["c1"], "priority": "High"},
+         "collections": ["c1"]},
     ]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
     order = []
     def process(env, item, ctx):
         order.append(item["source_id"])
         return "extracted"
     counts = runner.run_priority_stage(None, "Queued", process, _Progress(),
                                        stage_key="extract", bar_label="Extract")
-    assert order == ["B", "A"]  # High before unprioritised
+    assert order == ["A", "B"]
     assert counts["extracted"] == 2 and counts["failed"] == 0
 
 
 def test_group_filter(monkeypatch):
     rows = [
         {"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-         "collections": ["inHustling"], "priority": "High"},
+         "collections": ["inHustling"]},
         {"page_id": "b", "source_id": "B", "ig_link": "y", "type": "Reel",
-         "collections": ["inBiz"], "priority": "High"},
+         "collections": ["inBiz"]},
     ]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
     cfg = CollectionsConfig(groups=("Hustling", "Biz", "uncategorized"),
                             collections={"inHustling": {"group": "Hustling", "extract": True},
                                          "inBiz": {"group": "Biz", "extract": True}})
@@ -56,8 +56,8 @@ def test_group_filter(monkeypatch):
 
 def test_on_error_counts_failed(monkeypatch):
     rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-             "collections": [], "priority": "High"}]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+             "collections": []}]
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
     handled = []
     def boom(env, item, ctx): raise ValueError("nope")
     counts = runner.run_priority_stage(None, "Queued", boom, _Progress(),
@@ -70,11 +70,11 @@ def test_write_delay_fires_only_on_delay_on_counter(monkeypatch):
     """sleep fires only for counters in delay_on, not for skips or failures."""
     rows = [
         {"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-         "collections": [], "priority": "High"},  # returns "tagged"
+         "collections": []},  # returns "tagged"
         {"page_id": "b", "source_id": "B", "ig_link": "y", "type": "Reel",
-         "collections": [], "priority": "High"},  # returns "skipped"
+         "collections": []},  # returns "skipped"
     ]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
 
     results = iter(["tagged", "skipped"])
     def process(env, item, ctx):
@@ -96,8 +96,8 @@ def test_write_delay_fires_only_on_delay_on_counter(monkeypatch):
 
 def test_write_delay_zero_never_sleeps(monkeypatch):
     rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-             "collections": [], "priority": "High"}]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+             "collections": []}]
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
 
     sleep_calls = []
     monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
@@ -112,8 +112,8 @@ def test_write_delay_zero_never_sleeps(monkeypatch):
 
 def test_write_delay_none_delay_on_never_sleeps(monkeypatch):
     rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-             "collections": [], "priority": "High"}]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+             "collections": []}]
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
 
     sleep_calls = []
     monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
@@ -129,8 +129,8 @@ def test_write_delay_none_delay_on_never_sleeps(monkeypatch):
 def test_write_delay_not_called_on_failure(monkeypatch):
     """sleep must not fire for items that raise (counter never reaches delay_on check)."""
     rows = [{"page_id": "a", "source_id": "A", "ig_link": "x", "type": "Reel",
-             "collections": [], "priority": "High"}]
-    monkeypatch.setattr(runner, "query_by_status_and_priority", _fake_query(rows))
+             "collections": []}]
+    monkeypatch.setattr(runner, "query_by_status", _fake_query(rows))
 
     sleep_calls = []
     monkeypatch.setattr(runner.time, "sleep", lambda secs: sleep_calls.append(secs))
@@ -164,10 +164,9 @@ def test_run_priority_stage_stops_between_items(monkeypatch):
         processed.append(item["page_id"])
         rc.request_stop()                       # simulate 'q' during item 1
         return "done"
-    # Two same-priority items so the second item's checkpoint fires.
-    monkeypatch.setattr(runner, "query_by_status_and_priority",
-                        lambda env, status, pri: ([{"page_id": "p1"}, {"page_id": "p2"}]
-                                                  if pri == "High" else []))
+    # Two items so the second item's checkpoint fires.
+    monkeypatch.setattr(runner, "query_by_status",
+                        lambda env, status: [{"page_id": "p1"}, {"page_id": "p2"}])
     with rc:
         with pytest.raises(RunStopped):
             runner.run_priority_stage(object(), "Queued", _proc, _FakeProgress())

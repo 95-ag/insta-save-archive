@@ -12,7 +12,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
-from insta_save.adapters.notion import mark_failed, query_by_status_and_priority, write_extraction
+from insta_save.adapters.notion import mark_failed, write_extraction
 from insta_save.engines.ocr import extract_carousel, extract_ocr_frames, extract_post
 from insta_save.engines.transcript import extract_transcript
 from insta_save.helpers.observability import spinner
@@ -113,7 +113,7 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
 
 def run_extract_stage(env, run_extract_cfg, progress, *, limit=None, source_id=None,
                       group=None, collections_cfg=None, reextract=False, headless=True) -> dict:
-    """Drive extraction over Queued (and, if reextract, Extracted) items in priority order."""
+    """Drive extraction over Queued (and, if reextract, Extracted) items."""
     statuses = ["Queued"] + (["Extracted"] if reextract else [])
     totals: dict = {}
     prepare_display(env)  # set DISPLAY before the driver freezes the env (headed re-auth needs it)

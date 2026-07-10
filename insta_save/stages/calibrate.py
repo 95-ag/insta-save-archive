@@ -14,8 +14,7 @@ from collections import OrderedDict
 from math import ceil
 from pathlib import Path
 
-from insta_save.adapters.notion import get_page_content, query_by_status_and_priority
-from insta_save.orchestrator.runner import PRIORITY_BUCKETS
+from insta_save.adapters.notion import get_page_content, query_by_status
 
 log = logging.getLogger(__name__)
 
@@ -47,22 +46,21 @@ def _build_prompt(template, group, items, collection_names) -> str:
 
 
 def _group_stubs(env, statuses, group, collections_cfg):
-    """Stubs across the given input statuses, priority order, filtered to items that will
-    ENRICH under this group — i.e. the group holds one of the item's extract=yes collections
+    """Stubs across the given input statuses, filtered to items that will ENRICH
+    under this group — i.e. the group holds one of the item's extract=yes collections
     (the same basis enrich uses). A det-collection-only membership is excluded: those items
     either go the deterministic branch or, if cross-tagged into another group's extract=yes
     collection, enrich under THAT group — so this group's vocab never tags them."""
     for status in statuses:
-        for bucket in PRIORITY_BUCKETS:
-            for stub in query_by_status_and_priority(env, status, bucket):
-                if group in collections_cfg.extract_groups_of(stub.get("collections", [])):
-                    yield stub
+        for stub in query_by_status(env, status):
+            if group in collections_cfg.extract_groups_of(stub.get("collections", [])):
+                yield stub
 
 
 def _balanced_sample(stubs, group, collections_cfg, *, cap, per_collection):
     """Round-robin across the group's collections so each is represented regardless of size.
     Dedup by page_id; a stub in several group-collections is filed under its first (the item's
-    collection order). Priority order is preserved within each collection bucket.
+    collection order). Notion read order is preserved within each collection bucket.
 
     When `per_collection` is True, each bucket is sub-capped at
     ``n_c = clamp(ceil(len(bucket) * _RATIO), _MIN_PER_COLL, _MAX_PER_COLL)`` — so large
@@ -110,7 +108,7 @@ def _balanced_sample(stubs, group, collections_cfg, *, cap, per_collection):
 
 
 def sample(env, *, group, collections_cfg, limit, statuses, prompt_template, progress=None) -> int:
-    """Collect a sample of items for the group across `statuses` (priority order),
+    """Collect a sample of items for the group across `statuses`,
     write sample.json + prompt.txt. Returns the sample size.
 
     `limit=None` — size-aware adaptive path: per-collection quota

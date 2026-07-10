@@ -15,7 +15,7 @@ from rich.console import Console
 
 from insta_save import enrich_schema
 from insta_save.adapters.notion import (get_page_content, mark_failed,
-                                        query_by_status_and_priority, write_enrichment)
+                                        query_by_status, write_enrichment)
 from insta_save.backends import prompt
 from insta_save.backends.base import (TerminalBackendError, is_terminal_error,
                                        parse_results)
@@ -23,7 +23,6 @@ from insta_save.backends.sanitize import scrub_fabricated
 from insta_save.config.tags import allowed_topics, union_topics
 from insta_save.helpers import observability
 from insta_save.orchestrator import guardrails, run_control
-from insta_save.orchestrator.runner import PRIORITY_BUCKETS
 
 log = logging.getLogger(__name__)
 _console = Console()
@@ -39,24 +38,23 @@ def _enrich_dir(env) -> Path:
 
 
 def _ordered_group_stubs(env, statuses, group, collections_cfg, kinds=None):
-    """Stubs across input statuses, priority order, filtered to the group.
+    """Stubs across input statuses, filtered to the group.
 
     kinds: optional set of type strings (e.g. {"Carousel", "Post"}) — when set,
     only stubs whose `type` is in the set are yielded. None admits all types."""
     for status in statuses:
-        for bucket in PRIORITY_BUCKETS:
-            for stub in query_by_status_and_priority(env, status, bucket):
-                if kinds is not None and stub.get("type") not in kinds:
-                    continue
-                if collections_cfg.enrich_group(stub.get("collections", [])) == group:
-                    yield stub
+        for stub in query_by_status(env, status):
+            if kinds is not None and stub.get("type") not in kinds:
+                continue
+            if collections_cfg.enrich_group(stub.get("collections", [])) == group:
+                yield stub
 
 
 def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statuses,
             prompt_template, kinds=None, image_token_budget=None, output_language="english",
             progress=None) -> int:
-    """Build batch.json + prompt.txt for the highest-priority budget-worth of the
-    group's items. Returns the batch size (0 = nothing left). Optional `progress`
+    """Build batch.json + prompt.txt for the budget-worth of the group's items.
+    Returns the batch size (0 = nothing left). Optional `progress`
     (StageProgress) shows a live per-item fetch bar.
 
     char_budget bounds the RENDERED prompt length (header + vocab + per-item

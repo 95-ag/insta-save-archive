@@ -41,10 +41,9 @@ def _env(tmp_path):
 
 
 def test_sample_collects_group_items_and_writes_prompt(tmp_path, monkeypatch):
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
-                      {"page_id": "p2", "source_id": "s2", "collections": ["other"]}]}
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []))
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+            {"page_id": "p2", "source_id": "s2", "collections": ["other"]}]
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": "s1", "caption": "c",
                                           "transcript": "t", "ocr_text": "", "type": "Reel"})
@@ -59,10 +58,9 @@ def test_sample_collects_group_items_and_writes_prompt(tmp_path, monkeypatch):
 
 
 def test_sample_respects_limit(tmp_path, monkeypatch):
-    stubs = {"High": [{"page_id": f"p{i}", "source_id": f"s{i}", "collections": ["hust-a"]}
-                      for i in range(5)]}
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []))
+    stubs = [{"page_id": f"p{i}", "source_id": f"s{i}", "collections": ["hust-a"]}
+            for i in range(5)]
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel"})
@@ -72,9 +70,9 @@ def test_sample_respects_limit(tmp_path, monkeypatch):
 
 
 def test_sample_round_robins_across_collections(tmp_path, monkeypatch):
-    stubs = {"High": [{"page_id": f"b{i}", "source_id": f"b{i}", "collections": ["big"]} for i in range(5)]
-                     + [{"page_id": "s0", "source_id": "s0", "collections": ["small"]}]}
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))
+    stubs = [{"page_id": f"b{i}", "source_id": f"b{i}", "collections": ["big"]} for i in range(5)] \
+           + [{"page_id": "s0", "source_id": "s0", "collections": ["small"]}]
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, s: stubs)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "type": "Reel"})
     calibrate.sample(_env(tmp_path), group="G", collections_cfg=_G,
@@ -87,7 +85,7 @@ def test_sample_size_adapts_to_collection_size(tmp_path, monkeypatch):
     # big=40 -> ceil(40*0.25)=10 (capped at _MAX_PER_COLL=10); small=2 -> min(2, max(0.5→3))=2 ; total 12
     big = [{"page_id": f"b{i}", "source_id": f"b{i}", "collections": ["big"]} for i in range(40)]
     small = [{"page_id": f"s{i}", "source_id": f"s{i}", "collections": ["small"]} for i in range(2)]
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: {"High": big + small}.get(pr, []))
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, s: big + small)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "type": "Reel"})
     n = calibrate.sample(_env(tmp_path), group="G", collections_cfg=_G,
@@ -102,8 +100,8 @@ def test_prompt_includes_only_extract_yes_collection_names(tmp_path, monkeypatch
     # Guidance labels are the group's extract=yes collections — a det collection in the
     # same group is NOT surfaced as guidance (its items don't enrich under this group).
     spec = _FakeCols({"hust-a": ("Hustling", True), "hust-det": ("Hustling", False)})
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, s: stubs)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": "s1", "caption": "c", "type": "Reel"})
     calibrate.sample(_env(tmp_path), group="Hustling", collections_cfg=spec,
@@ -116,11 +114,11 @@ def test_sample_excludes_cross_group_det_only_membership(tmp_path, monkeypatch):
     # An item in G's DET collection plus ANOTHER group's extract=yes collection enriches
     # under the other group — so it must be excluded from G's sample and included in Other's.
     spec = _FakeCols({"g-ex": ("G", True), "g-det": ("G", False), "o-ex": ("Other", True)})
-    stubs = {"High": [
+    stubs = [
         {"page_id": "native", "source_id": "native", "collections": ["g-ex"]},
         {"page_id": "cross", "source_id": "cross", "collections": ["g-det", "o-ex"]},
-    ]}
-    monkeypatch.setattr(calibrate, "query_by_status_and_priority", lambda env, s, pr: stubs.get(pr, []))
+    ]
+    monkeypatch.setattr(calibrate, "query_by_status", lambda env, s: stubs)
     monkeypatch.setattr(calibrate, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "type": "Reel"})
 

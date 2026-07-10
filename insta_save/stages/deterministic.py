@@ -16,7 +16,7 @@ from insta_save.adapters import notion
 from insta_save.adapters.notion import get_page_content, write_deterministic
 from insta_save.backends import prompt
 from insta_save.backends.base import parse_results
-from insta_save.orchestrator.runner import PRIORITY_BUCKETS, run_priority_stage
+from insta_save.orchestrator.runner import run_priority_stage
 
 log = logging.getLogger(__name__)
 
@@ -102,16 +102,15 @@ def build_title_prompt(items, template, language) -> str:
 
 
 def _deterministic_stubs(env, group, collections_cfg):
-    """Imported items in priority order, restricted to the deterministic branch (all
-    collections extract=no) and optionally to one group."""
-    for bucket in PRIORITY_BUCKETS:
-        for stub in notion.query_by_status_and_priority(env, "Imported", bucket):
-            cols = stub.get("collections", [])
-            if collections_cfg.is_extract_path(cols):
-                continue
-            if group is not None and not any(collections_cfg.group_of(c) == group for c in cols):
-                continue
-            yield stub
+    """Imported items restricted to the deterministic branch (all collections
+    extract=no) and optionally to one group."""
+    for stub in notion.query_by_status(env, "Imported"):
+        cols = stub.get("collections", [])
+        if collections_cfg.is_extract_path(cols):
+            continue
+        if group is not None and not any(collections_cfg.group_of(c) == group for c in cols):
+            continue
+        yield stub
 
 
 def prepare(env, *, group, collections_cfg, language, prompt_template, max_items=None, progress=None) -> dict:
