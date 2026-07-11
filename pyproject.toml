@@ -8,6 +8,15 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "questionary>=2.0",
+    "playwright==1.60.0",
+    "notion-client==3.1.0",
+    "python-dotenv==1.2.2",
+    "rich>=13.0",
+    "yt-dlp==2026.3.17",
+    "faster-whisper==1.2.1",
+    "rapidocr-onnxruntime==1.4.4",
+    "anthropic>=0.50.0",
+    "ollama>=0.3.0",
 ]
 
 [project.scripts]
