@@ -1,6 +1,7 @@
 """isa — Insta-Save v2 CLI entrypoint. Arg surface only; stages are stubbed until built."""
 
 import argparse
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -8,21 +9,31 @@ from pathlib import Path
 from insta_save.config.env import load_env as _load_env
 from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
-from insta_save.config.tags import load_vocab
+from insta_save.config.tags import load_vocab, load_vocab_or_empty
 from insta_save.adapters.notion import ensure_schema
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
-from insta_save.stages.calibrate import sample as calibrate_sample
+from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.backup import backup, restore_check
-from insta_save.backends.base import get_backend
+from insta_save.backends.base import get_backend, TerminalBackendError
 from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
-from insta_save.orchestrator.sequence import run_first_time, run_incremental
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
+from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+
+
+def _guard(load, *args, **kwargs):
+    """Call a config loader, converting its known errors into a clean, actionable SystemExit
+    instead of a raw traceback. Used on the secondary commands / --stage handlers (the
+    `isa run` path has its own targeted handling)."""
+    try:
+        return load(*args, **kwargs)
+    except (RuntimeError, FileNotFoundError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise SystemExit(str(exc))
 
 
 def _rel(p: str) -> str:
@@ -70,11 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--group", default=None)
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--reextract", action="store_true")
-    run.add_argument("--reenrich", action="store_true")
     run.add_argument("--retry-failed", action="store_true")
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
-    run.add_argument("--calibrate-limit", type=int, default=20)
     run.add_argument("--collection", default=None)
     run.add_argument("--fresh", action="store_true")
     run.add_argument("--dry-run", action="store_true")
@@ -82,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--confirm-removed", action="append", default=None)
     run.add_argument("--lane", choices=["text", "vision"], default="text")
     run.add_argument("--status", action="store_true")
+    run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -93,9 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def dispatch_run(args) -> None:
     if args.stage == "extract":
-        env = _load_env()
-        run_cfg = _load_run()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         log_path = setup_logging("extract")
         print(f"Logging to {_rel(log_path)}")
@@ -106,27 +116,17 @@ def dispatch_run(args) -> None:
                 collections_cfg=collections_cfg, reextract=args.reextract)
         return
     if args.stage == "calibrate":
-        # Backend-independent: calibrate samples + a session proposes vocab; it does NOT
-        # read run_cfg.enrich.backend or call backend.fill (D18 human-reviewed gate).
+        # Standalone interactive vocab editor (same gate the first-time loop runs inline):
+        # sample -> backend drafts -> you reject/add + preview -> lock into config/tags.json.
         if not args.group:
             raise SystemExit("isa run --stage calibrate: --group is required")
-        env = _load_env()
-        log_path = setup_logging("calibrate")
-        print(f"Logging to {_rel(log_path)}")
-        collections_cfg = _load_collections()
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
-        template = Path("prompts/calibrate_v2.0.txt").read_text(encoding="utf-8")
-        with StageProgress("Calibrate") as progress:
-            n = calibrate_sample(env, group=args.group, collections_cfg=collections_cfg,
-                                 limit=args.calibrate_limit, statuses=statuses,
-                                 prompt_template=template, progress=progress)
-        if n == 0:
-            print(f"No items to sample for group {args.group} (statuses: {', '.join(statuses)}). "
-                  f"Add --reenrich to also sample already-Summarized items.")
-        else:
-            print(f"Sampled {n} items -> tmp/calibrate/prompt.txt. In a Claude session: "
-                  f'"Read tmp/calibrate/prompt.txt and write tmp/calibrate/proposed_tags.json", '
-                  f"then review + merge into config/tags.json.")
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
+        backend = get_backend(run_cfg.enrich.backend)
+        print(f"Logging to {_rel(setup_logging('calibrate'))}")
+        run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
+                           backend=backend, group=args.group)
         return
 
     if args.stage == "enrich":
@@ -134,8 +134,8 @@ def dispatch_run(args) -> None:
         # validate args BEFORE loading config/vocab (fail fast; agent-filled --apply reads
         # the group from batch.json, so it needs no --group). load_vocab() must not run for a
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
-        env = _load_env()
-        run_cfg = _load_run()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
         backend = base.get_backend(run_cfg.enrich.backend)
         budgets = backend.batch_budgets(run_cfg)
 
@@ -149,12 +149,12 @@ def dispatch_run(args) -> None:
             if not args.group:
                 raise SystemExit("isa run --stage enrich --status: --group is required")
             from insta_save.backends import cowork
-            collections_cfg = _load_collections()
+            collections_cfg = _guard(_load_collections)
             print(f"{args.group}: {cowork.status(env, collections_cfg, args.group)} "
                   f"enrichable remaining")
             return
 
-        statuses = ["Extracted"] + (["Summarized"] if args.reenrich else [])
+        statuses = ["Extracted"]
         if args.lane == "vision":
             kinds = {"Carousel", "Post"}
             template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
@@ -171,8 +171,8 @@ def dispatch_run(args) -> None:
             if not args.group:
                 raise SystemExit("isa run --stage enrich: --group is required for the "
                                  f"{backend.NAME!r} backend (drains the group in one run)")
-            vocab = load_vocab()
-            collections_cfg = _load_collections()
+            vocab = _guard(load_vocab)
+            collections_cfg = _guard(_load_collections)
             log_path = setup_logging("enrich")
             print(f"Logging to {_rel(log_path)}")
             totals = enrich.drain_enrich_group(
@@ -194,20 +194,23 @@ def dispatch_run(args) -> None:
             raise SystemExit("isa run --stage enrich: pass exactly one of --prepare/--apply")
         if not args.apply and not args.group:
             raise SystemExit("isa run --stage enrich --prepare: --group is required")
-        vocab = load_vocab()
+        vocab = _guard(load_vocab)
         if args.apply:
             log_path = setup_logging("enrich-apply")
             print(f"Logging to {_rel(log_path)}")
-            collections_cfg = _load_collections()
+            collections_cfg = _guard(_load_collections)
             with StageProgress("Enrich apply") as progress:
-                counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
-                                      collections_cfg=collections_cfg, progress=progress)
+                try:
+                    counts = enrich.apply(env, vocab=vocab, model=run_cfg.enrich.model,
+                                          collections_cfg=collections_cfg, progress=progress)
+                except FileNotFoundError as exc:
+                    raise SystemExit(str(exc))
             print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
             return
         # prepare (group guaranteed present by the guard above)
         log_path = setup_logging("enrich-prepare")
         print(f"Logging to {_rel(log_path)}")
-        collections_cfg = _load_collections()
+        collections_cfg = _guard(_load_collections)
         with StageProgress("Enrich prepare") as progress:
             n = enrich.prepare(env, group=args.group, collections_cfg=collections_cfg, vocab=vocab,
                                char_budget=budgets.char_budget, max_items=budgets.max_items,
@@ -226,8 +229,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "ingest":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         log_path = setup_logging("ingest")
         print(f"Logging to {_rel(log_path)}")
@@ -245,8 +248,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "select":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         log_path = setup_logging("select")
         print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.select import run_select_stage
@@ -259,9 +262,9 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "deterministic":
-        env = _load_env()
-        run_cfg = _load_run()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        run_cfg = _guard(_load_run)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         from insta_save.stages import deterministic as det
         if run_cfg.deterministic_title_mode == "llm":
@@ -292,7 +295,10 @@ def dispatch_run(args) -> None:
                         break
                     backend.fill(env, run_cfg, det_dir)
                     with StageProgress("Deterministic apply") as progress:
-                        counts = det.apply(env, progress=progress)
+                        try:
+                            counts = det.apply(env, progress=progress)
+                        except FileNotFoundError as exc:
+                            raise SystemExit(str(exc))
                     print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
                     # No-progress guard: prepare batched items but apply wrote none, so those
                     # items stay Imported and the next prepare re-selects them — would spin
@@ -314,7 +320,10 @@ def dispatch_run(args) -> None:
                 log_path = setup_logging("deterministic-apply")
                 print(f"Logging to {_rel(log_path)}")
                 with StageProgress("Deterministic apply") as progress:
-                    counts = det.apply(env, progress=progress)
+                    try:
+                        counts = det.apply(env, progress=progress)
+                    except FileNotFoundError as exc:
+                        raise SystemExit(str(exc))
                 print(f"Applied: {counts['written']} written, {counts['failed']} failed.")
                 return
             if not args.group:
@@ -346,8 +355,8 @@ def dispatch_run(args) -> None:
         return
 
     if args.stage == "route":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         ensure_schema(env)
         from insta_save.stages.route import run_route_stage
         routes = load_routes()
@@ -364,13 +373,41 @@ def dispatch_run(args) -> None:
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
+def _has_collections() -> bool:
+    """True if config/collections.json exists (patchable in tests)."""
+    return Path("config/collections.json").exists()
+
+
+def _nested_progress(label: str):
+    """Factory for nested (level=1) StageProgress bars used by the sequencer's per-group stages."""
+    from insta_save.helpers.observability import StageProgress, RULE_NESTED
+    return StageProgress(label, width=RULE_NESTED, level=1)
+
+
 def _dispatch_mode(args) -> None:
     """Run the pipeline in first-time or incremental mode (no --stage given)."""
     env = _load_env()
+    if args.mode == "first-time":
+        ensure_run_json()                      # seed claude-p default if run.json absent
     run_cfg = _load_run()
-    collections_cfg = _load_collections()
-    vocab = load_vocab()
-    backend = get_backend(run_cfg.enrich.backend)
+    if args.mode == "first-time":
+        run_cfg = run_config_gate(run_cfg, select_mode=getattr(args, "select_mode", "inline"))
+    # True cold start: a first-time real run with no collections.json yet. The pipeline's
+    # front-fold discover builds it, so don't require it up front — defer the load and skip
+    # the pre-run item-cap guardrail (an unpopulated DB has nothing to cap; the guardrail
+    # re-engages on resume once collections.json exists). dry-run still needs it (it plans
+    # against current state with no discover), so it falls through to the clean-exit path.
+    cold_start = args.mode == "first-time" and not args.dry_run and not _has_collections()
+    if cold_start:
+        collections_cfg = None
+    else:
+        try:
+            collections_cfg = _load_collections()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))   # clean actionable exit, not an uncaught traceback
+
+    vocab = _guard(load_vocab_or_empty)
+    backend = get_backend(run_cfg.enrich.backend)   # resolved AFTER the gate
     routes = load_routes()
 
     log_path = setup_logging("run")
@@ -379,25 +416,40 @@ def _dispatch_mode(args) -> None:
     # Preflight: backend reachable, Notion config present, engines importable, effort valid.
     preflight(env, run_cfg, stages={"extract", "enrich"})
 
-    # Guardrail cap: sum remaining (Imported+Queued+Extracted) across all groups as a
-    # conservative pre-run planned count. Uses build_status (one query_all_pages pass) —
-    # same cost as compute_plan's own query; no extra Notion round-trip.
-    status_rows = build_status(env, collections_cfg)
-    total_row = next((r for r in status_rows if r["group"] == "TOTAL"), None)
-    planned = total_row["remaining"] if total_row else 0
-    guardrails.check_item_cap(planned, run_cfg)
+    if not cold_start:
+        # Guardrail cap: sum remaining (Imported+Queued+Extracted) across all groups as a
+        # conservative pre-run planned count. Uses build_status (one query_all_pages pass) —
+        # same cost as compute_plan's own query; no extra Notion round-trip.
+        status_rows = build_status(env, collections_cfg)
+        total_row = next((r for r in status_rows if r["group"] == "TOTAL"), None)
+        planned = total_row["remaining"] if total_row else 0
+        guardrails.check_item_cap(planned, run_cfg)
 
     reminder = guardrails.usage_reminder(run_cfg)
     if reminder:
         print(reminder)
 
-    if args.mode == "first-time":
-        plan = run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes,
-                              dry_run=args.dry_run)
-    else:
-        plan = run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes,
-                               dry_run=args.dry_run)
-
+    from insta_save.orchestrator.pipeline import run_pipeline
+    from insta_save.orchestrator import run_control
+    from insta_save.helpers.observability import flush_logs
+    ig_username = env.ig_username or os.environ.get("IG_USERNAME", "")
+    try:
+        with run_control.RunControl(mode=args.mode):
+            plan = run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes,
+                                mode=args.mode, dry_run=args.dry_run,
+                                select_mode=getattr(args, "select_mode", "inline"),
+                                ig_username=ig_username, headed=args.headed,
+                                fresh=args.fresh, progress_factory=_nested_progress)
+    except TerminalBackendError as exc:
+        flush_logs()
+        print(f"\n⏹  stopped · {exc}")
+        print(f"   This won't resolve by retrying now (usage limit / auth). "
+              f"Resume later with: isa run --mode {args.mode}")
+        return
+    except (run_control.RunStopped, KeyboardInterrupt):
+        flush_logs()
+        print(f"⏹  stopped · resume with: isa run --mode {args.mode}")
+        return
     _print_plan(plan, args.dry_run)
 
 
@@ -406,6 +458,13 @@ def _print_plan(plan, dry_run: bool) -> None:
     label = " (dry-run)" if dry_run else ""
     for step in plan.steps:
         print(f"  {step.group}: {step.action} — {step.detail}")
+
+    skipped = getattr(plan, "skipped", [])
+    if skipped:
+        print("\n⚠  skipped (no forward progress — re-run to retry, "
+              "or `isa status --retry-failed` for items marked Failed):")
+        for s in skipped:
+            print(f"  - {s['group']} ({s['action']}): {s['reason']}")
 
     if plan.done:
         print(f"All groups complete.{label}")
@@ -417,11 +476,13 @@ def _print_plan(plan, dry_run: bool) -> None:
 
     if not na.automated:
         if na.action == "calibrate":
+            # Reached only in --dry-run: a real --mode run handles calibrate inline
+            # (the gate samples, the backend drafts, you lock — then enrich continues).
             print(
-                f"\nNEXT (manual){label}: {na.group} — {na.detail}\n"
-                f"  Run: isa run --stage calibrate --group {na.group!r}\n"
-                f"  Then review tmp/calibrate/proposed_tags.json, lock vocab in "
-                f"config/tags.json, and re-run isa run --mode first-time."
+                f"\nNEXT{label}: {na.group} — {na.detail}\n"
+                f"  The interactive calibrate gate runs inline on the next "
+                f"`isa run --mode first-time` (without --dry-run): the backend drafts a "
+                f"vocab, you review/lock it into config/tags.json, then enrich continues."
             )
         else:
             # agent-filled enrich gate
@@ -445,22 +506,25 @@ def main() -> None:
         dispatch_run(args)
         return
     if args.command == "discover":
-        env = _load_env()
+        env = _guard(_load_env)
         ig_username = args.ig_username or env.ig_username
         log_path = setup_logging("discover")
         print(f"Logging to {_rel(log_path)}")
         from insta_save.stages.discover import run_discover
         names = [args.collection] if args.collection else None
-        summary = run_discover(env, ig_username=ig_username,
-                               collections_path="config/collections.json",
-                               tmp_dir=env.tmp_dir, headed=args.headed,
-                               fresh=args.fresh, names=names)
+        try:
+            summary = run_discover(env, ig_username=ig_username,
+                                   collections_path="config/collections.json",
+                                   tmp_dir=env.tmp_dir, headed=args.headed,
+                                   fresh=args.fresh, names=names)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))
         print(f"Discover: {len(summary['new'])} new, {len(summary['missing'])} missing, "
               f"index_complete={summary['index_complete']}, skipped={summary['skipped']}")
         return
     if args.command == "backup":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         log_path = setup_logging("backup")
         print(f"Logging to {_rel(log_path)}")
         out_dir = Path(env.tmp_dir) / "backups"
@@ -483,13 +547,12 @@ def main() -> None:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = backup(env, out_dir=out_dir, ts=ts)
             # Re-read count from the written file so we don't need backup() to return it.
-            import json as _json
-            written_count = _json.loads(path.read_text(encoding="utf-8"))["count"]
+            written_count = json.loads(path.read_text(encoding="utf-8"))["count"]
             print(f"Backup: wrote {path} ({written_count} pages)")
         return
     if args.command == "status":
-        env = _load_env()
-        collections_cfg = _load_collections()
+        env = _guard(_load_env)
+        collections_cfg = _guard(_load_collections)
         setup_logging("status")
         if args.retry_failed:
             r = _retry_failed(env)

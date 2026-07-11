@@ -28,6 +28,33 @@ def test_ocr_score_text_without_scores():
     assert ocr.ocr_score([[None, "hello", None]]) == ("hello", None)
 
 
+def test_extract_ocr_frames_subprocesses_use_devnull(monkeypatch, tmp_path):
+    """Both yt-dlp and ffmpeg must get stdin=DEVNULL; ffmpeg also -nostdin."""
+    import subprocess
+    from insta_save.engines import ocr
+
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Result()
+
+    monkeypatch.setattr(ocr.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ocr, "json_cookies_to_netscape", lambda *a, **k: None)
+    ocr.extract_ocr_frames(ig_link="https://x/reel/AB/", shortcode="AB",
+                           tmp_dir=str(tmp_path), cookies_json="c.json")
+    assert len(calls) == 2, f"Expected 2 subprocess.run calls, got {len(calls)}"
+    yt_cmd, yt_kw = calls[0]
+    ff_cmd, ff_kw = calls[1]
+    assert yt_kw.get("stdin") is subprocess.DEVNULL
+    assert ff_kw.get("stdin") is subprocess.DEVNULL
+    assert "-nostdin" in ff_cmd
+
+
 def test_ocr_cookies_reads_expires_not_expirationDate(tmp_path):
     """extract_ocr_frames must produce a Netscape cookies file that carries the
     real `expires` timestamp, not 0.  The old private _netscape_cookies read
@@ -72,3 +99,48 @@ def test_ocr_cookies_reads_expires_not_expirationDate(tmp_path):
         "Expires field is 0 — converter is still reading `expirationDate`; "
         "should read `expires`"
     )
+
+
+def test_is_content_image_matches_15_family_excludes_profile_and_video():
+    from insta_save.engines.ocr import _is_content_image
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    # content slides: -15 family, rotating host number
+    assert _is_content_image(f"{base}/t51.82787-15/abc_n.jpg")
+    assert _is_content_image(f"{base}/t51.71878-15/abc_n.jpg")
+    assert _is_content_image(f"{base}/t51.75761-15/abc_n.jpg")  # the rotated marker that was missed
+    # excluded: -19 profile/avatar (incl. same host number as a -19), and t39 video thumbs
+    assert not _is_content_image(f"{base}/t51.2885-19/abc_n.jpg")
+    assert not _is_content_image(f"{base}/t51.82787-19/abc_n.jpg")
+    assert not _is_content_image(f"{base}/t39.30808-6/abc_n.jpg")
+    assert not _is_content_image("")
+
+
+def test_is_video_poster_matches_t39_family():
+    from insta_save.engines.ocr import _is_video_poster
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    assert _is_video_poster(f"{base}/t39.30808-6/470_n.jpg")
+    assert not _is_video_poster(f"{base}/t51.82787-15/abc_n.jpg")  # content image, not a poster
+    assert not _is_video_poster(f"{base}/t51.2885-19/abc_n.jpg")   # profile
+    assert not _is_video_poster("")
+
+
+def test_content_image_urls_includes_video_posters_when_requested(monkeypatch):
+    """With include_video_posters=True, a carousel's t39 video posters are collected as slides."""
+    from insta_save.engines import ocr
+
+    class _Img:
+        def __init__(self, src): self._src = src
+        def get_attribute(self, _): return self._src
+
+    base = "https://instagram.fblr22-1.fna.fbcdn.net/v"
+    imgs = [_Img(f"{base}/t39.30808-6/v1.jpg"), _Img(f"{base}/t39.30808-6/v2.jpg"),
+            _Img(f"{base}/t51.2885-19/profile.jpg")]  # profile excluded
+
+    class _Page:
+        def query_selector_all(self, scope): return imgs
+
+    urls_default = ocr._content_image_urls(_Page(), scope="ul img")
+    urls_posters = ocr._content_image_urls(_Page(), scope="ul img", include_video_posters=True)
+    assert urls_default == []                       # posters NOT collected by default
+    assert len(urls_posters) == 2                   # both video posters, profile excluded
+    assert all("t39.30808-6" in u for u in urls_posters)

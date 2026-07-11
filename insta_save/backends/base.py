@@ -15,6 +15,33 @@ from pathlib import Path
 from typing import Protocol
 
 
+class TerminalBackendError(Exception):
+    """A backend failure that retrying within this run cannot fix (Claude-Max usage
+    limit, not-logged-in, invalid key). Propagates out of the drain to stop the run
+    gracefully with a resume hint — as opposed to a transient malformed-JSON reply,
+    which the drain retries."""
+
+
+# Substrings (case-insensitive) that mark a backend error as TERMINAL for this run.
+# Kept deliberately narrow: anything not matched is treated as transient and retried.
+# A 429/overloaded/timeout is transient on purpose (retry usually succeeds); only a
+# usage-limit or auth failure is hopeless until the user acts.
+_TERMINAL_ERROR_MARKERS = (
+    "usage limit",
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "authentication",
+    "credit balance",
+)
+
+
+def is_terminal_error(exc: BaseException) -> bool:
+    """True when exc's message marks a terminal (non-retryable-this-run) backend failure."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TERMINAL_ERROR_MARKERS)
+
+
 @dataclass(frozen=True)
 class Budgets:
     """Batch-sizing knobs (D7). char_budget/max_items bound the rendered prompt;
@@ -41,6 +68,72 @@ class Backend(Protocol):
     def fill(self, env, run_cfg, enrich_dir) -> FillResult: ...
 
 
+def parse_results_array(text: str) -> list:
+    """Strip a leading/trailing ```json fence if present, then json.loads.
+    Raise ValueError if the result is not a list."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        # model wrapped the array in prose — pull out the outermost [...]
+        start, end = stripped.find("["), stripped.rfind("]")
+        if start == -1 or end <= start:
+            raise ValueError(f"no JSON array found in model output: {stripped[:200]!r}")
+        data = json.loads(stripped[start:end + 1])
+    if not isinstance(data, list):
+        raise ValueError(f"expected a JSON array, got {type(data).__name__}")
+    return data
+
+
+def parse_results_object(text: str) -> dict:
+    """Extract a single JSON object from model output, tolerating a ```json fence and/or
+    surrounding prose (e.g. a `claude -p` reply that explains before/after the object).
+    Used by propose_vocab. Raises ValueError if no JSON object is found or it isn't a dict."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        # model wrapped the object in prose — pull out the outermost {...}
+        start, end = stripped.find("{"), stripped.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError(f"no JSON object found in model output: {stripped[:200]!r}")
+        data = json.loads(stripped[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+    return data
+
+
+def normalize_results(parsed, batch_items) -> list[dict]:
+    """Trust the batch, not the model, for identity. Keep only results whose
+    page_id is a real batch item (drops fabricated ids), de-dupe on first
+    occurrence, and overwrite source_id from the matching batch item. The
+    model's title/summary/externals/content_type/topics are left intact."""
+    by_page_id = {item["page_id"]: item for item in batch_items}
+    kept, seen = [], set()
+    for result in parsed:
+        page_id = result.get("page_id")
+        if page_id not in by_page_id or page_id in seen:
+            continue
+        seen.add(page_id)
+        result["source_id"] = by_page_id[page_id].get("source_id")
+        kept.append(result)
+    return kept
+
+
 def parse_results(path) -> list[dict]:
     """Read results.json (a JSON array). Raises ValueError if not an array."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -60,6 +153,8 @@ def get_backend(name: str):
         from insta_save.backends import local_ollama as m
     elif name == "api":
         from insta_save.backends import api_anthropic as m
+    elif name == "claude-p":
+        from insta_save.backends import claude_p as m
     else:
         raise ValueError(f"unknown enrich backend {name!r}")
     return m

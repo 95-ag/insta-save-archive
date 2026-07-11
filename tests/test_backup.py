@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import insta_save.backup as backup_mod
 from insta_save.backup import backup, restore_check
 
@@ -138,6 +139,16 @@ def test_restore_check_field_mismatch_missing_page_id(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # restore_check: field problem — page with no resolvable status
 # ---------------------------------------------------------------------------
+
+def test_restore_check_unreadable_backup_raises_runtime_error(tmp_path, monkeypatch):
+    """restore_check raises RuntimeError with the backup path when the file is malformed JSON."""
+    bad = tmp_path / "bad.json"
+    bad.write_text("not valid json {{{", encoding="utf-8")
+    cfg = _fake_collections_cfg()
+    monkeypatch.setattr(backup_mod, "query_all_pages", lambda env: [])
+    with pytest.raises(RuntimeError, match="backup file unreadable"):
+        restore_check(object(), bad, cfg)
+
 
 def test_restore_check_field_mismatch_missing_status(tmp_path, monkeypatch):
     """A backup page where status cannot be resolved is a field mismatch, ok=False."""

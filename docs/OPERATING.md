@@ -120,7 +120,6 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --limit <N>           # cap items processed this run
           --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
           --reextract           # re-run extract on already-Extracted items (e.g. new engine)
-          --reenrich            # re-tag already-Tagged items (e.g. new vocab)
           --retry-failed        # reprocess items currently in Failed
 isa status
 isa backup [--restore-check]
@@ -192,7 +191,6 @@ Notion status resumes exactly where it left off. `local`/`api` backends do steps
 
 `extract_version` and `enrich_version` are independent:
 - Re-extract (e.g. after a whisper upgrade) without re-enriching: `isa run --stage extract --reextract`.
-- Re-tag under a new vocabulary without re-extracting: `isa run --stage enrich --reenrich`.
 
 `raw_extraction` is never overwritten, so re-parsing slides/audio never requires re-scraping Instagram.
 

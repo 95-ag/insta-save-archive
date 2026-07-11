@@ -29,6 +29,12 @@ def test_collections_in_group(tmp_path):
     assert c.collections_in_group("Hustling") == {"Coding"}
 
 
+def test_extract_collections_in_group(tmp_path):
+    c = _load(tmp_path)
+    assert c.extract_collections_in_group("Hustling") == {"Coding"}   # extract=yes
+    assert c.extract_collections_in_group("Lifestyle") == set()       # Makeup is extract=no
+
+
 def test_group_order_index(tmp_path):
     c = _load(tmp_path)
     assert c.group_order_index("Hustling") < c.group_order_index("Biz")

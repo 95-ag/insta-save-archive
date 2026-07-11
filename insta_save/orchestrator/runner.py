@@ -1,20 +1,17 @@
 """
-Shared priority-bucketed stage runner (v2).
+Shared stage runner (v2).
 
 Every per-item processing stage (extraction, enrich, tag) reads items in a
-given status, processes them highest-priority first, and writes results back.
-This module owns that loop once:
+given status and writes results back. This module owns that loop once:
 
-    for bucket in PRIORITY_BUCKETS:          # High → Medium → Low → unprioritised
-        for item in items(read_status, bucket):
-            process_fn(env, item, ctx)       # does the work + Notion write + status
+    for item in items(read_status):
+        process_fn(env, item, ctx)       # does the work + Notion write + status
 
 process_fn returns a counter name (e.g. "extracted", "skipped") that the runner
 bumps on the StageProgress display. Failures raise; the runner counts them as
 "failed" and routes the item to on_error (e.g. mark_failed) when given.
 
-Items are read up front in bucket order so the progress bar has an accurate total;
-processing still proceeds strictly High → Medium → Low → unprioritised.
+Items are read up front so the progress bar has an accurate total.
 
 The optional `group` + `collections_cfg` filter narrows the run to items whose
 collections map to the given group (e.g. `isa run --stage extract --group Hustling`).
@@ -25,17 +22,10 @@ progress bar total reflects the filtered set.
 import logging
 import time
 
-from insta_save.adapters.notion import query_by_status_and_priority
+from insta_save.adapters.notion import query_by_status
+from insta_save.orchestrator import run_control
 
 log = logging.getLogger(__name__)
-
-# Processed in this order. None is the unprioritised bucket — always last,
-# nothing is dropped.
-PRIORITY_BUCKETS = ["High", "Medium", "Low", None]
-
-
-def _bucket_label(priority: str | None) -> str:
-    return priority if priority is not None else "Unprioritised"
 
 
 def run_priority_stage(
@@ -50,14 +40,18 @@ def run_priority_stage(
     source_id: str | None = None,
     stage_key: str = "item",
     bar_label: str = "Items",
-    exclude_priorities: list | None = None,
     group: str | None = None,
     collections_cfg=None,
     write_delay: float = 0.0,
     delay_on: set | None = None,
 ) -> dict:
     """
-    Drive a per-item stage over priority buckets, reporting into a StageProgress.
+    Drive a per-item stage over items in a given status, reporting into a StageProgress.
+
+    NOTE: the name is historical. This once bucketed items by a `priority` Notion select,
+    but that column was never populated (always the empty bucket), so the priority layer
+    was removed as vestigial. The name is kept to avoid a rename rippling across every
+    caller; it now does a single status query.
 
     Args:
         env:             opaque config/env passed through to process_fn/on_error/query.
@@ -68,12 +62,11 @@ def run_priority_stage(
                          BrowserContext for extraction, None for local enrichment).
         on_error:        optional on_error(env, item, exc) called when process_fn raises
                          (e.g. mark_failed). The runner always counts the item as "failed".
-        limit:           cumulative cap on items processed across all buckets (None = all).
+        limit:           cumulative cap on items processed (None = all).
         source_id:       if set, process only the item with this source_id (it must be in
                          read_status); all others are skipped.
         stage_key:       label shown on the live status line (e.g. "extract", "enrich").
         bar_label:       description for the progress bar.
-        exclude_priorities: priority values to skip entirely (e.g. ["High"]). None = include all.
         group:           if set, restrict to items whose collections map to this group.
         collections_cfg: CollectionsConfig used to resolve group membership (required when
                          group is set; no-op if group is None).
@@ -86,13 +79,7 @@ def run_priority_stage(
     Returns:
         dict of counter-name → count. Always includes "failed".
     """
-    items: list[dict] = []
-    for priority in PRIORITY_BUCKETS:
-        if exclude_priorities and priority in exclude_priorities:
-            continue
-        for item in query_by_status_and_priority(env, read_status, priority):
-            item["priority"] = priority
-            items.append(item)
+    items = query_by_status(env, read_status)
 
     if group is not None and collections_cfg is not None:
         items = [
@@ -113,11 +100,8 @@ def run_priority_stage(
     counts: dict[str, int] = {}
     bar = progress.add_bar(bar_label, total=len(items))
 
-    current_bucket = "__unset__"
     for item in items:
-        if item["priority"] != current_bucket:
-            current_bucket = item["priority"]
-            log.info("runner: bucket %s", _bucket_label(current_bucket))
+        run_control.checkpoint()
         sid = item.get("source_id") or item["page_id"]
         progress.set_current(stage_key, sid)
         counter = None

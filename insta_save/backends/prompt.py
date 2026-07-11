@@ -6,7 +6,6 @@ items + vocab template, and measure header/item rendered lengths so prepare can
 budget the prompt without re-rendering. Moved out of backends.claude_code so the
 api/local/cowork backends (#5) reuse the same contract (ARCHITECTURE D5)."""
 
-from insta_save.config.tags import allowed_topics, union_topics
 
 PROMPT_VERSION = "enrich_v2.0"
 
@@ -23,20 +22,40 @@ def image_token_estimate(item) -> int:
 
 def _vocab_block(group, vocab, groups=None) -> str:
     """Human-readable vocab the session must choose from: content-types (pick 1),
-    the group's topics + cross-group (pick 0-3), each with its one-line definition.
+    then the group's granular topics (pick 3-4) and cross-group topics (pick 1-2),
+    each with its one-line definition.
 
-    groups: when provided (cross-group batch), the topic list is the union of all
-    listed groups' granular topics + cross_group_topics (§7.3). None falls back to
-    the single-group allowed_topics(group) path — identical for a single-group batch.
+    groups: when provided (cross-group batch), the granular section is the union of all
+    listed groups' granular topics (§7.3). None falls back to the single-group
+    group_topics(group) path — identical for a single-group batch.
     """
     lines = ["CONTENT-TYPE (choose exactly one):"]
     for ct in vocab.content_types:
         lines.append(f"  {ct} — {vocab.definitions.get(ct, '')}")
     lines.append("")
-    lines.append("TOPICS (choose 0-3, only from this list):")
-    topics = union_topics(vocab, groups) if groups else allowed_topics(vocab, group)
-    for t in topics:
+
+    # Granular group topics: union across all groups (deduped, first-occurrence), or single group.
+    if groups:
+        seen: set[str] = set()
+        granular: list[str] = []
+        for g in groups:
+            for t in vocab.group_topics(g):
+                if t not in seen:
+                    seen.add(t)
+                    granular.append(t)
+    else:
+        granular = vocab.group_topics(group)
+
+    lines.append("GROUP TOPICS (pick 3-4):")
+    for t in granular:
         lines.append(f"  {t} — {vocab.definitions.get(t, '')}")
+    lines.append("")
+
+    # Cross-group topics are always the same regardless of groups= path.
+    lines.append("CROSS-GROUP TOPICS (pick 1-2 if applicable):")
+    for t in vocab.cross_group_topics:
+        lines.append(f"  {t} — {vocab.definitions.get(t, '')}")
+
     return "\n".join(lines)
 
 
@@ -85,8 +104,8 @@ def build_prompt(group, items, vocab, template, output_language="english",
     """Assemble the full prompt: instruction header (template, with {vocab_block}
     filled, plus the output-language directive) + a per-item content section.
 
-    groups: when provided (cross-group batch), the vocab block uses union_topics across
-    all listed groups. None falls back to the single-group allowed_topics(group) path."""
+    groups: when provided (cross-group batch), the vocab block renders the union of all
+    listed groups' granular topics. None falls back to the single-group group_topics(group) path."""
     lines = _header_lines(group, vocab, template, output_language, groups=groups)
     for item in items:
         lines.append(_item_block(item))
@@ -97,8 +116,8 @@ def build_prompt(group, items, vocab, template, output_language="english",
 def header_len(group, vocab, template, output_language="english", groups=None) -> int:
     """Rendered length of the fixed prompt header (instructions + vocab + group line).
 
-    groups: when provided (cross-group batch), mirrors the groups= param of build_prompt
-    so that header_len(..., groups=G) + Σitem_len == len(build_prompt(..., groups=G))."""
+    groups: mirrors the groups= param of build_prompt (cross-group batch path) so that
+    header_len(..., groups=G) + Σitem_len == len(build_prompt(..., groups=G))."""
     return len("\n".join(_header_lines(group, vocab, template, output_language, groups=groups)))
 
 

@@ -127,6 +127,26 @@ def test_enrich_agent_filled_backend(monkeypatch):
     assert step.automated is False
 
 
+def test_enrich_step_carries_pending_count(monkeypatch):
+    """The enrich GroupStep's .count must equal the number of Extracted items for the group."""
+    cfg = _collections_cfg("Hustling", "uncategorized")
+    # Three Extracted items in Hustling
+    _patch(monkeypatch, [
+        _page("Extracted", ["Hustling"]),
+        _page("Extracted", ["Hustling"]),
+        _page("Extracted", ["Hustling"]),
+    ])
+    vocab = _fake_vocab("Hustling")
+    backend = _backend(automated=True, name="api")
+    routes = Routes()
+
+    plan = sequence.compute_plan(None, None, cfg, vocab, backend, routes)
+
+    step = plan.steps[0]
+    assert step.action == "enrich"
+    assert step.count == 3
+
+
 # ---------------------------------------------------------------------------
 # route: Tagged + routing enabled → "route" automated=True
 #        routing disabled (empty Routes) → "done"
@@ -376,25 +396,30 @@ def test_automated_chain_drives_stages_in_order(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Gate stop: non-automated calibrate step → return plan, no drain called
+# Calibrate gate inline: first-time runs the gate then re-plans to done
 # ---------------------------------------------------------------------------
 
-def test_calibrate_gate_stops_first_time(monkeypatch):
+def test_loop_runs_calibrate_gate_then_continues(monkeypatch):
     cfg = _collections_cfg("G", "uncategorized")
-    vocab = _fake_vocab()  # uncalibrated
+    vocab = _fake_vocab()  # starts uncalibrated
     backend = _backend(automated=True)
     routes = Routes()
-
-    gate_plan = _plan([{"group": "G", "action": "calibrate", "automated": False}])
-    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: gate_plan)
+    plan_seq = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
     calls = _patch_stages(monkeypatch)
-
+    gate_calls = {"n": 0}
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group):
+        gate_calls["n"] += 1
+        return _fake_vocab("G")  # now calibrated
+    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
     run_cfg = SimpleNamespace(extract=None, output_language="english",
-                               enrich=SimpleNamespace(model="m"))
+                              enrich=SimpleNamespace(model="m"))
     result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
-
-    # Returns the gate plan; no stage drain called
-    assert result is gate_plan
+    assert gate_calls["n"] == 1
+    assert result.done is True
     assert calls == {"extract": [], "enrich": [], "route": []}
 
 
@@ -448,25 +473,33 @@ def test_no_progress_guard_bails_after_one_execution(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# incremental: calibrate → raise SystemExit
+# incremental: calibrate → runs gate inline (same as first-time)
 # ---------------------------------------------------------------------------
 
-def test_incremental_calibrate_raises(monkeypatch):
+def test_incremental_calibrate_runs_gate(monkeypatch):
     cfg = _collections_cfg("G", "uncategorized")
     vocab = _fake_vocab()  # uncalibrated
     backend = _backend(automated=True)
     routes = Routes()
 
-    gate_plan = _plan([{"group": "G", "action": "calibrate", "automated": False}])
-    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: gate_plan)
-    _patch_stages(monkeypatch)
+    plan_seq = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(plan_seq))
+    calls = _patch_stages(monkeypatch)
+    gate_calls = {"n": 0}
+    def fake_gate(env, run_cfg, *, collections_cfg, backend, group):
+        gate_calls["n"] += 1
+        return _fake_vocab("G")
+    monkeypatch.setattr(sequence, "run_calibrate_gate", fake_gate)
 
     run_cfg = SimpleNamespace(extract=None, output_language="english",
                                enrich=SimpleNamespace(model="m"))
-    with pytest.raises(SystemExit) as exc_info:
-        sequence.run_incremental(None, run_cfg, cfg, vocab, backend, routes)
-    assert "uncalibrated" in str(exc_info.value)
-    assert "first-time" in str(exc_info.value)
+    result = sequence.run_incremental(None, run_cfg, cfg, vocab, backend, routes)
+    assert gate_calls["n"] == 1
+    assert result.done is True
+    assert calls == {"extract": [], "enrich": [], "route": []}
 
 
 def test_incremental_automated_chain_works(monkeypatch):
@@ -506,3 +539,158 @@ def test_incremental_dry_run(monkeypatch):
 
     assert plan.next_action is not None
     assert calls == {"extract": [], "enrich": [], "route": []}
+
+
+# ---------------------------------------------------------------------------
+# _tally: Imported items NOT on extract path count in deterministic[g]
+# ---------------------------------------------------------------------------
+
+def test_step_for_group_returns_deterministic_when_pending():
+    from insta_save.orchestrator import sequence
+    vocab = type("V", (), {"has_group": lambda self, g: True})()
+    backend = SimpleNamespace(NAME="claude-p", AUTOMATED=True)
+    step = sequence._step_for_group("Lifestyle", {}, {}, {}, {"Lifestyle": 5},
+                                    vocab, backend, routing_enabled=False, det_automated=True)
+    assert step.action == "deterministic" and step.automated is True
+
+
+def test_execute_step_runs_deterministic_stage(monkeypatch):
+    from insta_save.orchestrator import sequence
+    called = {}
+    monkeypatch.setattr("insta_save.stages.deterministic.run_deterministic_stage",
+                        lambda env, cfg, progress, *, group=None: called.update(group=group))
+    step = sequence.GroupStep(group="Lifestyle", action="deterministic",
+                              automated=True, detail="")
+    sequence._execute_step(object(), SimpleNamespace(extract=None), object(), object(),
+                           SimpleNamespace(NAME="x", AUTOMATED=True), object(), step, None)
+    assert called["group"] == "Lifestyle"
+
+
+def test_tally_counts_deterministic_pending(monkeypatch):
+    from insta_save.orchestrator import sequence
+    cfg = type("C", (), {
+        "groups": ["Lifestyle"],
+        "group_of": lambda self, c: "Lifestyle",
+        "is_extract_path": lambda self, cols: False,   # deterministic branch
+        "enrich_group": lambda self, cols: None,
+    })()
+    pages = [{"status": "Imported", "collections": ["BLR"]},
+             {"status": "Imported", "collections": ["BLR"]}]
+    monkeypatch.setattr(sequence, "_parse_page",
+                        lambda p: (p["status"], p["collections"]))
+    queued, enrichable, tagged, deterministic = sequence._tally(pages, cfg)
+    assert deterministic == {"Lifestyle": 2}
+    assert queued == {} and enrichable == {} and tagged == {}
+
+
+# ---------------------------------------------------------------------------
+# Group bands: _run_loop emits ═ rules on group open and close
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _recording_cm(events):
+    events.append("enter")
+    try:
+        yield
+    finally:
+        events.append("exit")
+
+
+def test_run_loop_stops_between_steps(monkeypatch):
+    from insta_save.orchestrator import sequence
+    from insta_save.orchestrator.run_control import RunControl, RunStopped
+    rc = RunControl(mode="first-time")
+    rc.request_stop()
+    monkeypatch.setattr(sequence, "compute_plan",
+                        lambda *a, **k: _plan([{"group": "G", "action": "extract", "automated": True}]))
+    monkeypatch.setattr(sequence, "_execute_step", lambda *a, **k: None)
+    cfg = type("C", (), {"groups": ["G"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    with rc:
+        with pytest.raises(RunStopped):
+            sequence._run_loop(object(), run_cfg, cfg, object(), object(), object())
+
+
+def test_run_loop_wraps_calibrate_gate_in_run_control_gate(monkeypatch):
+    from insta_save.orchestrator import sequence, run_control
+    events = []
+    monkeypatch.setattr(run_control, "gate", lambda: _recording_cm(events))
+    steps = iter([
+        _plan([{"group": "G", "action": "calibrate", "automated": False}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(steps))
+    monkeypatch.setattr(sequence, "run_calibrate_gate",
+                        lambda *a, **k: (events.append("gate-body"), object())[1])
+    cfg = type("C", (), {"groups": ["G"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence._run_loop(object(), run_cfg, cfg, object(), object(), object(), interactive=True)
+    assert events == ["enter", "gate-body", "exit"]
+
+
+def test_run_loop_prints_group_band_on_group_change(monkeypatch, capsys):
+    from insta_save.orchestrator import sequence
+    steps = iter([
+        _plan([{"group": "Hustling", "action": "extract", "automated": True}]),
+        _plan([{"group": "Biz", "action": "extract", "automated": True}]),
+        _done_plan(),
+    ])
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: next(steps))
+    monkeypatch.setattr(sequence, "_execute_step", lambda *a, **k: None)
+    cfg = type("C", (), {"groups": ["Hustling", "Biz"]})()
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence._run_loop(object(), run_cfg, cfg, object(), object(), object())
+    out = capsys.readouterr().out
+    assert "Hustling" in out and "Biz" in out and out.count("═") > 0 and "done · Biz" in out
+
+
+# ---------------------------------------------------------------------------
+# Stuck-group skip: one stuck group must not halt the whole run
+# ---------------------------------------------------------------------------
+
+def test_stuck_group_is_skipped_others_still_run(monkeypatch):
+    """When group A's enrich makes no progress, the sequencer skips A and still runs B."""
+    cfg = _collections_cfg("A", "B")  # group order A, B
+    vocab = _fake_vocab("A", "B")
+    backend = _backend(automated=True)
+    routes = Routes()
+
+    # compute_plan always returns the same plan: A enrich (will stick), B extract.
+    stuck_plan = _plan([
+        {"group": "A", "action": "enrich", "automated": True},
+        {"group": "B", "action": "extract", "automated": True},
+    ], next_idx=0)
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: stuck_plan)
+    calls = _patch_stages(monkeypatch)
+
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    result = sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
+
+    assert calls["enrich"] == ["A"]          # A's enrich ran once
+    assert len(calls["extract"]) == 1        # B's extract ran despite A being stuck
+    assert any(s["group"] == "A" for s in result.skipped)
+
+
+def test_stuck_group_skip_is_printed(monkeypatch, capsys):
+    cfg = _collections_cfg("A", "B")
+    vocab = _fake_vocab("A", "B")
+    backend = _backend(automated=True)
+    routes = Routes()
+    stuck_plan = _plan([
+        {"group": "A", "action": "enrich", "automated": True},
+        {"group": "B", "action": "extract", "automated": True},
+    ], next_idx=0)
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: stuck_plan)
+    _patch_stages(monkeypatch)
+    run_cfg = SimpleNamespace(extract=None, output_language="english",
+                              enrich=SimpleNamespace(model="m"))
+    sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
+    out = capsys.readouterr().out
+    assert "skipped" in out.lower() and "A" in out

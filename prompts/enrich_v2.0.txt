@@ -5,19 +5,36 @@ For EACH post below, produce these fields:
 
 - title: concise, specific, descriptive. NOT the caption. Max 80 chars.
     e.g. "5 Canva tricks for faster social graphics" not "Canva tips".
-- summary: full-information prose. Render everything useful (steps, tips, tools, names,
-    numbers). Strip filler (greetings, signoffs, hashtag promos). Use blank lines between
-    distinct topic sections. If a Language line marks the post non-English, translate the
-    content to English and add a short note like "Original video in Tamil." at the end.
+- summary: full-information prose that renders the content DIRECTLY, as authored knowledge —
+    state the facts, steps, tips, tools, names, and numbers themselves. NEVER describe the
+    source or narrate the medium: do not write "the post/video/visual/image shows", "the
+    OCR/caption says/reads/shows/reveals/displays", "this post/summary covers", "the implied
+    lesson/takeaway/point is", "the author argues/explains/demonstrates", or any similar
+    meta-commentary. Write "Golden ratio ≈ 1:1.6 — split a layout ~1/3 : 2/3, not in half."
+    NOT "The visual demonstrates the golden ratio." Use ONLY details present in the caption,
+    transcript, or OCR. Never invent specifics the source does not contain — exact URLs,
+    @handles, version numbers, license names, or precise figures. If a detail is not in the
+    source, omit it or stay general. Under-claiming is correct; fabricating is not. If part of
+    the source is unrelated, tangential, or noise (e.g. OCR captured from a different screen),
+    omit it silently — never append a note, anywhere in the summary, narrating what the
+    OCR/caption/transcript contains. Strip filler
+    (greetings, signoffs, hashtag promos). Use blank lines between distinct topic sections. If
+    a Language line marks the post non-English, translate the content to English and add a
+    short note like "Original video in Tamil." at the end.
 - externals: every external reference, grouped by category with a header on its own line:
         [Tools]
           Figma — design tool used for wireframing
         [Creators]
           @millmotion — animation reference
     Categories: Tools, Brands, Creators, Links, Techniques, Locations. Omit empty categories.
-    Include full URLs exactly as they appear. If nothing qualifies, use an empty string.
+    Include a URL only if it appears verbatim in the source. If a tool is named but no link is
+    given, list the tool name with no URL — never guess, reconstruct, or complete a URL or
+    @handle. Annotations state only what the source supports — do not add version numbers,
+    dates, prices, or license names that are not in the source. If nothing qualifies, use an
+    empty string.
 - content_type: choose EXACTLY ONE from the CONTENT-TYPE list below.
-- topics: choose 0 to 3 from the TOPICS list below. Only values from the list — do not invent.
+- topics: pick 3-4 from GROUP TOPICS and 1-2 from CROSS-GROUP TOPICS (if applicable),
+    up to 6 total — only values from the lists, do not invent.
 
 {vocab_block}
 

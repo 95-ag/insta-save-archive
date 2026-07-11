@@ -28,9 +28,9 @@ def test_topics_deduped_dropped_and_clamped():
         allowed_content_types=["tool"],
         allowed_topics=["seo", "web-dev", "ai", "design"],
     )
-    # deduped (one seo), bogus dropped, clamped to 3, order preserved
+    # deduped (one seo), bogus dropped, clamped to 6, order preserved
     assert ct == "tool"
-    assert topics == ["seo", "web-dev", "ai"]
+    assert topics == ["seo", "web-dev", "ai", "design"]
 
 
 def test_missing_or_empty_topics():
@@ -45,3 +45,17 @@ def test_tags_for_composes_content_type_first():
 
 def test_tags_for_blank_content_type_contributes_nothing():
     assert es.tags_for(None, ["seo"]) == ["seo"]
+
+
+def test_max_topics_is_six():
+    from insta_save import enrich_schema
+    assert enrich_schema.MAX_TOPICS == 6
+
+
+def test_validate_item_keeps_up_to_six_topics():
+    from insta_save import enrich_schema
+    item = {"content_type": "tool", "topics": ["a", "b", "c", "d", "e", "f", "g"]}
+    allowed_ct = {"tool"}
+    allowed_topics = {"a", "b", "c", "d", "e", "f", "g"}
+    ct, topics = enrich_schema.validate_item(item, allowed_ct, allowed_topics)
+    assert len(topics) == 6 and ct == "tool"

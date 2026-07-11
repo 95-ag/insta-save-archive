@@ -31,3 +31,81 @@ def test_parse_results_rejects_non_list(tmp_path):
     p.write_text('{"page_id": "p1"}', encoding="utf-8")
     with pytest.raises(ValueError):
         base.parse_results(p)
+
+
+def test_parse_results_array_rejects_non_array():
+    with pytest.raises(ValueError):
+        base.parse_results_array('{"not":"an array"}')
+
+
+def test_parse_results_object_reads_clean_object():
+    assert base.parse_results_object('{"a": 1}') == {"a": 1}
+
+
+def test_parse_results_object_strips_fence():
+    assert base.parse_results_object('```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_parse_results_object_extracts_from_prose_wrapped_output():
+    # the real claude -p crash case: prose preamble + fenced JSON + trailing notes
+    text = ("I don't have write permission to tmp/calibrate/. Here's the proposal:\n\n"
+            '```json\n{"content_type": {"tool": "x"}, "groups": {"G": {}}}\n```\n\n'
+            "**Notes:** some rationale prose after the object.")
+    out = base.parse_results_object(text)
+    assert out["content_type"]["tool"] == "x" and "G" in out["groups"]
+
+
+def test_parse_results_object_rejects_non_object():
+    with pytest.raises(ValueError):
+        base.parse_results_object('[1, 2, 3]')
+
+
+def test_parse_results_object_raises_on_no_object():
+    with pytest.raises(ValueError):
+        base.parse_results_object('just prose, no JSON object anywhere')
+
+
+def test_parse_results_array_extracts_from_prose_wrapped_output():
+    text = ("I don't have write permission to tmp/enrich/. Here's the array:\n\n"
+            '```json\n[{"page_id": "p1", "content_type": "tool", "topics": ["x"]}]\n```\n\n'
+            "**Note:** done.")
+    out = base.parse_results_array(text)
+    assert out[0]["page_id"] == "p1"
+
+
+def test_parse_results_array_raises_when_no_array():
+    import pytest
+    with pytest.raises(ValueError):
+        base.parse_results_array("just prose, no array here")
+
+
+def test_normalize_results_takes_identity_from_batch():
+    # identity comes from the batch items, never from model output
+    items = [{"page_id": "p1", "source_id": "src1"}]
+    model_out = [{"content_type": "tutorial", "topics": ["x"], "title": "t",
+                  "summary": "s", "externals": None,
+                  "page_id": "p1", "source_id": "HACKED"}]
+    out = base.normalize_results(model_out, items)
+    assert out[0]["page_id"] == "p1" and out[0]["source_id"] == "src1"
+
+
+from insta_save.backends.base import TerminalBackendError, is_terminal_error
+
+
+def test_is_terminal_error_flags_usage_limit():
+    assert is_terminal_error(RuntimeError("Claude usage limit reached. Your limit will reset at 5pm"))
+
+
+def test_is_terminal_error_flags_auth():
+    assert is_terminal_error(RuntimeError("Not logged in. Please run /login"))
+    assert is_terminal_error(RuntimeError("authentication_error: invalid api key"))
+
+
+def test_is_terminal_error_transient_is_false():
+    # malformed JSON from a flaky model reply is transient (retryable)
+    assert not is_terminal_error(ValueError("Expecting ',' delimiter: line 24 column 156"))
+    assert not is_terminal_error(RuntimeError("claude -p exited 1: socket hang up"))
+
+
+def test_terminal_backend_error_is_exception():
+    assert issubclass(TerminalBackendError, Exception)

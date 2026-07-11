@@ -1,6 +1,6 @@
 """Select stage (st.2) — Imported → Queued (extract path) or left Imported (deterministic
 branch #2, not built yet). Branch is pure config: is_extract_path over the item's
-collections. Reuses the shared priority-bucketed runner."""
+collections. Reuses the shared stage runner."""
 
 import logging
 
@@ -21,7 +21,7 @@ def _select_item(env, collections_cfg, item) -> str:
 
 def run_select_stage(env, collections_cfg, progress, *, limit=None, group=None,
                      write_delay: float = 0.0) -> dict:
-    """Drive selection over Imported items in priority order."""
+    """Drive selection over Imported items."""
     def _process(env_, item, _ctx):
         return _select_item(env_, collections_cfg, item)
 

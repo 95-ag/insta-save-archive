@@ -121,7 +121,7 @@ def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
     """Full ingest: snapshots → reconcile → apply. Opens a browser only if there are
     creates/backfills needing the browser fallback."""
     from playwright.sync_api import sync_playwright
-    from insta_save.adapters.instagram.session import ensure_authenticated
+    from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
 
     desired, urls, complete = build_reconcile_inputs(env.tmp_dir, collections_cfg, names)
     state = notion.bulk_load_state(env)
@@ -144,6 +144,7 @@ def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
                           refresh_targets=[], dry_run=False, progress=progress)
 
     cookies_txt = json_cookies_to_netscape(env.cookies_file, Path(env.tmp_dir) / "cookies.txt")
+    prepare_display(env)  # set DISPLAY before the driver freezes the env (headed re-auth needs it)
     with sync_playwright() as pw:
         browser, context = ensure_authenticated(pw, env, headless=not headed)
         try:

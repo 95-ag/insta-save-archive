@@ -73,3 +73,14 @@ def test_api_mode_defaults_to_sync(tmp_path):
 def test_invalid_api_mode_rejected(tmp_path):
     with pytest.raises(ValueError):
         runcfg.load_run_config(_write(tmp_path, {"enrich": {"api_mode": "telegram"}}))
+
+
+def test_claude_p_is_a_valid_backend():
+    from insta_save.config.run import VALID_BACKENDS
+    assert "claude-p" in VALID_BACKENDS
+
+
+def test_load_run_config_missing_file_has_actionable_message(tmp_path):
+    with pytest.raises(FileNotFoundError) as ei:
+        runcfg.load_run_config(path=str(tmp_path / "nope.json"))
+    assert "isa run" in str(ei.value)

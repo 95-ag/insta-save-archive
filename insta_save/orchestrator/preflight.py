@@ -1,6 +1,7 @@
 """Fail-fast preflight: backend reachable, Notion reachable, engines importable,
 config valid (effort). Raises SystemExit on the first problem."""
 import importlib
+import shutil
 
 from insta_save.adapters.notion import validate_notion
 
@@ -24,6 +25,9 @@ def _check_backend(env, run_cfg) -> None:
     elif name == "api":
         if not env.anthropic_api_key:
             raise SystemExit("preflight: backend 'api' needs ANTHROPIC_API_KEY in env")
+    elif name == "claude-p":
+        if shutil.which("claude") is None:
+            raise SystemExit("preflight: backend 'claude-p' needs the `claude` CLI on PATH")
     # claude-code / cowork: nothing external to ping (session-driven)
 
 

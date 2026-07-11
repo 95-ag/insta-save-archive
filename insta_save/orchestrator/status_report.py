@@ -6,6 +6,8 @@ retry_failed()   — for each Failed page, infer prior status and requeue
 
 import logging
 from insta_save.adapters.notion import query_all_pages, requeue
+from insta_save.helpers import observability
+from insta_save.helpers.observability import StageProgress
 
 log = logging.getLogger(__name__)
 
@@ -97,22 +99,35 @@ def retry_failed(env) -> dict:
       - no content                             -> was at most Queued; requeue to Queued
 
     Returns {"requeued": n, "to_extracted": n, "to_queued": n}."""
-    pages = query_all_pages(env)
+    # The scan walks every page (can be thousands) — show a spinner so the terminal
+    # isn't silent for seconds. Auto-no-op under non-TTY (tests/pipes).
+    with observability.spinner("Scanning Notion for Failed items…"):
+        pages = query_all_pages(env)
+
+    failed = [p for p in pages if _parse_page(p)[1] == "Failed"]
 
     to_extracted = 0
     to_queued = 0
-
-    for page in pages:
-        page_id, status, _, has_content = _parse_page(page)
-        if status != "Failed":
-            continue
-
-        target = "Extracted" if has_content else "Queued"
-        requeue(env, page_id, target)
-        if target == "Extracted":
-            to_extracted += 1
-        else:
-            to_queued += 1
+    # A live bar over the requeue loop (one Notion write per item) — otherwise the
+    # command looks frozen while it works.
+    with StageProgress("Retry Failed") as progress:
+        bar = progress.add_bar("Requeue", total=len(failed))
+        for page in failed:
+            page_id, _status, _cols, has_content = _parse_page(page)
+            target = "Extracted" if has_content else "Queued"
+            try:
+                requeue(env, page_id, target)
+            except Exception as exc:  # noqa: BLE001 — one bad requeue must not abort the loop
+                log.error("status: requeue failed for %s — %s", page_id, exc)
+                progress.advance(bar)
+                continue
+            if target == "Extracted":
+                to_extracted += 1
+                progress.bump("→Extracted")
+            else:
+                to_queued += 1
+                progress.bump("→Queued")
+            progress.advance(bar)
 
     requeued = to_extracted + to_queued
     log.info("status: requeued %d Failed items (%d→Extracted, %d→Queued)",

@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "insta-save-archive"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+    "questionary>=2.0",
+]
 
 [project.scripts]
 isa = "cli.isa:main"
@@ -18,3 +21,13 @@ include = ["pipeline*", "insta_save*", "cli*"]
 # importlib mode gives each test file a path-unique identity, preventing basename
 # collisions between tests/ and legacy/tests/ (both have test_reconcile.py).
 addopts = "--import-mode=importlib"
+# Scope collection to tests/ so a bare `pytest` never collects stray *_test.py scratch
+# under tmp/ (which can run live code on import). The suite lives entirely in tests/.
+testpaths = ["tests"]
+
+[tool.black]
+# 100 matches the existing v2 convention (most lines wrap at 100); Black's default
+# 88 would needlessly rewrap ~700 lines. legacy/ is frozen v1 — never reformat it.
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "/legacy/"

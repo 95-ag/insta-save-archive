@@ -63,10 +63,22 @@ def extract_transcript(ig_link: str, shortcode: str, tmp_dir: str, cookies_json:
         result = subprocess.run(
             [yt, "--cookies", cookies_txt, "--extract-audio", "--audio-format", "mp3",
              "--output", audio_path, "--quiet", "--no-warnings", ig_link],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
+            stderr = result.stderr.strip()
+            # A reel with no audio stream (music stripped for copyright / silent upload)
+            # downloads fine but fails at audio postprocessing — yt-dlp can't read an audio
+            # codec that isn't there. That's a content property, not a failure: return no
+            # transcript so the reel advances to caption-only/OCR Extracted instead of being
+            # marked Failed (and re-failing identically on every retry, since "no audio" is
+            # deterministic). Transient download errors (HTTP 4xx/5xx, network) still raise →
+            # Failed → genuinely retryable via `isa status --retry-failed`.
+            if "unable to obtain file audio codec" in stderr:
+                log.info("transcript %s — no audio stream; caption/OCR only", shortcode)
+                return {"transcript": None, "transcript_available": False,
+                        "transcript_language": None}
+            raise RuntimeError(f"yt-dlp failed: {stderr}")
         transcript, available, language = transcribe(audio_path, model_size=model_size, vad=vad)
         log.info("transcript %s — available=%s words=%d", shortcode, available,
                  len(transcript.split()) if transcript else 0)

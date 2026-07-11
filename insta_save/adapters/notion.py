@@ -12,6 +12,7 @@ from notion_client.errors import APIResponseError
 
 from insta_save.config.env import EnvConfig, validate_notion
 from insta_save.engines.ocr_clean import clean_ocr_text
+from insta_save.helpers import observability
 
 log = logging.getLogger(__name__)
 
@@ -82,8 +83,16 @@ def _rich_text_chunked(text: str) -> dict:
 
 
 def _get_data_source_id(client: Client, database_id: str) -> str:
-    db = client.databases.retrieve(database_id=database_id)
-    return db["data_sources"][0]["id"]
+    try:
+        db = client.databases.retrieve(database_id=database_id)
+        return db["data_sources"][0]["id"]
+    except APIResponseError as exc:
+        raise RuntimeError(
+            f"Notion API error for database {database_id} (check NOTION_TOKEN / "
+            f"NOTION_DATABASE_ID): {exc}") from exc
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(
+            f"Notion database {database_id} has no data_sources — check the database ID") from exc
 
 
 # --- pure helpers (unit-tested) --------------------------------------------
@@ -124,7 +133,7 @@ def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> lis
                 break
     if not isinstance(slides, list):
         return []
-    return [os.path.join(tmp_dir, s["image"]) for s in slides
+    return [os.path.abspath(os.path.join(tmp_dir, s["image"])) for s in slides
             if isinstance(s, dict) and s.get("image")]
 
 
@@ -223,20 +232,16 @@ def _row(page: dict) -> dict:
     }
 
 
-def query_by_status_and_priority(env: EnvConfig, status: str, priority) -> list[dict]:
-    """Pages where status==status AND priority bucket matches (None = is_empty). Paginates.
+def query_by_status(env: EnvConfig, status: str) -> list[dict]:
+    """Pages where status==status. Paginates.
     Each row: {page_id, source_id, author, ig_link, type, collections}."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
-    if priority is None:
-        pfilter = {"property": "priority", "select": {"is_empty": True}}
-    else:
-        pfilter = {"property": "priority", "select": {"equals": priority}}
 
     results, cursor = [], None
     while True:
-        kwargs = {"filter": {"and": [{"property": "status", "select": {"equals": status}}, pfilter]}}
+        kwargs = {"filter": {"property": "status", "select": {"equals": status}}}
         if cursor:
             kwargs["start_cursor"] = cursor
         resp = client.data_sources.query(ds_id, **kwargs)
@@ -473,21 +478,22 @@ def update_metadata(env: EnvConfig, page_id: str, metadata: dict) -> None:
 
 
 def query_all_pages(env: EnvConfig) -> list[dict]:
-    """Return every page in the DB with no status/priority filter (all statuses captured).
+    """Return every page in the DB with no status filter (all statuses captured).
     Each entry: {"page_id": <id>, "properties": <raw Notion properties dict>}.
     Raw properties are kept as-is so the snapshot is complete and avoids field-mapping drift."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
     results, cursor = [], None
-    while True:
-        kwargs = {"start_cursor": cursor} if cursor else {}
-        resp = client.data_sources.query(ds_id, **kwargs)
-        for page in resp.get("results", []):
-            results.append({"page_id": page["id"], "properties": page.get("properties", {})})
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    with observability.spinner("Reading Notion…"):
+        while True:
+            kwargs = {"start_cursor": cursor} if cursor else {}
+            resp = client.data_sources.query(ds_id, **kwargs)
+            for page in resp.get("results", []):
+                results.append({"page_id": page["id"], "properties": page.get("properties", {})})
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
     log.info("notion: query_all_pages returned %d pages", len(results))
     return results
 

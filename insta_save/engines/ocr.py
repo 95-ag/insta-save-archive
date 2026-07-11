@@ -8,6 +8,7 @@ so a vision-capable enrich stage can read them directly — no flagging or escal
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -19,8 +20,27 @@ from insta_save.adapters.instagram.cookies import json_cookies_to_netscape
 log = logging.getLogger(__name__)
 
 CAROUSEL_NEXT_SEL = "button[aria-label='Next']"
-_CONTENT_PATH_MARKERS = ("/t51.82787-15/", "/t51.71878-15/")
+# IG content/slide images live under /t51.<host>-15/; the <host> number rotates over time
+# (82787, 71878, 75761, …) so we match the stable -15 suffix rather than hardcoded numbers.
+# -19 (e.g. t51.2885-19, t51.82787-19) is profile/avatar; t39 is video — both excluded.
+_CONTENT_MARKER_RE = re.compile(r"/t51\.\d+-15/")
 _PAGE_LOAD_PAUSE = 2.5
+
+
+def _is_content_image(src: str) -> bool:
+    """True for an IG content/slide image URL (CDN -15 family), excluding profile (-19)
+    and video (t39) assets."""
+    return bool(_CONTENT_MARKER_RE.search(src or ""))
+
+
+# Video carousel slides render as poster thumbnails under /t39.<host>-6/ (not t51.*-15
+# content images). yt-dlp can't enumerate carousel slides, so we OCR the poster cover frame.
+_VIDEO_POSTER_RE = re.compile(r"/t39\.\d+-6/")
+
+
+def _is_video_poster(src: str) -> bool:
+    """True for an IG video-slide poster thumbnail URL (CDN t39 family)."""
+    return bool(_VIDEO_POSTER_RE.search(src or ""))
 
 
 # --- pure, unit-tested ------------------------------------------------------
@@ -69,20 +89,25 @@ def _download_image(url: str, dest: str, cookie_header: str) -> None:
             f.write(resp.read())
 
 
-def _content_image_urls(page, scope: str = "img") -> list[str]:
+def _content_image_urls(page, scope: str = "img", include_video_posters: bool = False) -> list[str]:
     """
     Return content image URLs from the page, scoped to a CSS selector.
     Filters on content path markers to exclude profile pics and UI assets.
 
     Use scope="ul img" for carousels — the carousel slides live in the single
     <ul> on the post page, scoping prevents picking up feed images below.
+
+    include_video_posters: also collect t39 video-slide poster thumbnails (carousels whose
+    slides are videos render posters, not -15 images). Off by default so single Posts and
+    image carousels are unaffected.
     """
     imgs = page.query_selector_all(scope)
     seen = set()
     urls = []
     for img in imgs:
         src = img.get_attribute("src") or ""
-        if any(m in src for m in _CONTENT_PATH_MARKERS) and src not in seen:
+        is_slide = _is_content_image(src) or (include_video_posters and _is_video_poster(src))
+        if is_slide and src not in seen:
             seen.add(src)
             urls.append(src)
     return urls
@@ -120,7 +145,7 @@ def extract_carousel(
         seen_urls: set[str] = set()
 
         def _collect_current():
-            for url in _content_image_urls(page, scope="ul img"):
+            for url in _content_image_urls(page, scope="ul img", include_video_posters=True):
                 if url not in seen_urls:
                     seen_urls.add(url)
                     slide_urls.append(url)
@@ -245,16 +270,18 @@ def extract_ocr_frames(
             capture_output=True,
             text=True,
             timeout=120,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             raise RuntimeError(f"yt-dlp (video) failed: {result.stderr.strip()}")
 
         # Sample 1 frame per second via ffmpeg
         subprocess.run(
-            ["ffmpeg", "-i", video_path, "-vf", "fps=1",
+            ["ffmpeg", "-nostdin", "-i", video_path, "-vf", "fps=1",
              str(frames_dir / "frame_%04d.jpg"), "-loglevel", "error"],
             check=True,
             timeout=120,
+            stdin=subprocess.DEVNULL,
         )
 
         seen_lines: set[str] = set()

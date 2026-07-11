@@ -12,7 +12,7 @@ a review escape hatch; never guess a replacement), and dedupe / drop-out-of-voca
 RESULT_FIELDS = ("page_id", "source_id", "title", "summary", "externals",
                  "content_type", "topics")
 
-MAX_TOPICS = 3
+MAX_TOPICS = 6
 
 
 def validate_item(item, allowed_content_types, allowed_topics):

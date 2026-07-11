@@ -42,8 +42,8 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
 
 
 def _enrichable_stubs(env, collections_cfg, group):
-    """Notion stubs still enrichable for the group, in priority order. Reuses
-    enrich's group-stub iterator so the count matches what prepare would batch."""
+    """Notion stubs still enrichable for the group. Reuses enrich's group-stub
+    iterator so the count matches what prepare would batch."""
     from insta_save.stages.enrich import _ordered_group_stubs
     return list(_ordered_group_stubs(env, ENRICHABLE_STATUSES, group, collections_cfg))
 

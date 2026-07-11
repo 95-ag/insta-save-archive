@@ -23,6 +23,7 @@ Typical use:
 
 import logging
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +39,65 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.text import Text
+
+RULE_TOP = 64
+RULE_NESTED = 48
+INDENT = 3
+
+
+def render_rule(label, *, width, char="─", indent=0, index=None) -> str:
+    """Return a fixed-width rule string with the label centered between rule chars.
+
+    The returned string has exactly (indent + width) characters. indent pads the
+    left with spaces; width governs the rule+label region. index, when given,
+    appends a "(n/total)" suffix to the label before centering.
+    """
+    text = label if index is None else f"{label} ({index[0]}/{index[1]})"
+    text = f" {text} "
+    if len(text) >= width:
+        return " " * indent + text[:width]
+    pad = width - len(text)
+    left = pad // 2
+    right = pad - left
+    return " " * indent + (char * left) + text + (char * right)
+
+
+@contextmanager
+def stage_section(label, *, width=RULE_TOP, char="─", indent=0, index=None, console=None):
+    """Context manager that prints a framed header/footer around a block of output.
+
+    Prints render_rule(label) on enter and render_rule("done · {label}") on exit.
+    Uses a plain Console() by default so callers can substitute a custom one (e.g.
+    a forced-width console in tests) via the console= kwarg.
+    """
+    con = console or Console()
+    con.print(render_rule(label, width=width, char=char, indent=indent, index=index))
+    try:
+        yield
+    finally:
+        con.print(render_rule(f"done · {label}", width=width, char=char, indent=indent, index=index))
+
+
+@contextmanager
+def spinner(label, *, enabled=True, console=None):
+    """An indeterminate live spinner for ANY blocking op without a progress bar that
+    takes more than a second or two (claude -p fill, the calibrate draft, a full Notion
+    scan, session validation). rich's Console.status runs its own refresh thread, so the
+    spinner keeps animating while the calling thread is blocked in subprocess.run / a
+    network call.
+
+    Auto-no-op when stdout is not a TTY (tests, pipes, redirected logs) or when
+    enabled=False — so it's safe to apply broadly and stays silent under pytest. Never
+    open a spinner while a StageProgress Live is active (rich allows one Live per console);
+    apply it only at points with no enclosing stage display.
+    """
+    con = console or Console()
+    if not enabled or not con.is_terminal:
+        yield
+        return
+    with con.status(label, spinner="dots"):
+        yield
+
 
 _LOGS_DIR = Path(__file__).parent.parent / "logs"
 
@@ -102,6 +162,16 @@ def setup_logging(stage_name: str, level: int = logging.DEBUG) -> Path:
     return log_path
 
 
+def flush_logs() -> None:
+    """Flush every root logging handler to disk. Called at pause/stop boundaries so
+    no log record is left buffered if the user exits the process while paused."""
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
 class _RetryWatcher(logging.Handler):
     """
     Logging handler that counts library retry/timeout WARNINGs (notion_client/httpx)
@@ -138,8 +208,11 @@ class StageProgress:
     Not a logger: it owns the terminal exclusively while active.
     """
 
-    def __init__(self, title: str):
+    def __init__(self, title: str, *, width: int = RULE_TOP, level: int = 0, char: str = "─"):
         self._title = title
+        self._width = width
+        self._indent = level * INDENT
+        self._char = char
         self._console = Console()
         self._counters: dict[str, int] = {}
         self._current: str = ""
@@ -151,7 +224,7 @@ class StageProgress:
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[bold]{task.description}"),
-            BarColumn(),
+            BarColumn(bar_width=max(8, width - 30)),
             MofNCompleteColumn(),
             TextColumn("•"),
             TimeElapsedColumn(),
@@ -184,7 +257,7 @@ class StageProgress:
     # -- lifecycle ----------------------------------------------------------
 
     def __enter__(self) -> "StageProgress":
-        self._console.rule(f"[bold]{self._title}")
+        self._console.print(render_rule(self._title, width=self._width, char=self._char, indent=self._indent))
         self._live = Live(self._renderable(), console=self._console, refresh_per_second=8)
         self._live.start()
         self._retry_handler = _RetryWatcher(self._on_retry)
@@ -244,8 +317,9 @@ class StageProgress:
         if self._retries:
             counters["notion_retries"] = self._retries
         line = "  ".join(f"{k}={v}" for k, v in counters.items())
-        status = "[red]INTERRUPTED[/red]" if failed else "[green]DONE[/green]"
-        self._console.rule(f"{status} · {self._title}")
+        label = "interrupted" if failed else "done"
+        pad = " " * self._indent
+        self._console.print(render_rule(f"{label} · {self._title}", width=self._width, char=self._char, indent=self._indent))
         if line:
-            self._console.print(f"  {line}")
-        self._console.print(f"  elapsed {h}h {m}m {s}s")
+            self._console.print(f"{pad}  {line}")
+        self._console.print(f"{pad}  elapsed {h}h {m}m {s}s")

@@ -37,6 +37,7 @@ X display setup for headed Playwright runs on WSL2 + VcXsrv.
 
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -44,7 +45,8 @@ import time
 VCXSRV_EXE = r"C:\Program Files\VcXsrv\vcxsrv.exe"
 DISPLAY_NUM = 1
 _X_PORT = 6000 + DISPLAY_NUM  # 6001
-_LAUNCH_TIMEOUT = 15  # seconds to wait for VcXsrv to become reachable
+_LAUNCH_TIMEOUT = 15  # seconds to wait for VcXsrv's port to open
+_X_READY_TIMEOUT = 20  # seconds to wait for VcXsrv to actually SERVE X after the port opens
 _PS_EXE = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
 # Set to True by ensure_display() when we launched VcXsrv ourselves.
@@ -63,12 +65,54 @@ def _windows_host_ip() -> str:
     return match.group(1)
 
 
+def display_string() -> str:
+    """The DISPLAY value for the VcXsrv path (e.g. '172.22.48.1:1.0'), computed WITHOUT
+    launching or probing anything — so it can be set in the environment before Playwright's
+    driver starts. Playwright's driver freezes os.environ at launch, so DISPLAY must be present
+    by then; the VcXsrv process itself can come up later (lazily, in ensure_display())."""
+    return f"{_windows_host_ip()}:{DISPLAY_NUM}.0"
+
+
 def _x_reachable(host: str) -> bool:
     try:
         with socket.create_connection((host, _X_PORT), timeout=2):
             return True
     except OSError:
         return False
+
+
+def _x_ready(display: str) -> bool:
+    """True only when the X server completes a real handshake (xdpyinfo), not merely when
+    TCP 6001 is open. VcXsrv binds the port a few seconds before it can serve clients; a
+    premature connect dies with 'Missing X server or $DISPLAY'."""
+    try:
+        result = subprocess.run(
+            ["xdpyinfo", "-display", display],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _wait_x_ready(display: str, timeout: float = _X_READY_TIMEOUT) -> None:
+    """Block until the X server at `display` actually serves, then return; raise if it never
+    does. Falls back to a fixed settle when xdpyinfo isn't installed (can't probe directly)."""
+    if shutil.which("xdpyinfo") is None:
+        time.sleep(3)  # cannot verify — give VcXsrv a moment to finish initialising
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _x_ready(display):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"display: VcXsrv opened port {_X_PORT} but X at {display} never began serving "
+        f"within {timeout:.0f}s (xdpyinfo handshake failed). Close any stray vcxsrv.exe "
+        f"instances and retry."
+    )
 
 
 def _launch_vcxsrv(host: str) -> None:
@@ -102,25 +146,28 @@ def ensure_display() -> str:
     """
     Ensure a headed X display is available. Sets os.environ['DISPLAY'].
 
-    Detects the Windows host IP via default gateway, TCP-probes VcXsrv,
-    and auto-launches it if not running. Call close_display() when done.
+    Detects the Windows host IP via default gateway, reuses a running VcXsrv or launches one,
+    then waits for the server to actually SERVE X (xdpyinfo handshake) before returning — an
+    open port is not enough, VcXsrv accepts X clients only a few seconds after binding it.
+    Call close_display() when done.
 
     Returns the DISPLAY string (e.g. '172.22.48.1:1.0').
-    Raises RuntimeError if VcXsrv cannot be reached after a launch attempt.
+    Raises RuntimeError if VcXsrv cannot be reached or never starts serving.
     """
     global _we_launched
     host = _windows_host_ip()
     display = f"{host}:{DISPLAY_NUM}.0"
 
-    if _x_reachable(host):
-        os.environ["DISPLAY"] = display
-        _we_launched = False
-        return display
-
-    print(f"display: VcXsrv not reachable at {host}:{_X_PORT} — launching...")
-    _launch_vcxsrv(host)
+    reused = _x_reachable(host)
+    if not reused:
+        print(f"display: VcXsrv not reachable at {host}:{_X_PORT} — launching...")
+        _launch_vcxsrv(host)
     os.environ["DISPLAY"] = display
-    _we_launched = True
+    _we_launched = not reused
+
+    # Port-open != X-ready: block until a real handshake succeeds, on both the reuse and the
+    # fresh-launch paths, so a client never connects to a not-yet-serving VcXsrv.
+    _wait_x_ready(display)
     print(f"display: VcXsrv ready — DISPLAY={display}")
     return display
 

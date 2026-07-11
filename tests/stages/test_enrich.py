@@ -1,6 +1,7 @@
 # tests/stages/test_enrich.py
 import json
 import types
+import pytest
 from insta_save.stages import enrich
 from insta_save.config.collections import CollectionsConfig
 from insta_save.config.tags import Vocab
@@ -38,13 +39,11 @@ def _env(tmp_path):
 
 def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
     # two Hustling stubs + one Other; max_items=1 -> batch has exactly the first Hustling item
-    stubs = {
-        "High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
-                 {"page_id": "p2", "source_id": "s2", "collections": ["hust-a"]}],
-        "Medium": [{"page_id": "p3", "source_id": "s3", "collections": ["other"]}],
-    }
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+             {"page_id": "p2", "source_id": "s2", "collections": ["hust-a"]},
+             {"page_id": "p3", "source_id": "s3", "collections": ["other"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid.replace("p", "s"),
                                           "caption": "c", "transcript": "", "ocr_text": "",
@@ -63,9 +62,9 @@ def test_prepare_filters_group_and_caps_batch(tmp_path, monkeypatch):
 def test_prepare_prompt_rendered_through_prompt_module(tmp_path, monkeypatch):
     # prompt.txt is assembled by backends.prompt: the rendered vocab block carries
     # the group's locked topic, proving assembly routes through the prompt module.
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",
@@ -82,10 +81,10 @@ def test_prepare_budgets_on_rendered_prompt(tmp_path, monkeypatch):
     # char_budget bounds the RENDERED prompt (header + scaffolding + content), not
     # just raw content. Three identical items + a budget sized for exactly two.
     from insta_save.backends import claude_code as backend
-    stubs = {"High": [{"page_id": f"p{i}", "source_id": f"p{i}", "collections": ["hust-a"]}
-                      for i in range(3)]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": f"p{i}", "source_id": f"p{i}", "collections": ["hust-a"]}
+            for i in range(3)]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     base = {"caption": "c" * 40, "transcript": "", "ocr_text": "", "type": "Reel",
             "author": "a", "transcript_language": "en"}
     monkeypatch.setattr(enrich, "get_page_content",
@@ -125,11 +124,11 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
 
 def test_prepare_excludes_other_group(tmp_path, monkeypatch):
     # large cap so the cap never fires — only the group filter decides membership
-    stubs = {"High": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
-                      {"page_id": "p2", "source_id": "s2", "collections": ["other"]},
-                      {"page_id": "p3", "source_id": "s3", "collections": ["hust-a"]}]}
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs.get(pr, []) if status == "Extracted" else [])
+    stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
+             {"page_id": "p2", "source_id": "s2", "collections": ["other"]},
+             {"page_id": "p3", "source_id": "s3", "collections": ["hust-a"]}]
+    monkeypatch.setattr(enrich, "query_by_status",
+                        lambda env, status: stubs if status == "Extracted" else [])
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",
@@ -159,8 +158,7 @@ def test_ordered_stubs_filters_by_kind(monkeypatch):
         {"page_id": "k", "type": "Carousel", "collections": ["c"]},
         {"page_id": "p", "type": "Post", "collections": ["c"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "G", cfg, kinds={"Carousel", "Post"})]
     assert got == ["k", "p"]
@@ -170,8 +168,7 @@ def test_prepare_vision_lane_breaks_on_image_budget(monkeypatch, tmp_path):
     from insta_save.config.collections import CollectionsConfig
     cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
     stubs = [{"page_id": f"k{i}", "type": "Carousel", "collections": ["c"]} for i in range(3)]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(enrich, "get_page_content", lambda env, pid: {
         "page_id": pid, "source_id": pid, "type": "Carousel", "author": "a", "caption": "c",
         "slide_images": ["a.jpg", "b.jpg"], "transcript": None, "ocr_text": None,
@@ -226,8 +223,7 @@ def test_ordered_stubs_cross_group_excluded_from_first_group(monkeypatch):
         {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
         {"page_id": "pure-f", "type": "Reel", "collections": ["col-f"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "F", cfg)]
     # cross item's last extract group is G, not F -> excluded from F's drain
@@ -241,8 +237,7 @@ def test_ordered_stubs_cross_group_included_at_last_group(monkeypatch):
         {"page_id": "cross", "type": "Reel", "collections": ["col-f", "col-g"]},
         {"page_id": "pure-g", "type": "Reel", "collections": ["col-g"]},
     ]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, bucket: stubs if bucket is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     got = [s["page_id"] for s in enrich._ordered_group_stubs(
         None, ["Extracted"], "G", cfg)]
     assert set(got) == {"cross", "pure-g"}
@@ -283,8 +278,7 @@ def test_prepare_cross_group_prompt_contains_union_vocab(tmp_path, monkeypatch):
     cfg = _cross_cfg()
     vocab = _cross_vocab()
     stubs = [{"page_id": "p1", "type": "Reel", "collections": ["col-f", "col-g"]}]
-    monkeypatch.setattr(enrich, "query_by_status_and_priority",
-                        lambda env, status, pr: stubs if pr is None else [])
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
     monkeypatch.setattr(enrich, "get_page_content",
                         lambda env, pid: {"page_id": pid, "source_id": pid, "caption": "c",
                                           "transcript": "", "ocr_text": "", "type": "Reel",
@@ -563,3 +557,195 @@ def test_drain_enrich_group_non_api_ignores_spend_cap(tmp_path, monkeypatch):
 
     enrich.drain_enrich_group(env, run_cfg, _Cols(), _vocab(), _NonApiBacked(), "Hustling")
     assert fill_called == [1], "fill must be called for non-api backend regardless of spend cap"
+
+
+def test_drain_enrich_group_stops_between_batches(tmp_path, monkeypatch):
+    """checkpoint() at the top of the while-True fires between batches: after apply writes,
+    before the next prepare/fill.  RunStopped propagates out and only one batch runs."""
+    from insta_save.orchestrator.run_control import RunControl, RunStopped
+
+    rc = RunControl(mode="first-time")
+    calls = {"prepare": 0, "apply": 0}
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return 1  # one item batched — never 0, so drain-check cannot fire
+
+    def _apply(*a, **k):
+        calls["apply"] += 1
+        rc.request_stop()  # simulate 'q' pressed during batch 1
+        return {"written": 1}  # written>0 so no-progress guard does NOT fire
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    monkeypatch.setattr(enrich, "apply", _apply)
+
+    backend = _fake_backend(vision_capable=False)
+
+    with rc:
+        with pytest.raises(RunStopped):
+            enrich.drain_enrich_group(
+                _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling"
+            )
+
+    # checkpoint fires at the TOP of iteration 2 → stopped before a 2nd prepare
+    assert calls["prepare"] == 1
+    assert calls["apply"] == 1
+
+
+def test_drain_retries_transient_fill_then_succeeds(tmp_path, monkeypatch):
+    """A transient fill error is retried; a later attempt succeeds and the batch applies."""
+    prep = iter([2, 0])  # one batch, then drained
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 2, "failed": 0})
+
+    attempts = {"n": 0}
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ValueError("Expecting ',' delimiter: line 24 column 156")  # transient
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+    assert attempts["n"] == 2                      # failed once, retried, succeeded
+    assert result["written"] == 2
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_marks_batch_failed_and_advances_when_retries_exhausted(tmp_path, monkeypatch):
+    """A persistently-malformed batch is marked Failed and the lane advances (not abandoned)."""
+    prep = iter([2, 0])  # one bad batch, then nothing left (Failed items leave the pool)
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    # batch.json must exist for _mark_batch_failed to read it
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(
+        '{"group": "Hustling", "items": [{"page_id": "p1"}, {"page_id": "p2"}]}')
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise ValueError("always malformed")
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+    assert failed == ["p1", "p2"]                  # whole batch marked Failed
+    assert result["failed"] == 2
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_marks_batch_failed_prints_group_progress(tmp_path, monkeypatch, capsys):
+    """On the exhausted-retries path, _print_group_progress fires with the failed count.
+
+    group_total=5, batch of 2 items all fail: written=0, failed=2, remaining=3.
+    The printed line must contain 'enriched 0/5', '~3 left', and 'failed 2'.
+    """
+    prep = iter([2, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(
+        '{"group": "Hustling", "items": [{"page_id": "p1"}, {"page_id": "p2"}]}')
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise ValueError("always malformed")
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        group_total=5, sleep=lambda *_: None)
+
+    assert failed == ["p1", "p2"]
+    assert result["failed"] == 2
+
+    out = capsys.readouterr().out
+    assert "enriched 0/5" in out
+    assert "~3 left" in out
+    assert "failed 2" in out
+
+
+def test_drain_raises_terminal_backend_error(tmp_path, monkeypatch):
+    """A terminal fill error (usage limit / auth) stops the run by propagating."""
+    from insta_save.backends.base import TerminalBackendError
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: 2)
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            raise RuntimeError("Claude usage limit reached. Your limit will reset at 5pm")
+
+    with pytest.raises(TerminalBackendError):
+        enrich.drain_enrich_group(
+            _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+            sleep=lambda *_: None)
+
+
+def test_drain_prints_group_progress_counter(tmp_path, monkeypatch, capsys):
+    """When group_total is provided, drain prints a group-level enriched/total line after each batch."""
+    prep = iter([3, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    enrich.drain_enrich_group(_env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(),
+                              "Hustling", group_total=10, sleep=lambda *_: None)
+    out = capsys.readouterr().out
+    assert "enriched 3/10" in out
+    assert "left" in out
+
+
+def test_drain_no_group_progress_when_total_absent(tmp_path, monkeypatch, capsys):
+    """When group_total is not passed (back-compat / --stage enrich), no progress line is printed."""
+    prep = iter([3, 0])
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            pass
+
+    enrich.drain_enrich_group(_env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(),
+                              "Hustling", sleep=lambda *_: None)
+    out = capsys.readouterr().out
+    assert "enriched" not in out
+
+
+def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkeypatch):
+    """apply() must scrub source-absent URLs from summary + externals before writing."""
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"],
+                    "caption": "a skill shared on GitHub", "transcript": "", "ocr_text": ""}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T",
+         "summary": "Xiaohei (github.com/helloianneo/x) is great.",
+         "externals": "[Tools]\n  Xiaohei — github.com/helloianneo/x",
+         "content_type": "tool", "topics": ["seo"]}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="m", collections_cfg=_Cols())
+    f = written["p1"]
+    assert "github.com/helloianneo/x" not in f["summary"]
+    assert "github.com/helloianneo/x" not in f["externals"]
+    assert "Xiaohei" in f["summary"]

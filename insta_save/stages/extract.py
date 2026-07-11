@@ -11,10 +11,11 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from insta_save.adapters.instagram.session import ensure_authenticated
-from insta_save.adapters.notion import mark_failed, query_by_status_and_priority, write_extraction
+from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
+from insta_save.adapters.notion import mark_failed, write_extraction
 from insta_save.engines.ocr import extract_carousel, extract_ocr_frames, extract_post
 from insta_save.engines.transcript import extract_transcript
+from insta_save.helpers.observability import spinner
 from insta_save.orchestrator.runner import run_priority_stage
 
 log = logging.getLogger(__name__)
@@ -36,16 +37,23 @@ class _LazyBrowser:
 
     def context(self):
         if self._ctx is None:
-            self._browser, self._ctx = ensure_authenticated(self._pw, self._env, headless=self._headless)
+            with spinner("Authenticating browser session…"):
+                self._browser, self._ctx = ensure_authenticated(self._pw, self._env, headless=self._headless)
         return self._ctx
 
     def close(self):
+        # Teardown must never raise — on a stop/interrupt the playwright connection may
+        # already be down, and a close() error here would mask the clean RunStopped exit
+        # with a raw traceback.
         if self._browser is not None:
-            self._browser.close()
+            try:
+                self._browser.close()
+            except Exception as exc:  # noqa: BLE001 — teardown best-effort
+                log.warning("extract: browser close failed during teardown — %s", exc)
 
 
 def run_extract_item(env, run_extract_cfg, browser, item) -> str:
-    """Extract one item; write results; return a counter name ('extracted'/'no_content')."""
+    """Extract one item; write results; return a counter name ('extracted'/'caption_only'/'no_slides')."""
     ig_link, page_id = item["ig_link"], item["page_id"]
     if not ig_link:
         raise ValueError("ig_link is None — cannot extract")
@@ -83,8 +91,21 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
 
     has_content = bool(results["transcript"] or results["ocr_text"] or results["carousel_slides"])
     if not has_content:
-        log.warning("extract: %s — no content, stays Queued", item.get("source_id"))
-        return "no_content"
+        if post_type in ("Reel", "IGTV"):
+            # No transcript/OCR (music-only / no on-screen text). Advance to Extracted so
+            # the text lane enriches it from its caption — leaving it Queued would pin the
+            # group on the extract action (queued>0 shadows the calibrate/enrich rules).
+            write_extraction(env, page_id, results)
+            time.sleep(env.notion_write_delay)
+            log.info("extract: %s — no transcript/OCR; Extracted for caption-only enrich",
+                     item.get("source_id"))
+            return "caption_only"
+        # Carousel/Post with no slides: extraction genuinely failed (rotated CDN marker, or
+        # video slides we can't OCR). Mark Failed so it leaves Queued and is recoverable via
+        # `isa status --retry-failed` once the selector/feature lands.
+        mark_failed(env, page_id, "no slides extracted (carousel/post)")
+        log.warning("extract: %s — no slides extracted, marked Failed", item.get("source_id"))
+        return "no_slides"
     write_extraction(env, page_id, results)
     time.sleep(env.notion_write_delay)
     return "extracted"
@@ -92,9 +113,10 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
 
 def run_extract_stage(env, run_extract_cfg, progress, *, limit=None, source_id=None,
                       group=None, collections_cfg=None, reextract=False, headless=True) -> dict:
-    """Drive extraction over Queued (and, if reextract, Extracted) items in priority order."""
+    """Drive extraction over Queued (and, if reextract, Extracted) items."""
     statuses = ["Queued"] + (["Extracted"] if reextract else [])
     totals: dict = {}
+    prepare_display(env)  # set DISPLAY before the driver freezes the env (headed re-auth needs it)
     with sync_playwright() as pw:
         browser = _LazyBrowser(pw, env, headless)
         try:

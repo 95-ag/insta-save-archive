@@ -5,11 +5,12 @@ to its next pipeline action according to the rule table in the module docstring.
 The result is a Plan whose `next_action` the orchestrator runs next.
 
 Rule table (first match wins, per group):
-  1. queued[g] > 0                          → extract   (automated)
-  2. enrichable[g] > 0, NOT calibrated      → calibrate (human gate)
-  3. enrichable[g] > 0, calibrated          → enrich    (automated iff backend.AUTOMATED)
-  4. routing_enabled AND tagged[g] > 0      → route     (automated)
-  5. else                                   → done
+  1. queued[g] > 0                          → extract       (automated)
+  2. enrichable[g] > 0, NOT calibrated      → calibrate     (human gate)
+  3. enrichable[g] > 0, calibrated          → enrich        (automated iff backend.AUTOMATED)
+  4. deterministic[g] > 0                   → deterministic (automated iff title_mode=template)
+  5. routing_enabled AND tagged[g] > 0      → route         (automated)
+  6. else                                   → done
 
 Count semantics:
   queued[g]     — Queued items whose ANY collection maps to group g (membership)
@@ -18,9 +19,14 @@ Count semantics:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from rich.console import Console
 
 from insta_save.adapters.notion import query_all_pages
+from insta_save.helpers.observability import RULE_TOP, render_rule
+from insta_save.orchestrator import run_control
+from insta_save.orchestrator.calibrate_gate import run_calibrate_gate
 from insta_save.stages import enrich as _enrich_stage
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages.route import run_route_stage
@@ -31,9 +37,10 @@ log = logging.getLogger(__name__)
 @dataclass
 class GroupStep:
     group: str
-    action: str    # "extract" | "calibrate" | "enrich" | "route" | "done"
+    action: str    # "extract" | "calibrate" | "enrich" | "deterministic" | "route" | "done"
     automated: bool  # True if the sequencer can run it now; False = human/agent gate
     detail: str    # human-facing one-liner
+    count: int = 0  # for "enrich" steps: number of Extracted items to process (group total)
 
 
 @dataclass
@@ -41,6 +48,7 @@ class Plan:
     steps: list         # list[GroupStep], one per group, in collections_cfg.groups order
     next_action: object # first GroupStep whose action != "done", or None
     done: bool          # True iff every step's action == "done"
+    skipped: list = field(default_factory=list)  # [{group, action, reason}] groups skipped on no-progress
 
 
 def _parse_page(page: dict) -> tuple[str | None, list[str]]:
@@ -52,15 +60,17 @@ def _parse_page(page: dict) -> tuple[str | None, list[str]]:
     return status, collections
 
 
-def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict]:
-    """Single-pass tally: queued[g], enrichable[g], tagged[g] for all groups.
+def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict, dict]:
+    """Single-pass tally: queued[g], enrichable[g], tagged[g], deterministic[g] for all groups.
 
     queued and tagged use group membership (any collection in the group).
     enrichable uses enrich_group (the LAST extract group — cross-group assignment).
+    deterministic counts Imported items NOT on the extract path, bucketed by group membership.
     """
     queued: dict[str, int] = {}
     enrichable: dict[str, int] = {}
     tagged: dict[str, int] = {}
+    deterministic: dict[str, int] = {}
 
     for page in pages:
         status, collections = _parse_page(page)
@@ -88,7 +98,16 @@ def _tally(pages: list[dict], collections_cfg) -> tuple[dict, dict, dict]:
                     seen_groups_t.add(g)
                     tagged[g] = tagged.get(g, 0) + 1
 
-    return queued, enrichable, tagged
+        elif status == "Imported":
+            if not collections_cfg.is_extract_path(collections):
+                seen_d: set[str] = set()
+                for c in collections:
+                    g = collections_cfg.group_of(c)
+                    if g not in seen_d:
+                        seen_d.add(g)
+                        deterministic[g] = deterministic.get(g, 0) + 1
+
+    return queued, enrichable, tagged, deterministic
 
 
 def _backend_name(backend) -> str:
@@ -100,9 +119,11 @@ def _step_for_group(
     queued: dict,
     enrichable: dict,
     tagged: dict,
+    deterministic: dict,
     vocab,
     backend,
     routing_enabled: bool,
+    det_automated: bool = True,
 ) -> GroupStep:
     """Apply the rule table and return the GroupStep for one group."""
     name = _backend_name(backend)
@@ -129,6 +150,15 @@ def _step_for_group(
             action="enrich",
             automated=backend.AUTOMATED,
             detail=f"enrich {enrichable[group]} items via {name}",
+            count=enrichable.get(group, 0),
+        )
+
+    if deterministic.get(group, 0) > 0:
+        return GroupStep(
+            group=group,
+            action="deterministic",
+            automated=det_automated,
+            detail=f"tag {deterministic[group]} deterministic items",
         )
 
     if routing_enabled and tagged.get(group, 0) > 0:
@@ -162,12 +192,15 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
         Plan with per-group steps in collections_cfg.groups order, next_action, and done flag.
     """
     routing_enabled = bool(routes.by_tag or routes.by_collection or routes.by_group)
+    det_title_mode = getattr(run_cfg, "deterministic_title_mode", "template") if run_cfg is not None else "template"
+    det_automated = det_title_mode == "template"
 
     pages = query_all_pages(env)
-    queued, enrichable, tagged = _tally(pages, collections_cfg)
+    queued, enrichable, tagged, deterministic = _tally(pages, collections_cfg)
 
     steps = [
-        _step_for_group(group, queued, enrichable, tagged, vocab, backend, routing_enabled)
+        _step_for_group(group, queued, enrichable, tagged, deterministic,
+                        vocab, backend, routing_enabled, det_automated)
         for group in collections_cfg.groups
     ]
 
@@ -181,8 +214,25 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
 # Sequencer execution
 # ---------------------------------------------------------------------------
 
+_console = Console()
+
+
+def _band(group, collections_cfg, *, done: bool) -> None:
+    """Print a heavy ═ rule banding a group open (done=False) or closed (done=True)."""
+    idx = list(collections_cfg.groups).index(group) + 1
+    total = len(collections_cfg.groups)
+    label = f"done · {group}" if done else f"group · {group}"
+    _console.print(render_rule(label, width=RULE_TOP, char="═", index=(idx, total)))
+
+
+def _next_unstuck(plan, stuck_groups):
+    """First step that is neither done nor in a stuck group — None if none remain."""
+    return next((s for s in plan.steps
+                 if s.action != "done" and s.group not in stuck_groups), None)
+
+
 def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
-              progress_factory=None, reject_calibrate=False) -> Plan:
+              progress_factory=None, interactive=False) -> Plan:
     """Inner loop shared by run_first_time and run_incremental.
 
     Repeatedly computes the plan, checks whether the next step can be executed
@@ -190,39 +240,61 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     or a gate (non-automated step) is reached.
 
     Args:
-        reject_calibrate: when True (incremental mode), a calibrate step raises
-                          SystemExit instead of being returned as a gate.
+        interactive: when True, calibrate steps are run inline (the gate prompts
+                     the user and reloads vocab before continuing). When False,
+                     a calibrate step is returned as a gate stop. Agent-filled
+                     enrich steps always return as a gate regardless of this flag.
     """
     executed: set[tuple[str, str]] = set()
+    stuck_groups: set[str] = set()
+    skipped: list[dict] = []
+    current_group: str | None = None
 
     while True:
+        run_control.checkpoint()
         plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
 
-        if plan.done:
+        step = _next_unstuck(plan, stuck_groups)
+        if step is None:
+            # Nothing left that isn't done or stuck.
+            if current_group is not None:
+                _band(current_group, collections_cfg, done=True)
+            plan.skipped = skipped
             return plan
 
-        step = plan.next_action
+        # Open/close group bands on group transitions.
+        if step.group != current_group:
+            if current_group is not None:
+                _band(current_group, collections_cfg, done=True)
+            _band(step.group, collections_cfg, done=False)
+            current_group = step.group
 
         if not step.automated:
-            if reject_calibrate and step.action == "calibrate":
-                raise SystemExit(
-                    f"incremental: group {step.group!r} is uncalibrated — "
-                    "run --mode first-time to calibrate it first"
-                )
-            # Human/agent gate: return the plan so the caller can report and stop.
+            if step.action == "calibrate" and interactive:
+                with run_control.gate():
+                    vocab = run_calibrate_gate(env, run_cfg, collections_cfg=collections_cfg,
+                                               backend=backend, group=step.group)
+                continue  # re-plan with the now-calibrated vocab; band stays open
+            # Agent-filled enrich (or non-interactive): return the plan as a gate.
+            _band(current_group, collections_cfg, done=True)
+            plan.skipped = skipped
             return plan
 
         key = (step.group, step.action)
         if key in executed:
-            # No-progress guard: this (group, action) was already executed in this
-            # loop iteration but Notion state didn't advance enough to move past it.
-            # Returning prevents an infinite spin; caller/logs surface the issue.
+            # This (group, action) already ran but state didn't advance. Skip the GROUP
+            # and keep driving the others — one stuck group must not halt the whole run.
             log.warning(
-                "sequencer: no-progress guard triggered for group=%r action=%r — "
-                "the stage ran but state did not advance; returning current plan",
-                step.group, step.action,
+                "sequencer: no progress for group=%r action=%r — skipping this group, "
+                "continuing with the rest", step.group, step.action,
             )
-            return plan
+            _console.print(
+                f"   ⚠ skipped {step.group} ({step.action}) — no forward progress; "
+                f"continuing with the other groups")
+            stuck_groups.add(step.group)
+            skipped.append({"group": step.group, "action": step.action,
+                            "reason": "stage ran but Notion state did not advance"})
+            continue
 
         executed.add(key)
 
@@ -252,7 +324,13 @@ def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
         _enrich_stage.drain_enrich_group(
             env, run_cfg, collections_cfg, vocab, backend, step.group,
             progress_factory=progress_factory,
+            group_total=step.count,
         )
+
+    elif step.action == "deterministic":
+        from insta_save.stages.deterministic import run_deterministic_stage
+        with pf(f"Deterministic · {step.group}") as progress:
+            run_deterministic_stage(env, collections_cfg, progress, group=step.group)
 
     elif step.action == "route":
         write_delay = getattr(env, "notion_write_delay", 0.0)
@@ -286,15 +364,17 @@ def run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     if dry_run:
         return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
     return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
-                     progress_factory=progress_factory, reject_calibrate=False)
+                     progress_factory=progress_factory, interactive=True)
 
 
 def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
                     progress_factory=None, dry_run=False) -> Plan:
-    """Run the pipeline in incremental mode (locked vocab required for all groups).
+    """Run the pipeline in incremental mode (delta only, reuses existing snapshots).
 
-    Like run_first_time but raises SystemExit when a calibrate step is encountered,
-    because incremental mode requires all groups to already be calibrated.
+    Like run_first_time but processes only items that have not yet been processed
+    (delta run). If a group requires calibration (new collection added since the
+    last run), the gate is run interactively inline — the same behavior as
+    first-time mode.
 
     Args:
         env:             EnvConfig.
@@ -308,11 +388,8 @@ def run_incremental(env, run_cfg, collections_cfg, vocab, backend, routes, *,
 
     Returns:
         The final Plan (done, or stopped at an agent-filled enrich gate / no-progress).
-
-    Raises:
-        SystemExit: if any group requires calibration.
     """
     if dry_run:
         return compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
     return _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes,
-                     progress_factory=progress_factory, reject_calibrate=True)
+                     progress_factory=progress_factory, interactive=True)

@@ -11,6 +11,7 @@ Usage:
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -68,6 +69,24 @@ def apply_display_strategy(mode: str, headless: bool) -> None:
         _launch_vcxsrv_strategy()
 
 
+def prepare_display(env: EnvConfig) -> None:
+    """Set os.environ['DISPLAY'] for the wsl-vcxsrv path BEFORE sync_playwright() is entered.
+
+    Playwright's Node driver freezes the environment when it launches; a DISPLAY set later
+    (inside _launch_browser, e.g. on a headed re-auth) never reaches Chromium, which then dies
+    with "Missing X server or $DISPLAY". Call this immediately before `with sync_playwright()`
+    in every browser entry point so the driver inherits DISPLAY. Does NOT start VcXsrv — that
+    stays lazy in ensure_display() (only when a headed browser is actually needed); here we
+    only need the variable present in the env the driver will capture."""
+    if resolve_display_mode(env.display_mode) != "wsl-vcxsrv":
+        return
+    from insta_save.adapters.instagram.display import display_string
+    try:
+        os.environ["DISPLAY"] = display_string()
+    except (RuntimeError, OSError):
+        pass  # best-effort; ensure_display() surfaces a clear error if headed is truly needed
+
+
 # ---------------------------------------------------------------------------
 # Browser helpers
 # ---------------------------------------------------------------------------
@@ -122,6 +141,27 @@ def _check_auth(page) -> bool:
         return False
 
 
+def _goto_with_retry(page, url, *, timeout=20_000, retry_timeout=45_000) -> bool:
+    """Navigate to `url`, retrying ONCE at a longer timeout on a Playwright timeout.
+
+    A transient slow load (IP throttle after a long crawl) used to crash the warm-start
+    cookie validation with a raw TimeoutError. Returns True if the page loaded, False after
+    a second timeout — the caller then falls to the existing re-auth path instead of crashing.
+    Reuses the warm session; never deletes cookies (a forced re-login is bot-detected)."""
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+        return True
+    except PlaywrightTimeout:
+        log.warning("session: goto %s timed out at %dms — retrying once at %dms",
+                    url, timeout, retry_timeout)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=retry_timeout)
+        return True
+    except PlaywrightTimeout:
+        log.warning("session: goto %s timed out again — treating as unauthenticated", url)
+        return False
+
+
 def _run_login(page, context: BrowserContext, cookies_file: Path) -> None:
     """
     Blocks until the user completes manual login (including any 2FA).
@@ -158,7 +198,10 @@ def ensure_authenticated(
     On first run: opens a browser window for manual login, saves cookies.
     On subsequent runs: loads cookies and validates — re-auths only if needed.
     Re-auth always runs headed (requires visible browser for manual login).
-    If called headless and cookies are expired, relaunches headed automatically.
+    If called headless and cookies are expired, relaunches headed automatically for
+    the login, then relaunches headless once cookies are saved — so only the login
+    prompt is visible and the crawl/extract that follows runs headless. An explicit
+    headed caller (--headed) stays headed throughout.
 
     The caller is responsible for closing the browser when done.
     """
@@ -170,10 +213,10 @@ def ensure_authenticated(
     had_cookies = _load_cookies(context, cookies_file)
 
     page = context.new_page()
-    page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+    loaded = _goto_with_retry(page, INSTAGRAM_HOME)
     time.sleep(1)
 
-    authenticated = _check_auth(page)
+    authenticated = _check_auth(page) if loaded else False
 
     if authenticated:
         status = "valid" if had_cookies else "valid (no prior cookies)"
@@ -191,10 +234,23 @@ def ensure_authenticated(
             context = _new_context(browser)
             _load_cookies(context, cookies_file)
             page = context.new_page()
-            page.goto(INSTAGRAM_HOME, wait_until="domcontentloaded", timeout=20_000)
+            _goto_with_retry(page, INSTAGRAM_HOME)
             time.sleep(1)
         log.info("session: status=expired — starting re-auth")
         _run_login(page, context, cookies_file)
+        if headless:
+            # Re-auth needs a visible window, but the caller asked for headless — switch
+            # back now that cookies are saved so the long crawl/extract runs headless
+            # (this mirrors a normal warm start: headless browser + saved cookies).
+            log.info("session: re-auth complete — relaunching headless for the run")
+            page.close()
+            browser.close()
+            browser = _launch_browser(playwright, env, headless=True)
+            context = _new_context(browser)
+            _load_cookies(context, cookies_file)
+            page = context.new_page()
+            _goto_with_retry(page, INSTAGRAM_HOME)
+            time.sleep(1)
 
     page.close()
     return browser, context

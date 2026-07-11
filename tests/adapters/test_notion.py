@@ -1,3 +1,4 @@
+import pytest
 from insta_save.adapters import notion
 
 
@@ -89,6 +90,49 @@ def test_row_author_none_when_absent():
     assert notion._row(page)["author"] is None
 
 
+def test_get_data_source_id_wraps_api_error(monkeypatch):
+    """A Notion auth/db error surfaces as an actionable RuntimeError, not a raw APIResponseError."""
+    from insta_save.adapters import notion
+
+    # Construct a minimal APIResponseError using the real class so the guard's except catches it
+    import httpx
+    raw_resp = httpx.Response(401, content=b'{"code":"unauthorized","message":"unauthorized"}')
+    api_err = notion.APIResponseError(
+        code="unauthorized",
+        status=401,
+        message="unauthorized",
+        headers=raw_resp.headers,
+        raw_body_text="unauthorized",
+    )
+
+    class _DBs:
+        @staticmethod
+        def retrieve(database_id):
+            raise api_err
+
+    class _Client:
+        databases = _DBs()
+
+    with pytest.raises(RuntimeError, match="NOTION_TOKEN"):
+        notion._get_data_source_id(_Client(), "db-123")
+
+
+def test_get_data_source_id_wraps_missing_data_sources(monkeypatch):
+    """A database with no data_sources entry surfaces as a RuntimeError, not an IndexError."""
+    from insta_save.adapters import notion
+
+    class _DBs:
+        @staticmethod
+        def retrieve(database_id):
+            return {"data_sources": []}  # empty list -> IndexError on [0]
+
+    class _Client:
+        databases = _DBs()
+
+    with pytest.raises(RuntimeError, match="data_sources"):
+        notion._get_data_source_id(_Client(), "db-456")
+
+
 def test_write_deterministic_builds_minimal_props(monkeypatch):
     captured = {}
 
@@ -128,13 +172,15 @@ def test_write_deterministic_omits_empty_tags(monkeypatch):
 
 
 def test_slide_images_from_raw_resolves_paths():
+    import os
     raw = {"v2.0-base-tuned": {"carousel_slides": [
         {"slide": 1, "text": "A", "ocr_confidence": 0.9, "image": "slides/ab/slide1.jpg"},
         {"slide": 2, "text": None, "ocr_confidence": None, "image": "slides/ab/slide2.jpg"},
         {"slide": 3, "text": "C", "ocr_confidence": 0.8, "image": None},
     ]}}
     out = notion._slide_images_from_raw(raw, tmp_dir="tmp", extract_version="v2.0-base-tuned")
-    assert out == ["tmp/slides/ab/slide1.jpg", "tmp/slides/ab/slide2.jpg"]
+    assert out == [os.path.abspath(os.path.join("tmp", "slides/ab/slide1.jpg")),
+                   os.path.abspath(os.path.join("tmp", "slides/ab/slide2.jpg"))]
 
 
 def test_slide_images_from_raw_empty_when_no_slides():

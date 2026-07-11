@@ -50,7 +50,7 @@ def test_run_extract_dispatches(monkeypatch):
 
     isa.dispatch_run(type("A", (), {
         "mode": "incremental", "stage": "extract", "group": "Hustling",
-        "limit": 5, "reextract": False, "reenrich": False, "retry_failed": False})())
+        "limit": 5, "reextract": False, "retry_failed": False})())
 
     assert calls["schema"] == "ENV"
     assert calls["stage"][0] == "ENV" and calls["stage"][1] == "EX"
@@ -61,10 +61,9 @@ def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
             "mode": "incremental", "stage": "discover", "group": None,
-            "limit": None, "reextract": False, "reenrich": False, "retry_failed": False,
+            "limit": None, "reextract": False, "retry_failed": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
-            "confirm_removed": None, "apply": False, "prepare": False,
-            "calibrate_limit": 20})())
+            "confirm_removed": None, "apply": False, "prepare": False})())
 
 
 def _fake_run():
@@ -93,6 +92,20 @@ def test_calibrate_requires_group(monkeypatch):
         assert False, "expected SystemExit"
     except SystemExit as e:
         assert "group" in str(e).lower()
+
+
+def test_calibrate_invokes_gate_with_group(monkeypatch):
+    import cli.isa as isa
+    calls = {}
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run", lambda: type("R", (), {"enrich": type("E", (), {"backend": "claude-p"})()})())
+    monkeypatch.setattr(isa, "_load_collections", lambda: object())
+    monkeypatch.setattr(isa, "get_backend", lambda name: object())
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "logs/calibrate.log")
+    monkeypatch.setattr(isa, "run_calibrate_gate",
+                        lambda env, run_cfg, *, collections_cfg, backend, group: calls.update(group=group))
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "calibrate", "--group", "Biz"]))
+    assert calls["group"] == "Biz"
 
 
 class _FakeProgress:
@@ -173,7 +186,7 @@ def _det_common(monkeypatch, run_obj):
 
 def _det_args(**kw):
     base = {"mode": "incremental", "stage": "deterministic", "group": None, "limit": None,
-            "prepare": False, "apply": False, "reextract": False, "reenrich": False,
+            "prepare": False, "apply": False, "reextract": False,
             "retry_failed": False, "collection": None}
     base.update(kw)
     return type("A", (), base)()
@@ -631,11 +644,13 @@ def _make_plan(action="done", automated=True, next_action_idx=None):
 def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     """Patch all I/O so _dispatch_mode runs without real Notion/FS calls.
 
-    Returns the calls dict (records which sequencer was called + dry_run value).
+    Returns the calls dict (records mode/dry_run passed to run_pipeline).
     """
+    import insta_save.orchestrator.pipeline as pipeline_mod
+
     calls = {}
 
-    env = _types_mod.SimpleNamespace(tmp_dir="tmp", notion_write_delay=0.0)
+    env = _types_mod.SimpleNamespace(tmp_dir="tmp", notion_write_delay=0.0, ig_username="testuser")
     run_cfg = _types_mod.SimpleNamespace(
         enrich=_types_mod.SimpleNamespace(backend="claude-code", model="m", effort="medium"),
         output_language="english", char_budget=80000, max_items=15,
@@ -656,49 +671,94 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     monkeypatch.setattr(isa, "preflight", lambda env, run_cfg, stages: None)
     monkeypatch.setattr(isa, "build_status",
                         lambda env, cols: [{"group": "TOTAL", "remaining": 5}])
-    monkeypatch.setattr(isa, "run_first_time",
-                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
-                        calls.__setitem__("first_time_dry_run", dry_run) or plan)
-    monkeypatch.setattr(isa, "run_incremental",
-                        lambda env, run_cfg, cols, vocab, backend, routes, dry_run=False:
-                        calls.__setitem__("incremental_dry_run", dry_run) or plan)
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    monkeypatch.setattr(isa, "run_config_gate", lambda run_cfg, **k: run_cfg)
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)   # warm path by default
+
+    # _dispatch_mode now calls run_pipeline via a function-local import.
+    # Patch the attribute on the pipeline module so the local import picks it up.
+    def _fake_pipeline(env, run_cfg, cols, vocab, backend, routes, *,
+                       mode, dry_run=False, select_mode="inline",
+                       ig_username=None, headed=False, fresh=False,
+                       progress_factory=None):
+        calls["mode"] = mode
+        calls["dry_run"] = dry_run
+        calls["select_mode"] = select_mode
+        calls["fresh"] = fresh
+        calls["cols"] = cols
+        return plan
+
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)
 
     args = isa.build_parser().parse_args(
         ["run", "--mode", mode] + (["--dry-run"] if dry_run else []))
     return args, calls
 
 
-def test_mode_first_time_dispatches_run_first_time(monkeypatch, capsys):
+def test_mode_first_time_dispatches_run_pipeline(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
-    isa.main.__wrapped__ if hasattr(isa.main, "__wrapped__") else None
     isa._dispatch_mode(args)
-    assert "first_time_dry_run" in calls
+    assert calls.get("mode") == "first-time"
     assert "All groups complete" in capsys.readouterr().out
 
 
-def test_mode_incremental_dispatches_run_incremental(monkeypatch, capsys):
+def test_mode_incremental_dispatches_run_pipeline(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
     isa._dispatch_mode(args)
-    assert "incremental_dry_run" in calls
+    assert calls.get("mode") == "incremental"
     assert "All groups complete" in capsys.readouterr().out
+
+
+def test_load_collections_error_exits_cleanly(monkeypatch):
+    """When collections.json can't load on a non-cold run (incremental, or a corrupt file),
+    exit with the actionable message — not an uncaught RuntimeError traceback."""
+    import pytest
+    plan = _make_plan("done")
+    args, _ = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+
+    def _raise():
+        raise RuntimeError("Collections config not found: config/collections.json\n"
+                           "Build it with `isa discover` (see docs/OPERATING.md).")
+    monkeypatch.setattr(isa, "_load_collections", _raise)
+    with pytest.raises(SystemExit) as exc:
+        isa._dispatch_mode(args)
+    assert "isa discover" in str(exc.value)
+
+
+def test_first_time_cold_start_bootstraps(monkeypatch):
+    """A first-time real run with no collections.json proceeds (the pipeline's front-fold
+    discover builds it): it must NOT load collections or run the pre-run guardrail, and it
+    passes collections_cfg=None to run_pipeline."""
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: False)   # cold
+
+    def _boom(*a, **k):
+        raise AssertionError("must not be called on a cold start")
+    monkeypatch.setattr(isa, "_load_collections", _boom)
+    monkeypatch.setattr(isa, "build_status", _boom)               # guardrail skipped
+
+    isa._dispatch_mode(args)
+    assert calls["mode"] == "first-time"
+    assert calls["cols"] is None
 
 
 def test_mode_dry_run_passes_through(monkeypatch, capsys):
     plan = _make_plan("done")
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
     isa._dispatch_mode(args)
-    assert calls.get("first_time_dry_run") is True
+    assert calls.get("dry_run") is True
 
 
 def test_mode_prints_calibrate_gate(monkeypatch, capsys):
-    """When the plan next_action is a calibrate gate, prints the manual step hint."""
+    """When the plan next_action is a calibrate gate, prints the inline-gate hint."""
     plan = _make_plan("calibrate", automated=False)
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
     isa._dispatch_mode(args)
     out = capsys.readouterr().out
-    assert "NEXT (manual)" in out
+    assert "calibrate gate runs inline" in out
     assert "calibrate" in out.lower()
     assert "TestG" in out
 
@@ -725,6 +785,30 @@ def test_mode_calls_preflight(monkeypatch):
     assert "preflight" in calls
     assert "extract" in calls["preflight"]
     assert "enrich" in calls["preflight"]
+
+
+def test_first_time_runs_config_gate(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    gate = {"n": 0}
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    def _fake_gate(run_cfg, **k):
+        gate["n"] += 1
+        return run_cfg
+    monkeypatch.setattr(isa, "run_config_gate", _fake_gate)
+    isa._dispatch_mode(args)
+    assert gate["n"] == 1
+
+
+def test_incremental_skips_config_gate(monkeypatch, capsys):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="incremental")
+    gate = {"n": 0}
+    monkeypatch.setattr(isa, "ensure_run_json", lambda *a, **k: None)
+    monkeypatch.setattr(isa, "run_config_gate",
+                        lambda run_cfg, **k: gate.update(n=gate["n"] + 1) or run_cfg)
+    isa._dispatch_mode(args)
+    assert gate["n"] == 0
 
 
 def test_mode_calls_guardrail_check(monkeypatch):
@@ -866,7 +950,7 @@ def test_mode_calibrate_gate_prints_dry_run_label(monkeypatch, capsys):
     args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=True)
     isa._dispatch_mode(args)
     out = capsys.readouterr().out
-    assert "NEXT (manual)" in out
+    assert "NEXT (dry-run)" in out
     assert "(dry-run)" in out
 
 
@@ -878,3 +962,88 @@ def test_mode_agent_enrich_gate_prints_dry_run_label(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "NEXT (manual)" in out
     assert "(dry-run)" in out
+
+
+def test_mode_passes_nested_progress_factory(monkeypatch):
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)
+    captured = {}
+    import insta_save.orchestrator.pipeline as pipeline_mod
+
+    def _fake_pipeline(env, run_cfg, cols, vocab, backend, routes, *, mode, dry_run=False,
+                       select_mode="inline", ig_username=None, headed=False, fresh=False,
+                       progress_factory=None):
+        captured["pf"] = progress_factory
+        return plan
+
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake_pipeline)
+    isa._dispatch_mode(args)
+    from insta_save.helpers.observability import StageProgress
+    prog = captured["pf"]("Extract · G")
+    assert isinstance(prog, StageProgress) and prog._indent == 3
+
+
+def test_dispatch_mode_exits_cleanly_on_run_stopped(monkeypatch, capsys):
+    from insta_save.orchestrator.run_control import RunStopped
+    import insta_save.orchestrator.pipeline as pipeline_mod
+    plan = _make_plan("done")
+    args, calls = _patch_mode_dispatch(monkeypatch, plan, mode="first-time")
+    monkeypatch.setattr(isa, "_has_collections", lambda: True)
+    def _boom(*a, **k):
+        raise RunStopped()
+    monkeypatch.setattr(pipeline_mod, "run_pipeline", _boom)
+    isa._dispatch_mode(args)                          # must NOT raise (clean exit)
+    out = capsys.readouterr().out
+    assert "resume" in out.lower() and "isa run --mode first-time" in out
+
+
+# ---------------------------------------------------------------------------
+# B1: CLI secondary-command config-error guards
+# Each test patches a loader on the `isa` module to raise its known error type
+# and asserts the handler converts it to a clean SystemExit (not a raw traceback).
+# ---------------------------------------------------------------------------
+
+def test_status_load_env_error_raises_system_exit(monkeypatch):
+    """isa status: _load_env raising ValueError -> clean SystemExit, not raw traceback."""
+    monkeypatch.setattr(isa, "_load_env", lambda: (_ for _ in ()).throw(ValueError("bad .env: NOTION_TOKEN missing")))
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+
+    import types as _t
+    _args = _t.SimpleNamespace(command="status", retry_failed=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None): return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    with pytest.raises(SystemExit):
+        isa.main()
+
+
+def test_status_load_collections_error_raises_system_exit(monkeypatch):
+    """isa status: _load_collections raising RuntimeError -> clean SystemExit."""
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_collections",
+                        lambda: (_ for _ in ()).throw(RuntimeError("Collections config not found")))
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+
+    import types as _t
+    _args = _t.SimpleNamespace(command="status", retry_failed=False)
+
+    class _FakeParser:
+        def parse_args(self, argv=None): return _args
+
+    monkeypatch.setattr(isa, "build_parser", lambda: _FakeParser())
+    with pytest.raises(SystemExit):
+        isa.main()
+
+
+def test_stage_extract_load_run_error_raises_system_exit(monkeypatch):
+    """isa run --stage extract: _load_run raising FileNotFoundError -> clean SystemExit."""
+    monkeypatch.setattr(isa, "_load_env", lambda: object())
+    monkeypatch.setattr(isa, "_load_run",
+                        lambda: (_ for _ in ()).throw(FileNotFoundError("config/run.json not found")))
+
+    args = isa.build_parser().parse_args(["run", "--stage", "extract"])
+    with pytest.raises(SystemExit):
+        isa.dispatch_run(args)
