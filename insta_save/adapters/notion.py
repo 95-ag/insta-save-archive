@@ -29,7 +29,7 @@ OCR_MAX_CHARS = 12000  # enrich-read OCR safety cap: bounds pathological frame-O
                        # (raw_extraction keeps the full OCR; D13). ~typical cleaned text is far below.
 
 
-# --- property builders (PORT verbatim from legacy/pipeline/notion.py) -------
+# --- property builders --------------------------------------------------------
 def _notion_truncate(text: str, limit: int = 2000) -> str:
     units = 0
     for i, ch in enumerate(text):

@@ -3,8 +3,7 @@
 backend. prepare() builds a budget-bounded batch for one group; apply() validates
 tags against the locked vocab and writes Notion (-> Tagged).
 
-Batch-oriented (one Claude session per batch), mirroring legacy/scripts/summarize.py.
-Per-item inline backends (local/api) will use orchestrator.runner instead (later)."""
+Batch-oriented (one Claude session per batch)."""
 
 import json
 import logging

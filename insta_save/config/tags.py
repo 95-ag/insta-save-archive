@@ -36,7 +36,7 @@ class Vocab:
 def load_vocab(path=_DEFAULT_TAGS) -> Vocab:
     p = Path(path)
     if not p.exists():
-        raise RuntimeError(f"Tag vocabulary not found: {p} (see docs/OPERATING.md).")
+        raise RuntimeError(f"Tag vocabulary not found: {p} (see README.md).")
     data = json.loads(p.read_text(encoding="utf-8"))
     try:
         content = data["content_type"]

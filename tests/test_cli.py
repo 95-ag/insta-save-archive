@@ -720,7 +720,7 @@ def test_load_collections_error_exits_cleanly(monkeypatch):
 
     def _raise():
         raise RuntimeError("Collections config not found: config/collections.json\n"
-                           "Build it with `isa discover` (see docs/OPERATING.md).")
+                           "Build it with `isa discover` (see README.md).")
     monkeypatch.setattr(isa, "_load_collections", _raise)
     with pytest.raises(SystemExit) as exc:
         isa._dispatch_mode(args)
