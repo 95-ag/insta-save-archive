@@ -14,12 +14,12 @@ dependencies = [
 isa = "cli.isa:main"
 
 [tool.setuptools.packages.find]
-where = [".", "legacy"]
-include = ["pipeline*", "insta_save*", "cli*"]
+where = ["."]
+include = ["insta_save*", "cli*"]
 
 [tool.pytest.ini_options]
-# importlib mode gives each test file a path-unique identity, preventing basename
-# collisions between tests/ and legacy/tests/ (both have test_reconcile.py).
+# importlib mode gives each test file a path-unique identity rather than relying on
+# unique basenames across the tree — cheap insurance as the suite grows.
 addopts = "--import-mode=importlib"
 # Scope collection to tests/ so a bare `pytest` never collects stray *_test.py scratch
 # under tmp/ (which can run live code on import). The suite lives entirely in tests/.
@@ -27,7 +27,6 @@ testpaths = ["tests"]
 
 [tool.black]
 # 100 matches the existing v2 convention (most lines wrap at 100); Black's default
-# 88 would needlessly rewrap ~700 lines. legacy/ is frozen v1 — never reformat it.
+# 88 would needlessly rewrap ~700 lines.
 line-length = 100
 target-version = ["py312"]
-extend-exclude = "/legacy/"
