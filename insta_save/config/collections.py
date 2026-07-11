@@ -68,7 +68,7 @@ def load_collections(path=_DEFAULT_COLLECTIONS) -> CollectionsConfig:
     p = Path(path)
     if not p.exists():
         raise RuntimeError(
-            f"Collections config not found: {p}\nBuild it with `isa discover` (see docs/OPERATING.md)."
+            f"Collections config not found: {p}\nBuild it with `isa discover` (see README.md)."
         )
     data = json.loads(p.read_text(encoding="utf-8"))
     if "collections" not in data:
