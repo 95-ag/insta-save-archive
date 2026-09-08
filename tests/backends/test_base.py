@@ -109,3 +109,11 @@ def test_is_terminal_error_transient_is_false():
 
 def test_terminal_backend_error_is_exception():
     assert issubclass(TerminalBackendError, Exception)
+
+
+def test_is_terminal_error_flags_expired_oauth():
+    # 2026-09-08 incident: claude -p returned this in its error envelope. It must be TERMINAL
+    # (stop + re-auth), never retried-as-transient and mislabelled "malformed model output".
+    assert is_terminal_error(RuntimeError(
+        "claude -p error: Failed to authenticate. API Error: 401 OAuth access token has "
+        "expired. Re-authenticate to continue."))

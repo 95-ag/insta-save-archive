@@ -32,6 +32,9 @@ _TERMINAL_ERROR_MARKERS = (
     "please run /login",
     "invalid api key",
     "authentication",
+    "authenticate",             # "failed to authenticate" / "re-authenticate" (OAuth expiry)
+    "oauth",
+    "access token has expired",
     "credit balance",
 )
 

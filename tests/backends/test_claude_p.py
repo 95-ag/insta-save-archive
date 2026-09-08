@@ -211,3 +211,40 @@ def test_run_claude_p_removes_clean_cwd_on_error(monkeypatch):
     with pytest.raises(RuntimeError):
         claude_p._run_claude_p("P", "claude-sonnet")
     assert not os.path.isdir(sent["cwd"])  # cleaned even though the call raised
+
+
+def test_run_claude_p_surfaces_envelope_error_on_nonzero_exit(monkeypatch):
+    # auth-expiry: the CLI exits 1 with EMPTY stderr; the real message lives in the stdout
+    # envelope's `result`. _run_claude_p must surface it so is_terminal_error can classify it.
+    import pytest
+    from insta_save.backends.base import is_terminal_error
+
+    class _Proc:
+        returncode = 1
+        stdout = json.dumps({"is_error": True, "result":
+                             "Failed to authenticate. API Error: 401 OAuth access token has "
+                             "expired. Re-authenticate to continue."})
+        stderr = ""
+
+    monkeypatch.setattr(claude_p.subprocess, "run", lambda *a, **k: _Proc())
+    with pytest.raises(RuntimeError) as ei:
+        claude_p._run_claude_p("P", "claude-sonnet")
+    assert "OAuth access token has expired" in str(ei.value)
+    assert is_terminal_error(ei.value)
+
+
+def test_run_claude_p_falls_back_to_stderr_when_no_envelope(monkeypatch):
+    # network-level failure: no JSON envelope on stdout -> use exit code + stderr (transient).
+    import pytest
+    from insta_save.backends.base import is_terminal_error
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "socket hang up"
+
+    monkeypatch.setattr(claude_p.subprocess, "run", lambda *a, **k: _Proc())
+    with pytest.raises(RuntimeError) as ei:
+        claude_p._run_claude_p("P", "claude-sonnet")
+    assert "socket hang up" in str(ei.value)
+    assert not is_terminal_error(ei.value)  # stays transient
