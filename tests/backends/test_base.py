@@ -117,3 +117,16 @@ def test_is_terminal_error_flags_expired_oauth():
     assert is_terminal_error(RuntimeError(
         "claude -p error: Failed to authenticate. API Error: 401 OAuth access token has "
         "expired. Re-authenticate to continue."))
+
+
+def test_parse_results_array_tolerates_raw_control_chars():
+    # 2026-09-08: the model echoes food/fitness captions with unescaped newlines into JSON
+    # string values; strict json.loads raised "Invalid control character". Must parse now.
+    out = base.parse_results_array('[{"page_id": "p1", "summary": "line one\nline two"}]')
+    assert out[0]["page_id"] == "p1"
+    assert out[0]["summary"] == "line one\nline two"  # content preserved, not stripped
+
+
+def test_parse_results_object_tolerates_raw_control_chars():
+    out = base.parse_results_object('{"content_type": {"tool": "a\tb"}}')
+    assert out["content_type"]["tool"] == "a\tb"
