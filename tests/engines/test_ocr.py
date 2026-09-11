@@ -144,3 +144,32 @@ def test_content_image_urls_includes_video_posters_when_requested(monkeypatch):
     assert urls_default == []                       # posters NOT collected by default
     assert len(urls_posters) == 2                   # both video posters, profile excluded
     assert all("t39.30808-6" in u for u in urls_posters)
+
+
+def test_ogimage_fallback_picks_largest_matching_media_id():
+    # content on t39.30808-6 (no -15 img). og:image gives the authoritative media id; pick the
+    # LARGEST on-page <img> with that id (full res) — NOT the bigger feed-grid image (other id).
+    og = "https://cdn/v/t39.30808-6/710746138_1572_x.jpg?stp=c240.0.72"
+    big = "https://cdn/v/t39.30808-6/710746138_1664_a.jpg"
+    imgs = [
+        {"src": big, "w": 1200, "h": 1500},
+        {"src": "https://cdn/v/t39.30808-6/710746138_9999_thumb.jpg", "w": 240, "h": 300},
+        {"src": "https://cdn/v/t39.30808-6/999999999_feed.jpg", "w": 1638, "h": 2048},  # other id (feed)
+        {"src": "https://cdn/v/t51.2885-19/profile.jpg", "w": 150, "h": 150},
+    ]
+    assert ocr._ogimage_fallback_url(og, imgs) == big
+
+
+def test_ogimage_fallback_uses_og_url_when_no_onpage_match():
+    og = "https://cdn/v/t39.30808-6/710746138_1_x.jpg?stp=c1"
+    imgs = [{"src": "https://cdn/v/t39.30808-6/222_other.jpg", "w": 1080, "h": 1350}]
+    assert ocr._ogimage_fallback_url(og, imgs) == og
+
+
+def test_ogimage_fallback_none_when_no_og():
+    assert ocr._ogimage_fallback_url(None, [{"src": "x", "w": 1, "h": 1}]) is None
+
+
+def test_ogimage_fallback_returns_og_when_media_id_unparseable():
+    og = "https://example.com/weird-image-url.png"
+    assert ocr._ogimage_fallback_url(og, []) == og
