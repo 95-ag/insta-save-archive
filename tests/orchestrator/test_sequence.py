@@ -280,7 +280,7 @@ def test_routing_enabled_by_tag(monkeypatch):
     _patch(monkeypatch, [_page("Tagged", ["Hustling"])])
     vocab = _fake_vocab()
     backend = _backend()
-    routes = Routes(by_tag={"tips-hacks": "Some DB"})
+    routes = Routes(by_tag=[("tips-hacks", "Some DB")])
 
     plan = sequence.compute_plan(None, None, cfg, vocab, backend, routes)
 
