@@ -121,7 +121,7 @@ the URL. Schema properties are created automatically on first write.
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
 | `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
-| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.0-distribute`) |
+| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.1-distribute`) |
 
 ## Configuration
 
@@ -184,6 +184,18 @@ Per-group + cross-group tags with one-line definitions. Built during **calibrati
 
 Maps `tag > collection > group → route_target` (tag wins, then collection, then group default). Omit or empty to leave items at `Tagged`.
 
+Routing only evaluates items still at `Tagged` — editing `routes.json` doesn't retroactively move
+items already `Routed`. To re-evaluate those against the current file:
+
+```bash
+isa run --stage route --reroute             # re-evaluate Routed items, write changes
+isa run --stage route --reroute --dry-run   # preview before/after counts, write nothing
+```
+
+`--reroute` only touches items still `Routed` — `Distributed`/`Misrouted` items (already folded in
+or flagged) are never re-evaluated. `route_target` is rewritten only when it actually changes; an
+item whose route resolves to none returns to `Tagged` with `route_target` cleared.
+
 ## Running
 
 ```bash
@@ -202,13 +214,15 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --group <name>        # restrict to one group (e.g. calibrate a single group)
           --limit <N>           # cap items processed this run
           --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
-          --target <page name>  # distribute only: the Knowledge-DB page to fold items into
+          --target <page name>  # distribute only: the Knowledge-DB page to fold/rebuild
           --reextract           # re-run extract on already-Extracted items
           --retry-failed        # reprocess items currently in Failed
           --fresh               # force a current re-crawl (incremental mode)
           --apply               # apply a staged result: enrich (session backends) results.json, or a reviewed distribute proposal
-          --yes                 # distribute --apply only: skip the confirmation prompt
-          --dry-run             # compute the plan, no writes
+          --rebuild             # distribute only: reset a page to its template + its items to Tagged; mutually exclusive with --apply
+          --reroute             # route only: re-evaluate already-Routed items against the current routes.json
+          --yes                 # distribute --apply/--rebuild only: skip the confirmation prompt
+          --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts)
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
 Omit `--stage` to run the whole mode end-to-end. **Preflight** runs before any run (backend
@@ -270,7 +284,8 @@ Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do ste
 actually folds a routed item's content into its target page in the Knowledge DB,
 section by section, then sets a two-way relation back to the archive item. It's **attended
 only** — it never runs as part of `isa run --mode first-time|incremental`, and every apply goes
-through a diff review.
+through a diff review. The prompt favors a handful of broad top-level sections — reusing an
+existing heading when it fits, rather than one heading per item.
 
 ```bash
 isa run --stage distribute --target "<page name>"
@@ -300,6 +315,30 @@ the reviewed sections and marks items `Distributed` (folded in, or skipped as a 
 rewrite a section it can't safely replace (one holding blocks the diff can't show, or nested
 blocks). A folded item whose link isn't on the applied page is left `Routed` for the next run and
 reported as a count.
+
+### Rebuilding a page
+
+If a page's routing or tags were wrong and you want to redo it, `--rebuild` resets it back to its
+template and returns its items to `Tagged` — without touching anything still `Routed` or waiting on
+a future distribute run:
+
+```bash
+isa run --stage distribute --target "<page name>" --rebuild
+```
+
+It resets every item related to the page, plus any `Distributed`/`Misrouted` item whose
+`route_target` is the page: the relation to the page is removed, status goes back to `Tagged`, and
+`route_target`, `distribute_notes`, `distribute_version` are cleared. Items are reset **before**
+the page content is touched, so a failure partway through never leaves a relation pointing at
+content that's already gone. The page's content region (everything from the first `heading_1`
+onward) is then deleted back to an empty template — dividers and empty paragraphs are kept, and the
+first `heading_1` is re-emptied to restore the build anchor. Like `--apply`'s section replace, it
+refuses, before writing anything, on a page holding content it can't safely show in a review (blocks
+outside headings/paragraphs/bullets/dividers, or anything with children).
+
+`--rebuild` shares the apply confirmation flow (**Rebuild** / **Cancel**, `--yes` to skip, refuses
+non-interactively), is mutually exclusive with `--apply`, is idempotent, and clears the page's
+staging directory.
 
 Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 
