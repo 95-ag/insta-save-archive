@@ -18,12 +18,21 @@ from insta_save.adapters.notion import (
     get_knowledge_page,
     get_page_blocks,
     query_routed_for_target,
+    replace_section_blocks,
+    set_heading_text,
+    set_knowledge_relation,
     write_distributed,
+    write_misrouted,
 )
 from insta_save.backends import claude_p
 from insta_save.backends.base import TerminalBackendError, is_terminal_error
 from insta_save.backends.sanitize import scrub_fabricated
-from insta_save.markdown_blocks import blocks_to_markdown, merge_sections, split_sections
+from insta_save.markdown_blocks import (
+    blocks_to_markdown,
+    markdown_to_blocks,
+    merge_sections,
+    split_sections,
+)
 
 log = logging.getLogger(__name__)
 
@@ -552,3 +561,131 @@ def fill(
     )
     (d / "diff.txt").write_text(render_diff(current_md, proposed_md), encoding="utf-8")
     return {"calls": len(chunks), "folded": len(folded), "dropped": len(dropped)}
+
+
+_SKIP_NOTE = "no new information — already covered on the page"
+
+
+def _section_spans(blocks) -> dict:
+    """{heading_text: (heading_block_id, [content_block_ids])} for each H1 in the content region."""
+    spans, heading, content = {}, None, []
+    for block in blocks:
+        if block.get("type") == "heading_1":
+            if heading is not None:
+                spans[heading[0]] = (heading[1], content)
+            heading, content = (_heading_text(block), block["id"]), []
+        elif heading is not None:
+            content.append(block["id"])
+    if heading is not None:
+        spans[heading[0]] = (heading[1], content)
+    return spans
+
+
+def _empty_anchor_id(blocks):
+    """The template's empty heading_1 — where a first-time build starts its content."""
+    return next(
+        (b["id"] for b in blocks if b.get("type") == "heading_1" and not _heading_text(b)), None
+    )
+
+
+def _write_sections(env, page_id, blocks, ops) -> None:
+    """Every content write, before any item write. Replaces run first, then appends against
+    a freshly-read tail — a replace can move the page's last block, so the stale one is not
+    a safe anchor."""
+    spans = _section_spans(blocks)
+    for op in (o for o in ops if o.action == "replace"):
+        heading_id, content_ids = spans[op.heading]
+        replace_section_blocks(
+            env,
+            page_id,
+            after_block_id=heading_id,
+            delete_block_ids=content_ids,
+            blocks=markdown_to_blocks(op.body_markdown),
+        )
+
+    appends = [o for o in ops if o.action == "append"]
+    if not appends:
+        return
+    fresh = _content_blocks(get_page_blocks(env, page_id))
+    anchor_id = _empty_anchor_id(fresh)
+    tail = fresh[-1]["id"] if fresh else None
+    for op in appends:
+        body = markdown_to_blocks(op.body_markdown)
+        if anchor_id is not None:
+            set_heading_text(env, anchor_id, op.heading)
+            tail = replace_section_blocks(
+                env, page_id, after_block_id=anchor_id, delete_block_ids=[], blocks=body
+            )
+            anchor_id = None
+            continue
+        if tail is None:
+            raise RuntimeError(
+                "distribute.apply: the target page has no content anchor — refusing to write"
+            )
+        tail = replace_section_blocks(
+            env,
+            page_id,
+            after_block_id=tail,
+            delete_block_ids=[],
+            blocks=markdown_to_blocks(f"# {op.heading}") + body,
+        )
+
+
+def _write_items(env, page_id, items, proposal, version) -> dict:
+    """Item state — ONLY after every section write succeeded. The relation goes first so an
+    interruption can never leave an item marked Distributed without its provenance link."""
+    by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
+    folded = list(proposal.get("folded") or [])
+    dropped = {d["source_id"]: d.get("reason") or "" for d in proposal.get("dropped") or []}
+    counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0}
+
+    for sid in folded:
+        item = by_sid.get(sid)
+        if item is None:
+            log.warning("distribute.apply: proposal folded unknown source_id %s — ignoring", sid)
+            counts["unknown"] += 1
+            continue
+        set_knowledge_relation(env, item["page_id"], page_id)
+        write_distributed(env, item["page_id"], version)
+        counts["folded"] += 1
+
+    for sid, reason in dropped.items():
+        item = by_sid.get(sid)
+        if item is None:
+            log.warning("distribute.apply: proposal dropped unknown source_id %s — ignoring", sid)
+            counts["unknown"] += 1
+            continue
+        write_misrouted(env, item["page_id"], reason, version)
+        counts["misrouted"] += 1
+
+    handled = set(folded) | set(dropped)
+    for sid, item in by_sid.items():
+        if sid in handled:
+            continue
+        write_distributed(env, item["page_id"], version, notes=_SKIP_NOTE)
+        counts["skipped"] += 1
+    return counts
+
+
+def apply(env, *, target, version) -> dict:
+    """Write the reviewed proposal to the page, then the item state. Aborts if the page moved
+    under the proposal. Returns {"folded", "skipped", "misrouted", "unknown"}."""
+    d = staging_dir(env, target)
+    batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
+    proposal = json.loads((d / "proposal.json").read_text(encoding="utf-8"))
+    staged_current = (d / "current.md").read_text(encoding="utf-8")
+    proposed_md = (d / "proposed.md").read_text(encoding="utf-8")
+
+    page_id = batch["page_id"]
+    blocks = _content_blocks(get_page_blocks(env, page_id))
+    if blocks_to_markdown(blocks) != staged_current:
+        raise RuntimeError(
+            f"distribute.apply: {target!r} changed since prepare — re-run prepare to restage"
+        )
+
+    _write_sections(env, page_id, blocks, plan_sections(staged_current, proposed_md))
+    counts = _write_items(env, page_id, batch["items"], proposal, version)
+    for name in _STAGED_FILES:
+        (d / name).unlink(missing_ok=True)
+    log.info("distribute.apply: %s — %s", target, counts)
+    return counts

@@ -973,3 +973,167 @@ def test_fill_raises_after_three_consecutive_bad_replies(tmp_path, monkeypatch):
             sleep=lambda s: None,
         )
     assert len(calls) == 3
+
+
+def _staged(tmp_path, *, items, current_md, proposed_md, proposal):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "batch.json").write_text(
+        json.dumps({"target": "Page A", "page_id": "kp", "items": items}), encoding="utf-8"
+    )
+    (d / "current.md").write_text(current_md, encoding="utf-8")
+    (d / "proposed.md").write_text(proposed_md, encoding="utf-8")
+    (d / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
+    return env, d
+
+
+def _patch_apply(monkeypatch, blocks, *, calls):
+    monkeypatch.setattr(dist, "get_page_blocks", lambda env, pid: list(blocks))
+    monkeypatch.setattr(
+        dist,
+        "replace_section_blocks",
+        lambda env, pid, **kw: calls.setdefault("sections", []).append(kw) or "tail",
+    )
+    monkeypatch.setattr(
+        dist,
+        "set_heading_text",
+        lambda env, bid, text: calls.setdefault("headings", []).append((bid, text)),
+    )
+    monkeypatch.setattr(
+        dist,
+        "set_knowledge_relation",
+        lambda env, pid, kp: calls.setdefault("relations", []).append(pid) or True,
+    )
+    monkeypatch.setattr(
+        dist,
+        "write_distributed",
+        lambda env, pid, version, notes=None: calls.setdefault("distributed", []).append(
+            (pid, notes)
+        ),
+    )
+    monkeypatch.setattr(
+        dist,
+        "write_misrouted",
+        lambda env, pid, reason, version: calls.setdefault("misrouted", []).append((pid, reason)),
+    )
+
+
+def test_apply_replaces_a_changed_section_and_links_folded_items(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["folded"] == 1
+    assert calls["sections"][0]["delete_block_ids"] == ["b1"]
+    assert calls["sections"][0]["after_block_id"] == "h1"
+    assert calls["relations"] == ["p-a"]
+    assert calls["distributed"] == [("p-a", None)]
+
+
+def test_apply_fills_the_empty_anchor_on_a_first_time_build(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# ",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("", "anchor")], calls=calls)
+    dist.apply(env, target="Page A", version="v")
+    assert calls["headings"] == [("anchor", "Workouts")]
+    assert calls["sections"][0]["after_block_id"] == "anchor"
+
+
+def test_apply_marks_a_dropped_item_misrouted_without_a_relation(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": [], "dropped": [{"source_id": "a", "reason": "meal prep"}]},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["misrouted"] == 1
+    assert calls["misrouted"] == [("p-a", "meal prep")]
+    assert "relations" not in calls
+
+
+def test_apply_marks_an_unmentioned_item_distributed_with_a_skip_note(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["skipped"] == 1
+    assert ("p-b", "no new information — already covered on the page") in calls["distributed"]
+    assert calls["relations"] == ["p-a"]
+
+
+def test_apply_writes_no_item_state_when_a_section_write_fails(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    monkeypatch.setattr(
+        dist,
+        "replace_section_blocks",
+        lambda env, pid, **kw: (_ for _ in ()).throw(RuntimeError("notion down")),
+    )
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.apply(env, target="Page A", version="v")
+    assert "relations" not in calls and "distributed" not in calls
+
+
+def test_apply_aborts_when_the_page_changed_since_prepare(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("someone edited this", "b1")], calls=calls)
+    with pytest.raises(RuntimeError, match="changed since prepare"):
+        dist.apply(env, target="Page A", version="v")
+    assert calls == {}
+
+
+def test_apply_ignores_an_invented_source_id(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": ["a", "ghost"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["unknown"] == 1 and counts["folded"] == 1
