@@ -80,3 +80,31 @@ def test_chunk_buckets_splits_when_over_budget():
         dist.Bucket("y", [_item("b", ["mobility-posture"])]),
     ]
     assert len(dist.chunk_buckets(buckets, max_items=1, char_budget=1000)) == 2
+
+
+def test_bucket_items_orders_items_within_a_bucket_stably():
+    a, b, c = (_item(s, ["fitness-workouts"]) for s in ("a", "b", "c"))
+    one = dist.bucket_items([a, b, c], TAGS, CTYPES, max_items=10, char_budget=1000)
+    two = dist.bucket_items([c, a, b], TAGS, CTYPES, max_items=10, char_budget=1000)
+    assert [i["source_id"] for i in one[0].items] == ["a", "b", "c"]
+    assert [i["source_id"] for i in two[0].items] == ["a", "b", "c"]
+
+
+def test_bucket_items_slices_a_still_oversized_content_type_bucket():
+    items = [_item(s, ["fitness-workouts", "tutorial"]) for s in ("a", "b", "c", "d", "e")]
+    buckets = dist.bucket_items(items, TAGS, CTYPES, max_items=2, char_budget=1000)
+    assert [b.name for b in buckets] == [
+        "fitness-workouts · tutorial · part 1",
+        "fitness-workouts · tutorial · part 2",
+        "fitness-workouts · tutorial · part 3",
+    ]
+    assert [len(b.items) for b in buckets] == [2, 2, 1]
+
+
+def test_bucket_items_gives_an_item_over_the_char_budget_its_own_part():
+    items = [
+        _item("a", ["fitness-workouts", "tutorial"], summary="x" * 500),
+        _item("b", ["fitness-workouts", "tutorial"], summary="y" * 10),
+    ]
+    buckets = dist.bucket_items(items, TAGS, CTYPES, max_items=None, char_budget=100)
+    assert [[i["source_id"] for i in b.items] for b in buckets] == [["a"], ["b"]]

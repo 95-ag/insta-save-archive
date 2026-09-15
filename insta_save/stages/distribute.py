@@ -35,18 +35,42 @@ def _within(items, *, max_items, char_budget) -> bool:
     return sum(len(i.get("summary") or "") for i in items) <= char_budget
 
 
+def _sort_key(item) -> tuple:
+    return (item.get("source_id") or "", item.get("page_id") or "")
+
+
+def _slice_to_budget(items, *, max_items, char_budget) -> list:
+    """Greedily slice items (already in final order) into sequential parts each
+    satisfying _within. Always makes progress: a single item whose summary alone
+    exceeds char_budget still becomes its own part."""
+    parts, current = [], []
+    for item in items:
+        candidate = current + [item]
+        if current and not _within(candidate, max_items=max_items, char_budget=char_budget):
+            parts.append(current)
+            current = [item]
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
 def bucket_items(items, routing_tags, content_types, *, max_items, char_budget) -> list:
-    """Partition a page's routed items into prompt buckets. Deterministic, no model.
+    """Partition a page's routed items into prompt buckets. Deterministic, no model:
+    bucket order and item order within each bucket are both stable regardless of
+    input order.
 
     Items sharing a routing-tag combo group together; a combo over either bound splits
-    further by content_type. Sorted throughout so the same input renders the same prompt."""
+    by content_type, and any content-type sub-bucket still over bound is sliced into
+    sequential parts."""
     partitions = defaultdict(list)
     for item in items:
         partitions[_routing_combo(item, routing_tags)].append(item)
 
     buckets = []
     for combo in sorted(partitions):
-        members = partitions[combo]
+        members = sorted(partitions[combo], key=_sort_key)
         name = " + ".join(combo) if combo else "untagged"
         if _within(members, max_items=max_items, char_budget=char_budget):
             buckets.append(Bucket(name, members))
@@ -55,7 +79,14 @@ def bucket_items(items, routing_tags, content_types, *, max_items, char_budget) 
         for item in members:
             by_type[_content_type(item, content_types) or "untyped"].append(item)
         for ctype in sorted(by_type):
-            buckets.append(Bucket(f"{name} · {ctype}", by_type[ctype]))
+            sub_members = by_type[ctype]
+            sub_name = f"{name} · {ctype}"
+            if _within(sub_members, max_items=max_items, char_budget=char_budget):
+                buckets.append(Bucket(sub_name, sub_members))
+                continue
+            parts = _slice_to_budget(sub_members, max_items=max_items, char_budget=char_budget)
+            for index, part in enumerate(parts, start=1):
+                buckets.append(Bucket(f"{sub_name} · part {index}", part))
     return buckets
 
 
