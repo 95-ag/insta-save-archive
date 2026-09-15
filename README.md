@@ -4,7 +4,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **title, summary, and tags**, so you never need to re-open the original.
 
 > **Status:** the one-call orchestrator (`isa run --mode first-time|incremental`) is live —
-> a full clean run through every stage, resumable and crash-safe via Notion state. 546 tests passing.
+> a full clean run through every stage, resumable and crash-safe via Notion state. 711 tests passing.
 
 ## Contents
 
@@ -276,11 +276,19 @@ isa run --stage distribute --target "<page name>"
 isa run --stage distribute --target "<page name>" --apply
 ```
 
-The first command writes **nothing to Notion**: it prepares the batch, calls the backend, and
-stages `tmp/distribute/<slug>/` — including `diff.txt` (the per-section unified diff to review)
-and `proposed.md` (hand-editable before applying). The second re-reads the live page, aborts if
-it changed since staging, then writes the reviewed sections and marks items `Distributed` (folded
-in, or skipped as a pure duplicate) or `Misrouted` (dropped as off-topic — its tags need fixing).
+The first command writes **no page content**. It does touch Notion in two small ways: it ensures
+the archive schema has the distribute properties and statuses, and it marks items already linked
+to the page as `Distributed` without a model call. Then it prepares the batch, calls the backend,
+and stages `tmp/distribute/<slug>/` — including `diff.txt` (the per-section unified diff to review)
+and `proposed.md` (hand-editable before applying). Re-running the first command discards whatever
+is staged, **including a hand-edited `proposed.md`** — apply your edits before restaging.
+
+The second re-reads the live page, aborts if it changed since staging, then writes the reviewed
+sections and marks items `Distributed` (folded in, or skipped as a pure duplicate) or `Misrouted`
+(dropped as off-topic — its tags need fixing). It refuses, before writing anything, to rewrite a
+section it can't safely replace (one holding blocks the diff can't show, or nested blocks). A
+folded item whose link isn't on the applied page is left `Routed` for the next run and reported
+as a count.
 
 Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 
