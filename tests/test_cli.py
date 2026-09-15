@@ -571,6 +571,23 @@ def test_status_command_calls_build_status_and_prints_table(monkeypatch, capsys)
     assert "TOTAL" in out
 
 
+def test_status_table_columns_include_distributed_and_misrouted():
+    assert isa._STATUS_COLS == (
+        "Imported", "Queued", "Extracted", "Tagged", "Routed",
+        "Distributed", "Misrouted", "Failed", "remaining",
+    )
+
+
+def test_status_table_prints_distributed_and_misrouted_counts(monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "200")
+    row = {"group": "TOTAL", "Imported": 0, "Queued": 0, "Extracted": 0, "Tagged": 0,
+           "Routed": 0, "Distributed": 41, "Misrouted": 17, "Failed": 0, "remaining": 0}
+    isa._print_status_table([row])
+    out = capsys.readouterr().out
+    assert "Distributed" in out and "Misrouted" in out
+    assert "41" in out and "17" in out
+
+
 def test_status_retry_failed_calls_retry_and_prints_summary(monkeypatch, capsys):
     _patch_status_common(monkeypatch)
     monkeypatch.setattr(isa, "_retry_failed",

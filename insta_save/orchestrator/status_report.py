@@ -11,7 +11,8 @@ from insta_save.helpers.observability import StageProgress
 
 log = logging.getLogger(__name__)
 
-_STATUSES = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed")
+_STATUSES = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
+             "Failed")
 
 
 def _parse_page(page: dict) -> tuple:
@@ -36,8 +37,8 @@ def _parse_page(page: dict) -> tuple:
 def build_status(env, collections_cfg) -> list[dict]:
     """One query_all_pages pass; tally per group.
 
-    Each row: {"group": name, "Imported": n, ..., "Routed": n, "Failed": n, "remaining": n}
-    where remaining = Imported + Queued + Extracted.
+    Each row: {"group": name, "Imported": n, ..., "Routed": n, "Distributed": n, "Misrouted": n,
+    "Failed": n, "remaining": n} where remaining = Imported + Queued + Extracted.
 
     An item is counted once per distinct group it touches (not once per collection).
     Rows are ordered by collections_cfg.groups, extra groups after, TOTAL last."""

@@ -178,6 +178,29 @@ def test_build_status_remaining_is_imported_plus_queued_plus_extracted(monkeypat
     assert hustling["remaining"] == 3  # Imported + Queued + Extracted (not Tagged/Routed/Failed)
 
 
+def test_build_status_counts_distributed_and_misrouted_as_terminal(monkeypatch):
+    pages = [
+        _page("p1", "Imported", ["Reels"]),
+        _page("p2", "Distributed", ["Reels"]),
+        _page("p3", "Misrouted", ["Reels"]),
+    ]
+    monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
+
+    rows = status_report.build_status("env", _COLLECTIONS_CFG)
+    hustling = next(r for r in rows if r["group"] == "Hustling")
+    total = next(r for r in rows if r["group"] == "TOTAL")
+    assert hustling["Distributed"] == 1 and hustling["Misrouted"] == 1
+    assert total["Distributed"] == 1 and total["Misrouted"] == 1
+    assert hustling["remaining"] == 1  # only the Imported item; both new statuses are terminal
+    assert total["remaining"] == 1
+
+
+def test_build_status_statuses_follow_pipeline_order():
+    assert status_report._STATUSES == (
+        "Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted", "Failed",
+    )
+
+
 # --- retry_failed ---
 
 def test_retry_failed_infers_extracted_when_has_content(monkeypatch):

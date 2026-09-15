@@ -41,7 +41,8 @@ def _rel(p: str) -> str:
     """Return a relative form of an absolute log path for readable console output."""
     return os.path.relpath(str(p))
 
-_STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed", "remaining")
+_STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
+                "Failed", "remaining")
 
 
 def _print_status_table(rows: list[dict]) -> None:
