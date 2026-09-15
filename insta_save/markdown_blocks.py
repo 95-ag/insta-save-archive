@@ -45,3 +45,59 @@ def blocks_to_markdown(blocks) -> str:
         elif btype == "paragraph":
             lines.append(text)
     return "\n".join(lines)
+
+
+def _write_plain(text) -> list:
+    """Plain markdown (bold only) -> write-shape rich_text spans."""
+    spans, pos = [], 0
+    for m in _BOLD_RE.finditer(text):
+        if m.start() > pos:
+            spans.append({"type": "text", "text": {"content": text[pos : m.start()]}})
+        spans.append(
+            {
+                "type": "text",
+                "text": {"content": m.group(1)},
+                "annotations": {"bold": True},
+            }
+        )
+        pos = m.end()
+    if pos < len(text):
+        spans.append({"type": "text", "text": {"content": text[pos:]}})
+    return [s for s in spans if s["text"]["content"]]
+
+
+def _write_rich(text) -> list:
+    """Inline markdown -> write-shape rich_text. Links take precedence over bold inside
+    a label, matching the pilot: a bolded link label is not a shape we emit."""
+    spans, pos = [], 0
+    for m in _LINK_RE.finditer(text):
+        if m.start() > pos:
+            spans += _write_plain(text[pos : m.start()])
+        spans.append({"type": "text", "text": {"content": m.group(1), "link": {"url": m.group(2)}}})
+        pos = m.end()
+    if pos < len(text):
+        spans += _write_plain(text[pos:])
+    return spans or [{"type": "text", "text": {"content": ""}}]
+
+
+def _block(btype, text) -> dict:
+    return {"type": btype, btype: {"rich_text": _write_rich(text)}}
+
+
+def markdown_to_blocks(md) -> list:
+    blocks = []
+    for raw in (md or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith("### "):
+            blocks.append(_block("heading_3", line[4:]))
+        elif line.startswith("## "):
+            blocks.append(_block("heading_2", line[3:]))
+        elif line.startswith("# "):
+            blocks.append(_block("heading_1", line[2:]))
+        elif line.lstrip().startswith("- "):
+            blocks.append(_block("bulleted_list_item", line.lstrip()[2:]))
+        else:
+            blocks.append(_block("paragraph", line))
+    return blocks

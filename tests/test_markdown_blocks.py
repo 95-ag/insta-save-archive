@@ -45,3 +45,37 @@ def test_blocks_to_markdown_skips_template_furniture():
         _read_block("heading_1", [_span("Workouts")]),
     ]
     assert mb.blocks_to_markdown(blocks) == "# Workouts"
+
+
+def test_markdown_to_blocks_maps_heading_levels():
+    blocks = mb.markdown_to_blocks("# Sec\n## Topic\n### Detail")
+    assert [b["type"] for b in blocks] == ["heading_1", "heading_2", "heading_3"]
+    assert blocks[0]["heading_1"]["rich_text"][0]["text"]["content"] == "Sec"
+
+
+def test_markdown_to_blocks_maps_bullets_and_paragraphs():
+    blocks = mb.markdown_to_blocks("- cue\nlead line")
+    assert [b["type"] for b in blocks] == ["bulleted_list_item", "paragraph"]
+
+
+def test_markdown_to_blocks_drops_blank_lines():
+    assert len(mb.markdown_to_blocks("# A\n\n\n- b")) == 2
+
+
+def test_markdown_to_blocks_builds_link_spans():
+    spans = mb.markdown_to_blocks("see [Hip drills](https://ig/x) now")[0]["paragraph"]["rich_text"]
+    assert [s["text"]["content"] for s in spans] == ["see ", "Hip drills", " now"]
+    assert spans[1]["text"]["link"] == {"url": "https://ig/x"}
+    assert "plain_text" not in spans[1]
+
+
+def test_markdown_to_blocks_builds_bold_spans():
+    spans = mb.markdown_to_blocks("**Watch:** go")[0]["paragraph"]["rich_text"]
+    assert spans[0]["text"]["content"] == "Watch:"
+    assert spans[0]["annotations"] == {"bold": True}
+    assert spans[1]["text"]["content"] == " go"
+
+
+def test_markdown_to_blocks_round_trips_through_blocks_to_markdown():
+    md = "# Workouts\n## Pelvic tilt\n- cue one\n🔗 [Hip drills](https://ig/x)"
+    assert mb.blocks_to_markdown(mb.markdown_to_blocks(md)) == md
