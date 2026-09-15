@@ -28,6 +28,8 @@ class EnvConfig:
     cookies_file: str
     ig_username: str = ""
     anthropic_api_key: str = ""
+    notion_knowledge_database_id: str = ""
+    distribute_version: str = "v2.0-distribute"
 
 
 def _env_float(key: str, default: float) -> float:
@@ -64,6 +66,8 @@ def load_env() -> EnvConfig:
         cookies_file=os.getenv("COOKIES_FILE", "session_cookies.json").strip(),
         ig_username=os.getenv("IG_USERNAME", "").strip(),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        notion_knowledge_database_id=os.getenv("NOTION_KNOWLEDGE_DATABASE_ID", "").strip(),
+        distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.0-distribute").strip(),
     )
 
 

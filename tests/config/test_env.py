@@ -5,7 +5,7 @@ from insta_save.config import env as envcfg
 def _set(monkeypatch, **kw):
     for k in ["NOTION_TOKEN", "NOTION_DATABASE_ID", "TMP_DIR", "EXTRACT_VERSION",
               "ENRICH_VERSION", "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
-              "DISPLAY_MODE", "COOKIES_FILE"]:
+              "DISPLAY_MODE", "COOKIES_FILE", "NOTION_KNOWLEDGE_DATABASE_ID", "DISTRIBUTE_VERSION"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in kw.items():
         monkeypatch.setenv(k, v)
@@ -66,3 +66,13 @@ def test_enrich_version_override(monkeypatch):
     _set(monkeypatch, ENRICH_VERSION="v2.1-enrich")
     cfg = envcfg.load_env()
     assert cfg.enrich_version == "v2.1-enrich"
+
+
+def test_load_env_reads_knowledge_database_id(monkeypatch):
+    _set(monkeypatch, NOTION_KNOWLEDGE_DATABASE_ID="kdb-123")
+    assert envcfg.load_env().notion_knowledge_database_id == "kdb-123"
+
+
+def test_load_env_distribute_version_defaults(monkeypatch):
+    _set(monkeypatch)
+    assert envcfg.load_env().distribute_version == "v2.0-distribute"
