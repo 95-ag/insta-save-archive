@@ -126,10 +126,23 @@ def merge_sections(current_md, proposed_md) -> str:
 
     Heading text is the join key: a heading already present is replaced in place, a new
     one is appended at the end. Sections the proposal omits come through untouched.
+    Raises ValueError if the current body has duplicate H1 headings, since heading text
+    is the join key and duplicates make the merge ambiguous.
     Used to chain over-budget fill calls, where each call needs the running full body."""
+    current_sections = split_sections(current_md)
+    # Detect duplicate headings in current_md
+    seen_headings = set()
+    for heading, _ in current_sections:
+        if heading in seen_headings:
+            raise ValueError(
+                f"page body has duplicate section heading {heading!r} — "
+                f"rename one on the page before distributing"
+            )
+        seen_headings.add(heading)
+
     proposed = dict(split_sections(proposed_md))
     merged, seen = [], set()
-    for heading, body in split_sections(current_md):
+    for heading, body in current_sections:
         body = proposed.get(heading, body)
         if heading in proposed:
             seen.add(heading)

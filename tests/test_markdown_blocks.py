@@ -1,3 +1,5 @@
+import pytest
+
 from insta_save import markdown_blocks as mb
 
 
@@ -107,3 +109,8 @@ def test_merge_sections_leaves_untouched_sections_byte_identical():
     current = "# One\n- a\n# Two\n-  odd   spacing"
     merged = mb.merge_sections(current, "# One\n- new")
     assert "-  odd   spacing" in merged
+
+
+def test_merge_sections_rejects_duplicate_current_headings():
+    with pytest.raises(ValueError, match="duplicate section heading 'One'"):
+        mb.merge_sections("# One\n- a\n# One\n- b", "# One\n- replaced")
