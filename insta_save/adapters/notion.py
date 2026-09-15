@@ -645,7 +645,10 @@ def _chunked(items, size):
 def replace_section_blocks(env: EnvConfig, page_id: str, *, after_block_id: str,
                            delete_block_ids: list, blocks: list) -> str:
     """Replace one section's content: insert `blocks` after `after_block_id`, then delete
-    the section's old children. The heading block itself is never deleted.
+    whatever block ids the caller passes in `delete_block_ids`. This function makes no
+    promise a heading survives: apply only ever passes a section's content-block ids
+    (headings stay in place), but rebuild also passes later H1 heading ids here to remove
+    a whole section when resetting the page to its template.
 
     Inserting first means a failed insert can never leave a curated section empty: the
     worst case is old content plus a partial copy of the new, which the next prepare shows
@@ -778,8 +781,9 @@ def remove_knowledge_relation(env: EnvConfig, page_id: str, target_page_id: str)
         prop = client.pages.retrieve(page_id=page_id)["properties"].get("Knowledge Base", {})
         if prop.get("has_more"):
             raise RuntimeError(
-                f"notion: {page_id} has more than one page of Knowledge Base links — "
-                "refusing to rewrite a truncated relation")
+                f"notion: {page_id}'s Knowledge Base relation is truncated by Notion (more "
+                f"than one page of links) — remove its link to {target_page_id} in Notion "
+                "manually")
         current = prop.get("relation", [])
         if not any(r["id"] == target_page_id for r in current):
             return False

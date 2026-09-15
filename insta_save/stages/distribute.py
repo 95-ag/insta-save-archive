@@ -955,13 +955,17 @@ class RebuildPreview:
     `(heading_text, blocks_to_delete)` per H1 section of the content region — the first
     heading_1 itself is kept (emptied), every later one counts as deleted. `blocks_kept` counts
     the dividers and empty paragraphs left in place. `items` carries `(source_id, title,
-    status)` with `title` `None` when the item has none. `refused` carries
-    `(heading_text, sorted kinds)` for each section that makes `rebuild` refuse."""
+    status)` with `title` `None` when the item has none, for every item in scope.
+    `relations_only` is the subset of `items` (same shape) whose status distribute does not
+    own — `rebuild` removes only their relation to the page, leaving status and fields
+    untouched. `refused` carries `(heading_text, sorted kinds)` for each section that makes
+    `rebuild` refuse."""
 
     sections: list
     blocks_to_delete: int
     blocks_kept: int
     items: list
+    relations_only: list
     refused: list
 
 
@@ -979,17 +983,32 @@ def _rebuild_deletes(region) -> list:
     return [b for b in region[1:] if not _is_template_spacing(b)]
 
 
+def _has_quick_access(block) -> bool:
+    return _QUICK_ACCESS_MARKER in blocks_to_markdown([block])
+
+
 def _rebuild_refusals(region) -> list:
     """[(heading_text, sorted kinds)] for each section holding what the markdown review never
-    shows. Checks the H1 itself for children too: deleting it would take them along."""
+    shows, or a `🔗 Quick Access` block that has strayed into the content region — global-
+    constraints.md: that section is never touched, so a rebuild must refuse rather than
+    delete it. Checks the H1 itself for children too: deleting it would take them along."""
     refused = []
     for heading, content in _sections(region):
         kinds = _unshowable_kinds(content)
         if heading.get("has_children") and "has_children" not in kinds:
             kinds.append("has_children")
+        if any(_has_quick_access(b) for b in [heading, *content]):
+            kinds.append("quick_access")
         if kinds:
             refused.append((_heading_text(heading), sorted(kinds)))
     return refused
+
+
+# Statuses distribute owns: `rebuild` resets these to Tagged. Any other status (Extracted,
+# Queued, Failed, Tagged, ...) means distribute never finished with the item, so a stale
+# `Knowledge Base` relation is the only thing rebuild touches — the item's own state is left
+# for whatever stage actually owns it.
+_REBUILD_OWNED_STATUSES = {"Routed", "Distributed", "Misrouted"}
 
 
 def rebuild_preview(env, *, target) -> RebuildPreview:
@@ -1005,11 +1024,17 @@ def rebuild_preview(env, *, target) -> RebuildPreview:
         )
         for heading, content in _sections(region)
     ]
+    rows = [(item["source_id"], item.get("title"), item.get("status")) for item in items]
     return RebuildPreview(
         sections=sections,
         blocks_to_delete=len(deleted_ids),
         blocks_kept=sum(1 for b in region if _is_template_spacing(b)),
-        items=[(item["source_id"], item.get("title"), item.get("status")) for item in items],
+        items=rows,
+        relations_only=[
+            row
+            for row, item in zip(rows, items)
+            if item.get("status") not in _REBUILD_OWNED_STATUSES
+        ],
         refused=_rebuild_refusals(region),
     )
 
@@ -1019,14 +1044,26 @@ def rebuild(env, *, target) -> dict:
     route and distribute can run again. Destructive on the live page.
 
     Refuses before any write when the content region holds anything the markdown review
-    cannot show (other block types, child blocks): a rebuild must never delete content the
-    user had no way to see first.
+    cannot show (other block types, child blocks, a strayed Quick Access section): a rebuild
+    must never delete content the user had no way to see first.
 
-    Items go FIRST: a failure there leaves the page untouched and a re-run picks up the rest,
-    whereas a page wiped before its items would leave relations pointing at removed content.
+    Items go FIRST, page second: a failure among the items leaves the page untouched and a
+    re-run picks up the rest, whereas a page wiped before its items would leave relations
+    pointing at removed content. Within one item, the reset runs BEFORE the relation removal:
+    if the removal then fails, the item is left Tagged but still related, so a re-run's
+    relation-arm query catches it again — reordered the other way, a failed reset after a
+    successful removal would drop the item out of scope on re-run.
+
+    Only an item whose status distribute owns (Routed, Distributed, Misrouted) is reset to
+    Tagged; any other status is left alone and only unlinked (`relations_only`).
+
+    Because the item loop can run long, the page step re-reads the page and re-runs the
+    refusal check on that fresh read before deleting anything — a page edited mid-run is
+    caught here rather than blindly cleared.
 
     Re-running is safe: an already-reset page with no items in scope makes no writes.
-    Returns {"items_reset", "relations_removed", "blocks_deleted", "heading_cleared"}."""
+    Returns {"items_reset", "relations_removed", "relations_only", "blocks_deleted",
+    "heading_cleared", "page_skipped"}."""
     page_id = get_knowledge_page(env, target)
     region = _content_blocks(get_page_blocks(env, page_id))
     items = query_items_for_rebuild(env, target, page_id)
@@ -1039,23 +1076,46 @@ def rebuild(env, *, target) -> dict:
         )
         raise RuntimeError(f"distribute.rebuild: {problems} — edit it in Notion first")
 
-    counts = {"items_reset": 0, "relations_removed": 0, "blocks_deleted": 0}
+    counts = {"items_reset": 0, "relations_removed": 0, "relations_only": 0, "blocks_deleted": 0}
     for item in items:
-        if remove_knowledge_relation(env, item["page_id"], page_id):
-            counts["relations_removed"] += 1
-        reset_item_to_tagged(env, item["page_id"])
-        counts["items_reset"] += 1
+        if item.get("status") in _REBUILD_OWNED_STATUSES:
+            reset_item_to_tagged(env, item["page_id"])
+            counts["items_reset"] += 1
+            if remove_knowledge_relation(env, item["page_id"], page_id):
+                counts["relations_removed"] += 1
+        else:
+            if remove_knowledge_relation(env, item["page_id"], page_id):
+                counts["relations_removed"] += 1
+            counts["relations_only"] += 1
+
+    fresh_region = _content_blocks(get_page_blocks(env, page_id))
+    if _rebuild_refusals(fresh_region):
+        raise RuntimeError(
+            f"distribute.rebuild: {target!r} changed during rebuild — nothing on the page was "
+            "deleted (items were already reset; re-running rebuild is safe)"
+        )
 
     heading_cleared = False
-    if not region:
+    page_skipped = not fresh_region
+    if page_skipped:
         log.warning("distribute.rebuild: %s has no heading_1 — page left as is", target)
     else:
-        anchor = region[0]
-        delete_ids = [b["id"] for b in _rebuild_deletes(region)]
+        anchor = fresh_region[0]
+        delete_ids = [b["id"] for b in _rebuild_deletes(fresh_region)]
         if delete_ids:
-            replace_section_blocks(
-                env, page_id, after_block_id=anchor["id"], delete_block_ids=delete_ids, blocks=[]
-            )
+            try:
+                replace_section_blocks(
+                    env,
+                    page_id,
+                    after_block_id=anchor["id"],
+                    delete_block_ids=delete_ids,
+                    blocks=[],
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"distribute.rebuild: failed while clearing {target!r} — items were "
+                    f"already reset; re-run rebuild to finish: {exc}"
+                ) from exc
             counts["blocks_deleted"] = len(delete_ids)
         if _heading_text(anchor):
             set_heading_text(env, anchor["id"], "")
@@ -1063,5 +1123,6 @@ def rebuild(env, *, target) -> dict:
 
     _clear_staging(env, target)
     counts["heading_cleared"] = heading_cleared
+    counts["page_skipped"] = page_skipped
     log.info("distribute.rebuild: %s — %s", target, counts)
     return counts

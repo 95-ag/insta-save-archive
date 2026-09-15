@@ -1253,9 +1253,9 @@ class _FakePage:
     def set_heading_text(self, env, bid, text):
         self.log.append(("set_heading_text", bid, text))
         block = next(b for b in self.blocks if b["id"] == bid)
-        block["heading_1"]["rich_text"] = [
-            {"plain_text": text, "annotations": {"bold": False}, "href": None}
-        ]
+        block["heading_1"]["rich_text"] = (
+            [{"plain_text": text, "annotations": {"bold": False}, "href": None}] if text else []
+        )
 
     def set_knowledge_relation(self, env, pid, kp):
         self.log.append(("set_knowledge_relation", pid, kp))
@@ -1923,6 +1923,7 @@ def test_rebuild_preview_reports_sections_counts_and_items_without_writing(tmp_p
             ("s-dropped", "D", "Misrouted"),
             ("s-moved", None, "Routed"),
         ],
+        relations_only=[],
         refused=[],
     )
     assert page.writes() == []
@@ -1993,8 +1994,10 @@ def test_rebuild_resets_scoped_items_and_preserves_other_relations(tmp_path, mon
     assert counts == {
         "items_reset": 4,
         "relations_removed": 2,
+        "relations_only": 0,
         "blocks_deleted": 6,
         "heading_cleared": True,
+        "page_skipped": False,
     }
 
 
@@ -2037,8 +2040,10 @@ def test_rebuild_twice_makes_no_writes_the_second_time(tmp_path, monkeypatch):
     assert counts == {
         "items_reset": 0,
         "relations_removed": 0,
+        "relations_only": 0,
         "blocks_deleted": 0,
         "heading_cleared": False,
+        "page_skipped": False,
     }
 
 
@@ -2056,6 +2061,128 @@ def test_rebuild_resets_items_but_skips_a_page_with_no_heading_1(tmp_path, monke
     assert counts == {
         "items_reset": 4,
         "relations_removed": 2,
+        "relations_only": 0,
         "blocks_deleted": 0,
         "heading_cleared": False,
+        "page_skipped": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# rebuild — review fix round 1
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_refuses_a_quick_access_block_inside_a_section(tmp_path, monkeypatch):
+    blocks = _distributed_page_blocks() + [
+        _read_block("hz", "heading_1", "Z"),
+        _read_block("zq", "heading_2", "🔗 Quick Access"),
+    ]
+    page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
+    before_items = copy.deepcopy(page.items)
+    with pytest.raises(RuntimeError, match=r"section 'Z' holds blocks .*quick_access") as exc:
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert "'X'" not in str(exc.value) and "'Y'" not in str(exc.value)
+    assert page.writes() == []
+    assert page.items == before_items
+
+
+def test_rebuild_preview_reports_a_quick_access_refusal(tmp_path, monkeypatch):
+    blocks = _distributed_page_blocks() + [
+        _read_block("hz", "heading_1", "Z"),
+        _read_block("zq", "heading_2", "🔗 Quick Access"),
+    ]
+    page = _RebuildPage(blocks).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.refused == [("Z", ["quick_access"])]
+    assert page.writes() == []
+
+
+def test_rebuild_resets_before_removing_the_relation_so_a_failed_removal_can_resume(
+    tmp_path, monkeypatch
+):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    real_remove = page.remove_knowledge_relation
+
+    def _fail_on_folded(env, pid, kp):
+        if pid == "folded":
+            raise RuntimeError("notion down")
+        return real_remove(env, pid, kp)
+
+    monkeypatch.setattr(dist, "remove_knowledge_relation", _fail_on_folded)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.page_writes() == []
+    # reset already ran before the relation removal that then failed
+    assert page.items["folded"]["status"] == "Tagged"
+    assert "kp" in page.items["folded"]["knowledge_base"]
+
+    monkeypatch.setattr(dist, "remove_knowledge_relation", real_remove)
+    counts = dist.rebuild(_env(tmp_path), target="Page A")
+    assert "kp" not in page.items["folded"]["knowledge_base"]
+    assert counts["relations_removed"] >= 1
+    assert page.page_writes() != []
+
+
+def test_rebuild_only_removes_the_relation_for_an_item_distribute_does_not_own(
+    tmp_path, monkeypatch
+):
+    stale = _archive_item("stale", "Extracted", knowledge_base=["kp"], route_target=None, title="S")
+    page = _RebuildPage(_distributed_page_blocks(), [*_rebuild_items(), stale]).patch(monkeypatch)
+    counts = dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.items["stale"]["status"] == "Extracted"
+    assert page.items["stale"]["route_target"] is None
+    assert "kp" not in page.items["stale"]["knowledge_base"]
+    assert counts["relations_only"] == 1
+    # the owned-status items are unaffected by the addition
+    assert page.items["folded"]["status"] == "Tagged"
+
+
+def test_rebuild_preview_marks_relation_only_items(tmp_path, monkeypatch):
+    stale = _archive_item("stale", "Extracted", knowledge_base=["kp"], route_target=None, title="S")
+    page = _RebuildPage(_distributed_page_blocks(), [*_rebuild_items(), stale]).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert ("s-stale", "S", "Extracted") in result.relations_only
+    assert ("s-stale", "S", "Extracted") in result.items
+    assert page.writes() == []
+
+
+def test_rebuild_refuses_when_the_page_changes_during_the_item_loop(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    real_get = page.get_page_blocks
+    calls = {"n": 0}
+
+    def _get_page_blocks(env, pid):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            page.blocks.append(_read_block("zc", "bulleted_list_item", "parent", has_children=True))
+        return real_get(env, pid)
+
+    monkeypatch.setattr(dist, "get_page_blocks", _get_page_blocks)
+    with pytest.raises(RuntimeError, match="changed during rebuild"):
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.page_writes() == []
+    # items were already reset before the fresh check fired
+    assert page.items["folded"]["status"] == "Tagged"
+
+
+def test_rebuild_page_step_failure_leaves_items_reset_and_a_rerun_completes_the_page(
+    tmp_path, monkeypatch
+):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    real_replace = page.replace_section_blocks
+
+    def _fail_once(env, pid, **kw):
+        monkeypatch.setattr(dist, "replace_section_blocks", real_replace)
+        raise RuntimeError("notion down")
+
+    monkeypatch.setattr(dist, "replace_section_blocks", _fail_once)
+    with pytest.raises(RuntimeError, match="failed while clearing"):
+        dist.rebuild(_env(tmp_path), target="Page A")
+    for pid in ("folded", "skipped", "dropped", "moved"):
+        assert page.items[pid]["status"] == "Tagged"
+    assert page.page_writes() == []
+
+    counts = dist.rebuild(_env(tmp_path), target="Page A")
+    assert counts["items_reset"] == 0  # already reset on the failed attempt
+    assert page.ids() == _TEMPLATE_ABOVE + ["hx", "dv", "ep"]

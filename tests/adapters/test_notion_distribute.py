@@ -444,6 +444,17 @@ def test_remove_knowledge_relation_refuses_a_truncated_relation(monkeypatch):
     assert updates == []
 
 
+def test_remove_knowledge_relation_truncated_message_names_the_item_and_the_manual_fix(
+    monkeypatch,
+):
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(pages=_relation_pages([{"id": "kp"}], [], has_more=True)),
+    )
+    with pytest.raises(RuntimeError, match=r"pg's Knowledge Base .* link to kp in Notion manually"):
+        notion.remove_knowledge_relation(_Env(), "pg", "kp")
+
+
 @pytest.mark.parametrize("error", [RequestTimeoutError(), httpx.ConnectError("boom"), _api_error()])
 def test_remove_knowledge_relation_wraps_write_errors(monkeypatch, error):
     def _update(page_id, properties):
