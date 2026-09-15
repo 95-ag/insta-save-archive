@@ -26,11 +26,12 @@ RULES
 5. An item whose information is already fully present adds nothing: leave the page as it is and
    do NOT list that item as folded.
 6. Prefer bulleted lists for steps, cues and sequences over dense paragraphs.
-7. End every entry with its source link(s). Link text is the item's EXACT TITLE, never the word
-   "watch". Join multiple with ` · `. Do not write a "Sources:" label.
+7. End every entry you add or change with its source link(s). Link text is the item's EXACT
+   TITLE, never the word "watch". Join multiple with ` · `. Do not write a "Sources:" label.
    - REFERENCE (the summary already conveys it): `🔗 [exact title](url)`
    - MUST-WATCH (a technique you must SEE performed): `🎬 **Watch:** [exact title](url)`
    Judge must-watch per item from what the item is, not from whether it has a transcript.
+   If an item has no title, use its source_id as the link text. If an item has no url, cite it without a link.
 8. Do not invent facts, URLs, version numbers or tool names beyond what the summaries say.
 9. After the sections, output ONE fenced json block, and nothing after it:
 

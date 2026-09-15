@@ -27,6 +27,7 @@ VISION_CAPABLE = True
 _TIMEOUT_S = 600
 _INLINE_OVERRIDE = ("\n\nIMPORTANT: Do NOT write any files. Return ONLY the JSON result as "
                     "your reply — no prose, no explanation, no markdown code fences.")
+_TEXT_OVERRIDE = "\n\nIMPORTANT: Do NOT write any files. Reply with the requested content only."
 
 
 def batch_budgets(run_cfg) -> Budgets:
@@ -49,22 +50,28 @@ def _clean_cwd() -> str:
     return d
 
 
-def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
-    """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
-    Prompt goes on stdin. ALWAYS runs from a clean cwd outside the repo so no project
-    CLAUDE.md/skills/agents are auto-discovered (~30k+ tokens saved per call). The cwd is
-    removed after the call (try/finally) so no scratch files linger; _clean_cwd() recreates
-    it on the next call, keeping prompt-cache behaviour unchanged. `add_dirs` grants the Read
-    tool access to extra directories WITHOUT loading project context — vision batches pass the
-    slide-image dirs (Claude Code confines file reads to its workspace, so the image dirs must
-    be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+def _run_claude_p(prompt: str, model: str, add_dirs=None, *, output="json") -> str:
+    """Run the claude CLI headlessly; return the assistant's final text — the JSON array
+    for output="json" (fences stripped defensively), or the raw reply text for
+    output="text" (markdown-shaped replies, e.g. a distribute consolidation, where fence
+    stripping would corrupt a trailing fenced JSON trailer). Prompt goes on stdin. ALWAYS
+    runs from a clean cwd outside the repo so no project CLAUDE.md/skills/agents are
+    auto-discovered (~30k+ tokens saved per call). The cwd is removed after the call
+    (try/finally) so no scratch files linger; _clean_cwd() recreates it on the next call,
+    keeping prompt-cache behaviour unchanged. `add_dirs` grants the Read tool access to
+    extra directories WITHOUT loading project context — vision batches pass the
+    slide-image dirs (Claude Code confines file reads to its workspace, so the image dirs
+    must be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+    if output not in ("json", "text"):
+        raise ValueError(f"_run_claude_p: unknown output mode {output!r}")
+    override = _INLINE_OVERRIDE if output == "json" else _TEXT_OVERRIDE
     cmd = ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"]
     for d in add_dirs or []:
         cmd += ["--add-dir", d]
     cwd = _clean_cwd()
     try:
         proc = subprocess.run(
-            cmd, input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True,
+            cmd, input=prompt + override, capture_output=True, text=True,
             timeout=_TIMEOUT_S, cwd=cwd,
         )
     finally:
@@ -85,6 +92,8 @@ def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
         # is_terminal_error classifier sees the auth wording and stops instead of retrying.
         raise RuntimeError(f"claude -p error: {str(envelope.get('result') or envelope)[:500]}")
     text = envelope["result"]
+    if output == "text":
+        return text.strip()
     # spike showed no fences in practice; strip defensively (harmless if absent)
     return text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
@@ -103,8 +112,9 @@ def consolidate(prompt: str, model: str) -> str:
     """Raw response text for a distribute consolidation prompt.
 
     Deliberately unparsed: the reply is markdown with a JSON trailer, not a JSON object, so
-    parse_results_object would be wrong here. The stage's parse_proposal handles it."""
-    return _run_claude_p(prompt, model)
+    parse_results_object would be wrong here. Uses text mode — the JSON-mode fence-stripping
+    would corrupt the trailing fenced JSON trailer. The stage's parse_proposal handles it."""
+    return _run_claude_p(prompt, model, output="text")
 
 
 def fill(env, run_cfg, enrich_dir) -> FillResult:

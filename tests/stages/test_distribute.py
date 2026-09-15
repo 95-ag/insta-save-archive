@@ -537,9 +537,265 @@ def test_render_prompt_fills_every_placeholder():
 
 
 def test_render_prompt_detects_numbered_headings():
-    assert (
-        "numbers"
-        in dist.render_prompt(
-            TEMPLATE, target="X", current_md="# 1 Foundations", buckets=[]
-        ).lower()
+    out = dist.render_prompt(TEMPLATE, target="X", current_md="# 1 Foundations", buckets=[])
+    assert "mirror the same scheme" in out
+
+
+def test_render_prompt_detects_unnumbered_headings():
+    out = dist.render_prompt(TEMPLATE, target="X", current_md="# Workouts", buckets=[])
+    assert "do not add numbers" in out
+
+
+def test_render_prompt_treats_the_first_time_anchor_as_empty():
+    out = dist.render_prompt(TEMPLATE, target="Page A", current_md="# ", buckets=[])
+    assert "(empty — this page has no content yet)" in out
+    assert "(none — this page has no sections yet)" in out
+
+
+def test_render_buckets_omits_none_fields():
+    item = {
+        "page_id": "p-a",
+        "source_id": "a",
+        "title": None,
+        "summary": None,
+        "tags": ["fitness-workouts"],
+        "ig_link": None,
+        "knowledge_base": [],
+    }
+    bucket = dist.Bucket("fitness-workouts", [item])
+    out = dist.render_prompt(TEMPLATE, target="Page A", current_md="", buckets=[bucket])
+    assert "[a]" in out
+    assert "None" not in out
+
+
+def test_prompt_rule_7_covers_only_added_or_changed_entries():
+    from pathlib import Path
+
+    text = Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8")
+    assert "every entry you add or change" in text
+
+
+def test_prompt_rule_7_explains_a_missing_title_or_url():
+    from pathlib import Path
+
+    text = Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8")
+    assert "use its source_id as the link text" in text
+    assert "cite it without a link" in text
+
+
+def test_fill_leaves_an_untouched_section_byte_identical(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    current_md = "# Workouts\n- old\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
+    env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
+    reply = '# Workouts\n- new\n\n```json\n{"folded": ["a"]}\n```'
+    dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: reply,
     )
+    proposed = (d / "proposed.md").read_text()
+    assert "# Other\n- call useEffect() on mount\n- ratio 3 : 1" in proposed
+    assert "Other" not in (d / "diff.txt").read_text()
+
+
+def test_fill_leaves_an_echoed_untouched_section_byte_identical(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    current_md = "# Workouts\n- old\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
+    env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
+    reply = (
+        "# Workouts\n- new\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
+        '\n\n```json\n{"folded": ["a"]}\n```'
+    )
+    dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: reply,
+    )
+    proposed = (d / "proposed.md").read_text()
+    assert "# Other\n- call useEffect() on mount\n- ratio 3 : 1" in proposed
+    assert "Other" not in (d / "diff.txt").read_text()
+
+
+def test_fill_retries_a_reply_with_an_unknown_folded_id(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n\n```json\n{"folded": ["zzz"]}\n```',
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+    assert len(calls) == 2
+
+
+def test_fill_retries_a_reply_with_a_duplicate_folded_id(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n\n```json\n{"folded": ["a", "a"]}\n```',
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+    assert len(calls) == 2
+
+
+def test_fill_retries_a_reply_with_an_id_both_folded_and_dropped(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n\n```json\n{"folded": ["a"], '
+            '"dropped": [{"source_id": "a", "reason": "x"}]}\n```',
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+    assert len(calls) == 2
+
+
+def test_fill_retries_a_reply_with_folded_items_but_no_section(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            'no heading here\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+    assert len(calls) == 2
+
+
+def test_fill_retries_a_reply_with_a_repeated_heading(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n# W\n- b\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+    assert len(calls) == 2
+
+
+def test_fill_raises_after_three_consecutive_bad_replies(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return '# W\n- a\n\n```json\n{"folded": ["zzz"]}\n```'
+
+    with pytest.raises(RuntimeError):
+        dist.fill(
+            env,
+            target="Page A",
+            routes=ROUTES,
+            vocab=_Vocab(),
+            budgets=_Budgets(),
+            model="m",
+            template=TEMPLATE,
+            call=_call,
+            sleep=lambda s: None,
+        )
+    assert len(calls) == 3

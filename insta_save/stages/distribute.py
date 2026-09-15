@@ -342,8 +342,14 @@ def _numbering_hint(current_md) -> str:
     return "this page does not number its headings — do not add numbers"
 
 
+def _is_empty_page(current_md) -> bool:
+    """True when the page has no real content yet — the first-time anchor (`# `, an empty
+    heading with an empty body) counts as empty, not as a section named ""."""
+    return not any(heading or body for heading, body in split_sections(current_md))
+
+
 def _section_list(current_md) -> str:
-    headings = [h for h, _ in split_sections(current_md)]
+    headings = [h for h, _ in split_sections(current_md) if h]
     return "\n".join(f"- {h}" for h in headings) or "(none — this page has no sections yet)"
 
 
@@ -352,33 +358,77 @@ def _render_buckets(buckets) -> str:
     for bucket in buckets:
         lines.append(f"### BUCKET: {bucket.name}")
         for item in bucket.items:
-            lines.append(
-                f"- [{item.get('source_id')}] «{item.get('title')}» "
-                f"(url={item.get('ig_link')})\n  summary: {item.get('summary')}"
-            )
+            title = item.get("title")
+            ig_link = item.get("ig_link")
+            summary = item.get("summary")
+            head = f"- [{item.get('source_id')}]"
+            if title is not None:
+                head += f" «{title}»"
+            if ig_link is not None:
+                head += f" (url={ig_link})"
+            lines.append(head)
+            if summary is not None:
+                lines.append(f"  summary: {summary}")
         lines.append("")
     return "\n".join(lines)
 
 
 def render_prompt(template, *, target, current_md, buckets) -> str:
     """Substitute with str.replace, never str.format — the template contains literal JSON braces."""
+    current = "(empty — this page has no content yet)" if _is_empty_page(current_md) else current_md
     return (
         template.replace("{page_name}", target)
         .replace("{numbering}", _numbering_hint(current_md))
         .replace("{sections}", _section_list(current_md))
-        .replace("{current}", current_md or "(empty — this page has no content yet)")
+        .replace("{current}", current)
         .replace("{buckets}", _render_buckets(buckets))
     )
 
 
-def _fill_chunk(prompt, model, *, call, sleep, label):
-    """One consolidation call, parsed. Retries transient failures AND malformed proposals
-    (claude-p is non-deterministic and usually succeeds on retry). A terminal error —
-    auth expiry, usage limit — raises immediately; retrying those within a run is pointless."""
+def _check_reply(body, folded, dropped, known_ids) -> None:
+    """Validate a parsed proposal against the chunk it was generated for. Raises ValueError
+    (never a terminal-error marker word — see _TERMINAL_ERROR_MARKERS) from inside
+    _fill_chunk's retried region, so a bad reply is retried rather than propagated: folded/
+    dropped ids drive relation and status writes downstream, and a wrong id there is worse
+    than a slower retry."""
+    dropped_ids = [entry["source_id"] for entry in dropped]
+
+    for source_id in folded + dropped_ids:
+        if source_id not in known_ids:
+            raise ValueError(f"distribute reply: id {source_id!r} is not in this batch")
+
+    fold_seen, drop_seen = set(), set()
+    for source_id in folded:
+        if source_id in fold_seen:
+            raise ValueError(f"distribute reply: duplicate folded id {source_id!r}")
+        fold_seen.add(source_id)
+    for source_id in dropped_ids:
+        if source_id in drop_seen:
+            raise ValueError(f"distribute reply: duplicate dropped id {source_id!r}")
+        drop_seen.add(source_id)
+
+    both = fold_seen & drop_seen
+    if both:
+        raise ValueError(f"distribute reply: id(s) {sorted(both)} are both folded and dropped")
+
+    headings = [heading for heading, _ in split_sections(body)]
+    if folded and not headings:
+        raise ValueError("distribute reply: folded is non-empty but the body has no section")
+    if len(headings) != len(set(headings)):
+        raise ValueError("distribute reply: repeated section heading in the reply")
+
+
+def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
+    """One consolidation call, parsed and validated. Retries transient failures AND a
+    malformed or wrong-shaped proposal (claude-p is non-deterministic and usually succeeds
+    on retry). A terminal error — auth expiry, usage limit — raises immediately; retrying
+    those within a run is pointless."""
     last = None
     for attempt in range(1, _FILL_ATTEMPTS + 1):
         try:
-            return parse_proposal(call(prompt, model))
+            body, folded, dropped = parse_proposal(call(prompt, model))
+            _check_reply(body, folded, dropped, known_ids)
+            return body, folded, dropped
         except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
             if is_terminal_error(exc):
                 raise TerminalBackendError(
@@ -398,7 +448,10 @@ def _fill_chunk(prompt, model, *, call, sleep, label):
 
 
 def _scrub(body_md, items, current_md) -> str:
-    """Strip URLs and version tokens absent from the sources.
+    """Strip URLs and version tokens absent from the sources. Returns body_md UNCHANGED
+    when nothing was removed — scrub_fabricated's tidy regexes (collapsing empty parens,
+    space-before-punctuation) run unconditionally on the cleaned text and would otherwise
+    mutate text this call never touched.
 
     The CURRENT page body is part of the source text: without it, legitimate pre-existing
     links in prose the model reproduced would be removed as if it had invented them."""
@@ -406,8 +459,9 @@ def _scrub(body_md, items, current_md) -> str:
     for item in items:
         parts += [item.get("title"), item.get("summary"), item.get("ig_link")]
     cleaned, removed = scrub_fabricated(body_md, " ".join(p for p in parts if p))
-    if removed:
-        log.info("distribute.fill: scrubbed fabricated tokens — %s", removed)
+    if not removed:
+        return body_md
+    log.info("distribute.fill: scrubbed fabricated tokens — %s", removed)
     return cleaned
 
 
@@ -432,18 +486,32 @@ def fill(
 
     running, folded, dropped, prompts = current_md, [], [], []
     for index, chunk in enumerate(chunks, start=1):
+        known_ids = {
+            item.get("source_id")
+            for bucket in chunk
+            for item in bucket.items
+            if item.get("source_id") is not None
+        }
         prompt = render_prompt(template, target=target, current_md=running, buckets=chunk)
         prompts.append(prompt)
         body, chunk_folded, chunk_dropped = _fill_chunk(
-            prompt, model, call=call, sleep=sleep, label=f"{target} call {index}/{len(chunks)}"
+            prompt,
+            model,
+            call=call,
+            sleep=sleep,
+            label=f"{target} call {index}/{len(chunks)}",
+            known_ids=known_ids,
         )
         folded += chunk_folded
         dropped += chunk_dropped
+        # Scrub THIS chunk's reply before merging: scrubbing the final merged body would
+        # run scrub_fabricated's tidy regexes over sections the model never touched.
+        body = _scrub(body, batch["items"], running)
         # Chain on the MERGED body: the next call must see the whole page as it now stands,
         # not just the sections the previous call happened to touch.
         running = merge_sections(running, body)
 
-    proposed_md = _scrub(running, batch["items"], current_md)
+    proposed_md = running
     (d / "prompt.txt").write_text("\n\n=== NEXT CALL ===\n\n".join(prompts), encoding="utf-8")
     (d / "proposed.md").write_text(proposed_md, encoding="utf-8")
     (d / "proposal.json").write_text(

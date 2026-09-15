@@ -250,6 +250,44 @@ def test_run_claude_p_falls_back_to_stderr_when_no_envelope(monkeypatch):
     assert not is_terminal_error(ei.value)  # stays transient
 
 
-def test_consolidate_returns_raw_text(monkeypatch):
-    monkeypatch.setattr(claude_p, "_run_claude_p", lambda prompt, model: "  # Sec  ")
-    assert claude_p.consolidate("p", "claude-sonnet") == "  # Sec  "
+def test_consolidate_returns_the_reply_unstripped(monkeypatch):
+    # a real distribute reply is markdown + a fenced JSON trailer -- fence-stripping (the
+    # JSON-mode behavior) would corrupt it, so consolidate must go through text mode.
+    from insta_save.stages.distribute import parse_proposal
+    sent = {}
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps({"result": '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+                             "is_error": False})
+        stderr = ""
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["input"] = input
+        return _Proc()
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    out = claude_p.consolidate("p", "claude-sonnet")
+    assert out.endswith("```")
+    assert "Do NOT write any files" in sent["input"]
+    assert "no markdown code fences" not in sent["input"]
+    _, folded, _ = parse_proposal(out)
+    assert folded == ["a"]
+
+
+def test_run_claude_p_json_mode_still_strips_fences_and_appends_inline_override(monkeypatch):
+    sent = {}
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps({"result": "```json\n[1, 2]\n```", "is_error": False})
+        stderr = ""
+    def _fake_run(cmd, input=None, capture_output=None, text=None, timeout=None, cwd=None):
+        sent["input"] = input
+        return _Proc()
+    monkeypatch.setattr(claude_p.subprocess, "run", _fake_run)
+    out = claude_p._run_claude_p("P", "claude-sonnet")
+    assert out == "[1, 2]"
+    assert "no markdown code fences" in sent["input"]
+
+
+def test_run_claude_p_rejects_an_unknown_output_mode():
+    import pytest
+    with pytest.raises(ValueError):
+        claude_p._run_claude_p("P", "claude-sonnet", output="bogus")
