@@ -207,6 +207,7 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --retry-failed        # reprocess items currently in Failed
           --fresh               # force a current re-crawl (incremental mode)
           --apply               # apply a staged result: enrich (session backends) results.json, or a reviewed distribute proposal
+          --yes                 # distribute --apply only: skip the confirmation prompt
           --dry-run             # compute the plan, no writes
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
@@ -283,12 +284,22 @@ and stages `tmp/distribute/<slug>/` — including `diff.txt` (the per-section un
 and `proposed.md` (hand-editable before applying). Re-running the first command discards whatever
 is staged, **including a hand-edited `proposed.md`** — apply your edits before restaging.
 
-The second re-reads the live page, aborts if it changed since staging, then writes the reviewed
-sections and marks items `Distributed` (folded in, or skipped as a pure duplicate) or `Misrouted`
-(dropped as off-topic — its tags need fixing). It refuses, before writing anything, to rewrite a
-section it can't safely replace (one holding blocks the diff can't show, or nested blocks). A
-folded item whose link isn't on the applied page is left `Routed` for the next run and reported
-as a count.
+Both commands print a change summary first: each changed section (new/replaced, lines added/
+removed), then the items to check by hand — dropped (with reason), not mentioned (will be marked
+`Distributed` with a duplicate-skip note), and folded items whose link is missing (will stay
+`Routed`). Staging prints this summary and stops — nothing is written to the page yet.
+
+`--apply` prints the same summary, then asks: **Apply these changes** / **Show the full diff** /
+**Cancel — write nothing**. Cancelling (or Ctrl-C) writes nothing and keeps the staged files for
+next time. Pass `--yes` to skip the prompt for scripted use; without it, a non-interactive run
+(no terminal attached) refuses to apply rather than write unattended.
+
+Once you confirm, apply re-reads the live page, aborts if it changed since staging, then writes
+the reviewed sections and marks items `Distributed` (folded in, or skipped as a pure duplicate) or
+`Misrouted` (dropped as off-topic — its tags need fixing). It refuses, before writing anything, to
+rewrite a section it can't safely replace (one holding blocks the diff can't show, or nested
+blocks). A folded item whose link isn't on the applied page is left `Routed` for the next run and
+reported as a count.
 
 Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 
