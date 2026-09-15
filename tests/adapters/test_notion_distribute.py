@@ -349,16 +349,28 @@ REBUILD_FILTER = {
         {
             "and": [
                 {"property": "route_target", "select": {"equals": "Page A"}},
-                {
-                    "or": [
-                        {"property": "status", "select": {"equals": "Distributed"}},
-                        {"property": "status", "select": {"equals": "Misrouted"}},
-                    ]
-                },
+                {"property": "status", "select": {"equals": "Distributed"}},
+            ]
+        },
+        {
+            "and": [
+                {"property": "route_target", "select": {"equals": "Page A"}},
+                {"property": "status", "select": {"equals": "Misrouted"}},
             ]
         },
     ]
 }
+
+
+def _compound_filter_depth(node) -> int:
+    """Recursively measure and/or nesting depth. Notion's API allows compound filters
+    (and/or) to nest at most two levels deep — a leaf property filter contributes 0."""
+    if not isinstance(node, dict):
+        return 0
+    for key in ("and", "or"):
+        if key in node:
+            return 1 + max((_compound_filter_depth(child) for child in node[key]), default=0)
+    return 0
 
 
 def test_query_items_for_rebuild_sends_the_scope_filter_and_paginates(monkeypatch):
@@ -407,6 +419,28 @@ def test_query_items_for_rebuild_maps_the_fields(monkeypatch):
             "knowledge_base": [],
         },
     ]
+
+
+def test_query_items_for_rebuild_filter_nests_at_most_two_levels(monkeypatch):
+    seen = []
+
+    def _query(ds, **kw):
+        seen.append(kw)
+        return {"results": [], "has_more": False}
+
+    _patch(monkeypatch, types.SimpleNamespace(data_sources=types.SimpleNamespace(query=_query)))
+    notion.query_items_for_rebuild(_Env(), "Page A", "kp")
+    assert _compound_filter_depth(seen[0]["filter"]) <= 2
+
+
+@pytest.mark.parametrize("error", [RequestTimeoutError(), httpx.ConnectError("boom"), _api_error()])
+def test_query_items_for_rebuild_wraps_notion_errors(monkeypatch, error):
+    def _query(ds, **kw):
+        raise error
+
+    _patch(monkeypatch, types.SimpleNamespace(data_sources=types.SimpleNamespace(query=_query)))
+    with pytest.raises(RuntimeError, match="failed to query rebuild items"):
+        notion.query_items_for_rebuild(_Env(), "Page A", "kp")
 
 
 def _relation_pages(relation, updates, *, has_more=False):

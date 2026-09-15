@@ -777,29 +777,39 @@ def query_items_for_rebuild(env: EnvConfig, target: str, page_id: str) -> list:
 
     The relation arm catches an item whose route_target has since moved; the status arm
     catches skipped and dropped items, which never got a relation. Routed items are
-    deliberately out of scope — nothing of theirs is on the page."""
+    deliberately out of scope — nothing of theirs is on the page.
+
+    Notion's compound filters (and/or) nest at most two levels deep, so the two settled
+    statuses are each their own `route_target`+`status` branch of the top-level `or`
+    rather than a nested `or` inside an `and` (a third level, which Notion rejects)."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
-    settled = {"or": [{"property": "status", "select": {"equals": "Distributed"}},
-                      {"property": "status", "select": {"equals": "Misrouted"}}]}
-    flt = {"or": [{"property": "Knowledge Base", "relation": {"contains": page_id}},
-                  {"and": [{"property": "route_target", "select": {"equals": target}}, settled]}]}
+    flt = {"or": [
+        {"property": "Knowledge Base", "relation": {"contains": page_id}},
+        {"and": [{"property": "route_target", "select": {"equals": target}},
+                 {"property": "status", "select": {"equals": "Distributed"}}]},
+        {"and": [{"property": "route_target", "select": {"equals": target}},
+                 {"property": "status", "select": {"equals": "Misrouted"}}]},
+    ]}
     items, cursor = [], None
-    while True:
-        kwargs = {"filter": flt, "page_size": 100}
-        if cursor:
-            kwargs["start_cursor"] = cursor
-        resp = client.data_sources.query(ds_id, **kwargs)
-        for page in resp.get("results", []):
-            row = _distribute_row(page)
-            status = (page.get("properties", {}).get("status", {}).get("select") or {}).get("name")
-            items.append({"page_id": row["page_id"], "source_id": row["source_id"],
-                          "title": row["title"], "status": status,
-                          "knowledge_base": row["knowledge_base"]})
-        if not resp.get("has_more"):
-            break
-        cursor = resp.get("next_cursor")
+    try:
+        while True:
+            kwargs = {"filter": flt, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = client.data_sources.query(ds_id, **kwargs)
+            for page in resp.get("results", []):
+                row = _distribute_row(page)
+                status = (page.get("properties", {}).get("status", {}).get("select") or {}).get("name")
+                items.append({"page_id": row["page_id"], "source_id": row["source_id"],
+                              "title": row["title"], "status": status,
+                              "knowledge_base": row["knowledge_base"]})
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
+    except _DISTRIBUTE_WRITE_ERRORS as e:
+        raise RuntimeError(f"notion: failed to query rebuild items for {target!r}: {e}") from e
     return items
 
 
