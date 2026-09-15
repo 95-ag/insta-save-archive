@@ -390,7 +390,12 @@ def _check_reply(body, folded, dropped, known_ids) -> None:
     (never a terminal-error marker word — see _TERMINAL_ERROR_MARKERS) from inside
     _fill_chunk's retried region, so a bad reply is retried rather than propagated: folded/
     dropped ids drive relation and status writes downstream, and a wrong id there is worse
-    than a slower retry."""
+    than a slower retry.
+
+    Also rejects a reply shape that would silently lose content: split_sections drops
+    everything before the first heading, so an empty heading (content with no name to join
+    on) or unclaimed text ahead of the first heading (when folded ids say something WAS
+    folded in) must fail loud instead of vanishing."""
     dropped_ids = [entry["source_id"] for entry in dropped]
 
     for source_id in folded + dropped_ids:
@@ -411,11 +416,21 @@ def _check_reply(body, folded, dropped, known_ids) -> None:
     if both:
         raise ValueError(f"distribute reply: id(s) {sorted(both)} are both folded and dropped")
 
-    headings = [heading for heading, _ in split_sections(body)]
+    sections = split_sections(body)
+    if any(not heading for heading, _ in sections):
+        raise ValueError("distribute reply: a section has an empty heading")
+
+    headings = [heading for heading, _ in sections]
     if folded and not headings:
         raise ValueError("distribute reply: folded is non-empty but the body has no section")
     if len(headings) != len(set(headings)):
         raise ValueError("distribute reply: repeated section heading in the reply")
+
+    if folded:
+        lines = body.splitlines()
+        first_heading = next(i for i, line in enumerate(lines) if line.startswith("# "))
+        if "\n".join(lines[:first_heading]).strip():
+            raise ValueError("distribute reply: content before the first heading would be dropped")
 
 
 def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
@@ -448,21 +463,38 @@ def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
 
 
 def _scrub(body_md, items, current_md) -> str:
-    """Strip URLs and version tokens absent from the sources. Returns body_md UNCHANGED
-    when nothing was removed — scrub_fabricated's tidy regexes (collapsing empty parens,
-    space-before-punctuation) run unconditionally on the cleaned text and would otherwise
-    mutate text this call never touched.
+    """Strip URLs and version tokens absent from the sources, one line at a time.
+
+    scrub_fabricated's tidy regexes (collapsing empty parens, space-before-punctuation) run
+    over the WHOLE cleaned text whenever anything was removed. Run over a multi-line body,
+    that rewrites hand-written lines that had nothing fabricated on them at all
+    (`useEffect()` -> `useEffect`, `3 : 1` -> `3: 1`) — enough to make an echoed untouched
+    section look different from the current page and get rewritten. Scrubbing line by line
+    confines that side effect to only the lines actually cleaned.
 
     The CURRENT page body is part of the source text: without it, legitimate pre-existing
     links in prose the model reproduced would be removed as if it had invented them."""
     parts = [current_md]
     for item in items:
         parts += [item.get("title"), item.get("summary"), item.get("ig_link")]
-    cleaned, removed = scrub_fabricated(body_md, " ".join(p for p in parts if p))
-    if not removed:
+    source = " ".join(p for p in parts if p)
+
+    removed_all, cleaned_lines = [], []
+    for line in body_md.splitlines():
+        cleaned, removed = scrub_fabricated(line, source)
+        if removed:
+            cleaned_lines.append(cleaned.rstrip())
+            removed_all += removed
+        else:
+            cleaned_lines.append(line)
+    if not removed_all:
         return body_md
-    log.info("distribute.fill: scrubbed fabricated tokens — %s", removed)
-    return cleaned
+
+    result = "\n".join(cleaned_lines)
+    if body_md.endswith("\n"):
+        result += "\n"
+    log.info("distribute.fill: scrubbed fabricated tokens — %s", removed_all)
+    return result
 
 
 def fill(
