@@ -412,6 +412,58 @@ def test_route_dispatches_dry_run(monkeypatch):
     assert calls["kwargs"]["dry_run"] is True
 
 
+def test_route_reroute_dispatches_to_reroute_stage_not_route_stage(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong stage fn")))
+    calls = {}
+
+    def _fake_run_reroute(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                          dry_run=False, write_delay=0.0):
+        calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
+        return {"rerouted": 2, "unrouted": 1, "unchanged": 3, "failed": 0,
+                "moves": {("Old", "New"): 2, ("Old", None): 1}}
+    monkeypatch.setattr(route_mod, "run_reroute_stage", _fake_run_reroute)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["dry_run"] is False
+    out = capsys.readouterr().out
+    assert "2 rerouted" in out and "1 back to Tagged" in out and "3 unchanged" in out
+    assert "Old → New : 2" in out
+    assert "Old → Tagged : 1" in out
+
+
+def test_route_reroute_dry_run_marks_summary(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+
+    def _fake_run_reroute(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                          dry_run=False, write_delay=0.0):
+        calls["kwargs"] = {"dry_run": dry_run}
+        return {"rerouted": 0, "unrouted": 0, "unchanged": 0, "failed": 0, "moves": {}}
+    monkeypatch.setattr(route_mod, "run_reroute_stage", _fake_run_reroute)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute", "--dry-run"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["dry_run"] is True
+    assert "(dry-run)" in capsys.readouterr().out
+
+
+def test_route_without_reroute_still_uses_route_stage(monkeypatch):
+    """--reroute defaults to False; a plain route run must not call run_reroute_stage."""
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong stage fn")))
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 1, "unrouted": 0, "failed": 0})
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+
+
 # ---------------------------------------------------------------------------
 # backup CLI tests
 # ---------------------------------------------------------------------------

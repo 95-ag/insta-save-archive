@@ -121,6 +121,20 @@ def _format_rebuild_preview(preview) -> str:
     return "\n".join(lines)
 
 
+def _format_reroute_summary(r: dict, dry_run: bool) -> str:
+    """Render a run_reroute_stage result: the headline counts, then one line per
+    old -> new move so a reviewer can confirm only the intended items shifted."""
+    suffix = " (dry-run)" if dry_run else ""
+    lines = [
+        f"Reroute: {r.get('rerouted', 0)} rerouted, {r.get('unrouted', 0)} back to Tagged "
+        f"(no route), {r.get('unchanged', 0)} unchanged{suffix}."
+    ]
+    moves = r.get("moves", {})
+    for (old, new), count in sorted(moves.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")):
+        lines.append(f"  {old} → {new or 'Tagged'} : {count}")
+    return "\n".join(lines)
+
+
 _STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
                 "Failed", "remaining")
 
@@ -178,6 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="distribute: the route_target page name to ingest into")
     run.add_argument("--rebuild", action="store_true",
                      help="distribute: reset --target to its template and its items to Tagged")
+    run.add_argument("--reroute", action="store_true",
+                     help="route: re-evaluate already-Routed items against the current routes.json")
     run.add_argument("--yes", action="store_true",
                      help="skip the distribute apply/rebuild confirmation")
 
@@ -446,10 +462,17 @@ def dispatch_run(args) -> None:
         env = _guard(_load_env)
         collections_cfg = _guard(_load_collections)
         ensure_schema(env)
-        from insta_save.stages.route import run_route_stage
+        from insta_save.stages.route import run_route_stage, run_reroute_stage
         routes = load_routes()
         log_path = setup_logging("route")
         print(f"Logging to {_rel(log_path)}")
+        if args.reroute:
+            with StageProgress("Reroute") as progress:
+                r = run_reroute_stage(env, routes, collections_cfg, progress,
+                                      limit=args.limit, group=args.group, dry_run=args.dry_run,
+                                      write_delay=0 if args.dry_run else env.notion_write_delay)
+            print(_format_reroute_summary(r, args.dry_run))
+            return
         with StageProgress("Route") as progress:
             r = run_route_stage(env, routes, collections_cfg, progress,
                                 limit=args.limit, group=args.group, dry_run=args.dry_run,

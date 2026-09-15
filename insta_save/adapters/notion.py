@@ -224,6 +224,7 @@ def _row(page: dict) -> dict:
     type_select = props.get("type", {}).get("select") or {}
     collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
     tags = [t["name"] for t in props.get("tags", {}).get("multi_select", [])]
+    route_select = props.get("route_target", {}).get("select") or {}
     return {
         "page_id": page["id"],
         "source_id": sid_blocks[0]["text"]["content"] if sid_blocks else None,
@@ -232,6 +233,7 @@ def _row(page: dict) -> dict:
         "type": type_select.get("name"),
         "collections": collections,
         "tags": tags,
+        "route_target": route_select.get("name"),
     }
 
 
@@ -408,6 +410,23 @@ def write_route(env: EnvConfig, page_id: str, route_target: str) -> None:
         log.info("notion: routed page %s -> %s", page_id, route_target)
     except APIResponseError as e:
         raise RuntimeError(f"notion: failed to route {page_id}: {e}") from e
+
+
+def write_unroute(env: EnvConfig, page_id: str) -> None:
+    """A Routed item whose route re-evaluates to no mapping -> back to Tagged,
+    route_target cleared. Used by route --reroute; distribute/rebuild state is untouched
+    (a Routed item never carries any)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Tagged"),
+        "route_target": {"select": None},
+    }
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: unrouted page %s -> Tagged", page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to unroute {page_id}: {e}") from e
 
 
 def create_page(env: EnvConfig, metadata: dict) -> str:

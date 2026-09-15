@@ -229,6 +229,45 @@ def test_row_tags_defaults_to_empty_list():
     assert notion._row(page)["tags"] == []
 
 
+def test_row_includes_route_target():
+    page = {"id": "p5", "properties": {
+        "route_target": {"select": {"name": "ToolsDB"}},
+    }}
+    assert notion._row(page)["route_target"] == "ToolsDB"
+
+
+def test_row_route_target_none_when_absent():
+    page = {"id": "p6", "properties": {}}
+    assert notion._row(page)["route_target"] is None
+
+
+def test_write_unroute_sets_tagged_status_and_clears_route_target(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.write_unroute(env, "pg42")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg42"
+    assert props["status"]["select"]["name"] == "Tagged"
+    assert props["route_target"] == {"select": None}
+    # write_unroute must NOT touch title/summary/tags/distribute fields
+    assert "title" not in props and "tags" not in props
+    assert "distribute_notes" not in props and "distribute_version" not in props
+
+
 def test_requeue_sets_status_and_clears_failure_notes(monkeypatch):
     captured = {}
 
