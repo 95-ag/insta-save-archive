@@ -43,6 +43,31 @@ def _is_video_poster(src: str) -> bool:
     return bool(_VIDEO_POSTER_RE.search(src or ""))
 
 
+# Media id = first numeric segment after the CDN path (/v/t39.30808-6/<media_id>_...).
+_MEDIA_ID_RE = re.compile(r"/t\d+\.[\d-]+/(\d+)_")
+
+
+def _ogimage_fallback_url(og_image: str | None, imgs: list[dict]) -> str | None:
+    """Fallback content-image URL for a Post whose `-15` scan found nothing — e.g. the content
+    image is served on the t39.30808-6 CDN path, which `_is_content_image` (t51.*-15) misses.
+
+    Uses the `og:image` meta (authoritative for the post) to get the media id, then returns the
+    LARGEST on-page <img> sharing that id (full resolution; avoids the "More posts from…" feed-grid
+    images, which have different ids). Falls back to the og:image URL itself, else None.
+
+    imgs: [{"src": str, "w": int, "h": int}, ...] from document.images. Pure — unit-tested."""
+    if not og_image:
+        return None
+    m = _MEDIA_ID_RE.search(og_image)
+    if m:
+        media_id = m.group(1)
+        matches = [i for i in imgs if media_id in (i.get("src") or "")]
+        if matches:
+            best = max(matches, key=lambda i: (i.get("w") or 0) * (i.get("h") or 0))
+            return best.get("src") or og_image
+    return og_image
+
+
 # --- pure, unit-tested ------------------------------------------------------
 def ocr_score(rapid_result) -> tuple[str, float | None]:
     """From a RapidOCR result ([[box, text, score], ...]) -> (joined_text, mean_confidence|None)."""
@@ -217,8 +242,20 @@ def extract_post(
 
         urls = _content_image_urls(page, scope="img")
         if not urls:
-            log.warning("ocr: post %s — no content image found", shortcode)
-            return []
+            # Some Posts serve the content image on the t39.30808-6 CDN path (not t51.*-15), so the
+            # marker scan finds nothing. Fall back to the og:image meta's media id -> the largest
+            # on-page <img> with that id (full res, skips the "More posts" feed grid).
+            og = page.evaluate(
+                "() => (document.querySelector(\"meta[property='og:image']\") || {}).content || null")
+            imgs = page.evaluate(
+                "() => Array.from(document.images).map(i => "
+                "({src: i.currentSrc || i.src, w: i.naturalWidth, h: i.naturalHeight}))")
+            fallback = _ogimage_fallback_url(og, imgs)
+            if not fallback:
+                log.warning("ocr: post %s — no content image (no -15 img, no og:image)", shortcode)
+                return []
+            log.info("ocr: post %s — -15 scan empty; using og:image fallback", shortcode)
+            urls = [fallback]
 
         dest = slides_dir / "slide1.jpg"
         _download_image(urls[0], str(dest), cookie_header)

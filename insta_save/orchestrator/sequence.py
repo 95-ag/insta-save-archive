@@ -186,7 +186,7 @@ def compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes) -> Plan:
         collections_cfg: CollectionsConfig with .groups ordering + group_of/enrich_group.
         vocab:           Vocab with .has_group(group) -> bool.
         backend:         backend module with .AUTOMATED: bool and .NAME: str.
-        routes:          Routes with .by_tag/.by_collection/.by_group dicts.
+        routes:          Routes with .by_tag (ordered [tag, target] list) + .by_collection/.by_group dicts.
 
     Returns:
         Plan with per-group steps in collections_cfg.groups order, next_action, and done flag.

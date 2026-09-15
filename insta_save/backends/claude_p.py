@@ -69,11 +69,21 @@ def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
         )
     finally:
         shutil.rmtree(cwd, ignore_errors=True)  # don't leave the scratch cwd behind
-    if proc.returncode != 0:
+    envelope = None
+    try:
+        parsed = json.loads(proc.stdout)
+        if isinstance(parsed, dict):
+            envelope = parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    if envelope is None:
+        # No JSON envelope on stdout (killed process, network drop): use exit code + stderr.
         raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr[:500]}")
-    envelope = json.loads(proc.stdout)
-    if envelope.get("is_error"):
-        raise RuntimeError(f"claude -p error envelope: {str(envelope)[:500]}")
+    if proc.returncode != 0 or envelope.get("is_error"):
+        # The CLI's real error text lives in the envelope's `result` (e.g. an expired-OAuth
+        # 401), NOT stderr — stderr is empty on auth failure. Surface `result` so the caller's
+        # is_terminal_error classifier sees the auth wording and stops instead of retrying.
+        raise RuntimeError(f"claude -p error: {str(envelope.get('result') or envelope)[:500]}")
     text = envelope["result"]
     # spike showed no fences in practice; strip defensively (harmless if absent)
     return text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

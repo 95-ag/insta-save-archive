@@ -666,7 +666,7 @@ def _patch_mode_dispatch(monkeypatch, plan, mode="first-time", dry_run=False):
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "get_backend", lambda name: backend)
     monkeypatch.setattr(isa, "load_routes", lambda: _types_mod.SimpleNamespace(
-        by_tag={}, by_collection={}, by_group={}))
+        by_tag=[], by_collection={}, by_group={}))
     monkeypatch.setattr(isa, "setup_logging", lambda name: "logs/run-20260101_000000.log")
     monkeypatch.setattr(isa, "preflight", lambda env, run_cfg, stages: None)
     monkeypatch.setattr(isa, "build_status",

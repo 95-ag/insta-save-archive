@@ -13,7 +13,7 @@ def _item(pid="p1", tags=None, collections=None):
 def test_route_item_routes_on_tag(monkeypatch):
     written = {}
     monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
-    routes = Routes(by_tag={"tool": "ToolsDB"})
+    routes = Routes(by_tag=[("tool", "ToolsDB")])
     assert route._route_item(None, _item(tags=["tool"]), routes, _Cfg()) == "routed"
     assert written == {"p1": "ToolsDB"}
 
@@ -25,7 +25,7 @@ def test_route_item_unrouted_when_no_mapping(monkeypatch):
 
 def test_route_item_dry_run_does_not_write(monkeypatch):
     monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
-    assert route._route_item(None, _item(tags=["tool"]), Routes(by_tag={"tool": "T"}), _Cfg(), dry_run=True) == "routed"
+    assert route._route_item(None, _item(tags=["tool"]), Routes(by_tag=[("tool", "T")]), _Cfg(), dry_run=True) == "routed"
 
 
 def test_route_item_routes_on_collection(monkeypatch):
@@ -48,7 +48,7 @@ def test_route_item_routes_on_group(monkeypatch):
 def test_route_item_tag_wins_over_collection(monkeypatch):
     written = {}
     monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
-    routes = Routes(by_tag={"tool": "TagDB"}, by_collection={"a-coll": "CollDB"})
+    routes = Routes(by_tag=[("tool", "TagDB")], by_collection={"a-coll": "CollDB"})
     assert route._route_item(None, _item(tags=["tool"], collections=["a-coll"]), routes, _Cfg()) == "routed"
     assert written == {"p1": "TagDB"}
 

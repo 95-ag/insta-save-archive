@@ -32,6 +32,9 @@ _TERMINAL_ERROR_MARKERS = (
     "please run /login",
     "invalid api key",
     "authentication",
+    "authenticate",             # "failed to authenticate" / "re-authenticate" (OAuth expiry)
+    "oauth",
+    "access token has expired",
     "credit balance",
 )
 
@@ -80,13 +83,13 @@ def parse_results_array(text: str) -> list:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     try:
-        data = json.loads(stripped)
+        data = json.loads(stripped, strict=False)  # tolerate raw control chars in model strings
     except json.JSONDecodeError:
         # model wrapped the array in prose — pull out the outermost [...]
         start, end = stripped.find("["), stripped.rfind("]")
         if start == -1 or end <= start:
             raise ValueError(f"no JSON array found in model output: {stripped[:200]!r}")
-        data = json.loads(stripped[start:end + 1])
+        data = json.loads(stripped[start:end + 1], strict=False)
     if not isinstance(data, list):
         raise ValueError(f"expected a JSON array, got {type(data).__name__}")
     return data
@@ -105,13 +108,13 @@ def parse_results_object(text: str) -> dict:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     try:
-        data = json.loads(stripped)
+        data = json.loads(stripped, strict=False)  # tolerate raw control chars in model strings
     except json.JSONDecodeError:
         # model wrapped the object in prose — pull out the outermost {...}
         start, end = stripped.find("{"), stripped.rfind("}")
         if start == -1 or end <= start:
             raise ValueError(f"no JSON object found in model output: {stripped[:200]!r}")
-        data = json.loads(stripped[start:end + 1])
+        data = json.loads(stripped[start:end + 1], strict=False)
     if not isinstance(data, dict):
         raise ValueError(f"expected a JSON object, got {type(data).__name__}")
     return data
