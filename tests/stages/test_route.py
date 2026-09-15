@@ -132,6 +132,20 @@ def test_reroute_item_unrouted_when_no_mapping_writes_unroute(monkeypatch):
     assert moves == {("OldDB", None): 1}
 
 
+def test_reroute_item_none_target_and_none_current_still_unroutes(monkeypatch):
+    """A Routed item stuck with route_target already None must not be 'unchanged' forever
+    — if it still resolves to no route, it goes back to Tagged so distribute isn't
+    perpetually blind to it."""
+    unrouted = {}
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("should not route")))
+    monkeypatch.setattr(route, "write_unroute", lambda env, page_id: unrouted.update({page_id: True}))
+    moves = {}
+    item = _routed_item(tags=["x"], route_target=None)
+    assert route._reroute_item(None, item, Routes(), _Cfg(), moves) == "unrouted"
+    assert unrouted == {"p1": True}
+    assert moves == {(None, None): 1}
+
+
 def test_reroute_item_dry_run_does_not_write(monkeypatch):
     monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
     monkeypatch.setattr(route, "write_unroute", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
@@ -149,6 +163,56 @@ def test_reroute_item_counts_repeated_moves(monkeypatch):
     route._reroute_item(None, _routed_item(pid="p1", tags=["tool"], route_target="OldDB"), routes, _Cfg(), moves)
     route._reroute_item(None, _routed_item(pid="p2", tags=["tool"], route_target="OldDB"), routes, _Cfg(), moves)
     assert moves == {("OldDB", "NewDB"): 2}
+
+
+# ---------------------------------------------------------------------------
+# R5 fix 3: stale-read guard around the real write
+# ---------------------------------------------------------------------------
+
+def test_reroute_item_guarded_dry_run_makes_no_retrieve_call(monkeypatch):
+    monkeypatch.setattr(route, "get_item_status",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("dry-run read status")))
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
+    routes = Routes(by_tag=[("tool", "NewDB")])
+    moves = {}
+    item = _routed_item(tags=["tool"], route_target="OldDB")
+    assert route._reroute_item_guarded(None, item, routes, _Cfg(), moves, dry_run=True) == "rerouted"
+    assert moves == {("OldDB", "NewDB"): 1}
+
+
+def test_reroute_item_guarded_unchanged_makes_no_retrieve_call(monkeypatch):
+    monkeypatch.setattr(route, "get_item_status",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("unchanged read status")))
+    routes = Routes(by_tag=[("tool", "ToolsDB")])
+    moves = {}
+    item = _routed_item(tags=["tool"], route_target="ToolsDB")
+    assert route._reroute_item_guarded(None, item, routes, _Cfg(), moves) == "unchanged"
+    assert moves == {}
+
+
+def test_reroute_item_guarded_skips_stale_candidate_with_no_write(monkeypatch):
+    """A candidate whose live status has already moved past Routed (e.g. distribute
+    settled it) is skipped — no write, no move recorded."""
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Distributed")
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("should not write")))
+    monkeypatch.setattr(route, "write_unroute", lambda *a: (_ for _ in ()).throw(AssertionError("should not write")))
+    routes = Routes(by_tag=[("tool", "NewDB")])
+    moves = {}
+    item = _routed_item(tags=["tool"], route_target="OldDB")
+    assert route._reroute_item_guarded(None, item, routes, _Cfg(), moves) == "skipped_stale"
+    assert moves == {}
+
+
+def test_reroute_item_guarded_writes_when_still_routed(monkeypatch):
+    written = {}
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Routed")
+    monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
+    routes = Routes(by_tag=[("tool", "NewDB")])
+    moves = {}
+    item = _routed_item(tags=["tool"], route_target="OldDB")
+    assert route._reroute_item_guarded(None, item, routes, _Cfg(), moves) == "rerouted"
+    assert written == {"p1": "NewDB"}
+    assert moves == {("OldDB", "NewDB"): 1}
 
 
 def test_run_reroute_stage_reads_routed_status(monkeypatch):
@@ -217,6 +281,9 @@ def test_run_reroute_stage_returns_counts_and_moves(monkeypatch):
     monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
     monkeypatch.setattr(route, "write_route", lambda *a: None)
     monkeypatch.setattr(route, "write_unroute", lambda *a: None)
+    # run_reroute_stage now drives _reroute_item_guarded, which re-reads live status
+    # before a real write (R5 fix 3) — every item here is still genuinely Routed.
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Routed")
 
     r = route.run_reroute_stage(None, routes, _Cfg(), None)
     assert r["rerouted"] == 1 and r["unchanged"] == 1 and r["unrouted"] == 1 and r["failed"] == 0

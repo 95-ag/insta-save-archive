@@ -425,14 +425,59 @@ def test_route_reroute_dispatches_to_reroute_stage_not_route_stage(monkeypatch, 
                 "moves": {("Old", "New"): 2, ("Old", None): 1}}
     monkeypatch.setattr(route_mod, "run_reroute_stage", _fake_run_reroute)
 
-    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "route", "--reroute", "--group", "Biz", "--limit", "5"])
     isa.dispatch_run(args)
 
     assert calls["kwargs"]["dry_run"] is False
+    assert calls["kwargs"]["limit"] == 5
+    assert calls["kwargs"]["group"] == "Biz"
     out = capsys.readouterr().out
     assert "2 rerouted" in out and "1 back to Tagged" in out and "3 unchanged" in out
     assert "Old → New : 2" in out
     assert "Old → Tagged : 1" in out
+
+
+def test_route_reroute_summary_includes_failed_when_nonzero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 2, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "2 failed" in capsys.readouterr().out
+
+
+def test_route_reroute_summary_omits_failed_when_zero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "failed" not in capsys.readouterr().out
+
+
+def test_route_reroute_summary_includes_skipped_stale_when_nonzero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 0, "unrouted": 0, "unchanged": 0,
+                                         "skipped_stale": 3, "failed": 0, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "3 skipped (stale)" in capsys.readouterr().out
+
+
+def test_route_reroute_summary_formats_missing_previous_target_as_none_marker(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 0, "unrouted": 1, "unchanged": 0,
+                                         "failed": 0, "moves": {(None, "NewDB"): 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "(none) → NewDB : 1" in out
+    assert "None → NewDB" not in out
 
 
 def test_route_reroute_dry_run_marks_summary(monkeypatch, capsys):

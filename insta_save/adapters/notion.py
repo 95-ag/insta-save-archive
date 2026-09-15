@@ -239,7 +239,7 @@ def _row(page: dict) -> dict:
 
 def query_by_status(env: EnvConfig, status: str) -> list[dict]:
     """Pages where status==status. Paginates.
-    Each row: {page_id, source_id, author, ig_link, type, collections}."""
+    Each row: {page_id, source_id, author, ig_link, type, collections, tags, route_target}."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)
@@ -255,6 +255,21 @@ def query_by_status(env: EnvConfig, status: str) -> list[dict]:
             break
         cursor = resp.get("next_cursor")
     return results
+
+
+def get_item_status(env: EnvConfig, page_id: str) -> str | None:
+    """Live status of one page, read fresh with pages.retrieve rather than trusted from a
+    possibly-stale query index. Used by route --reroute to re-verify an item is still
+    Routed immediately before a write, guarding against a concurrent status change (e.g.
+    a distribute apply settling the same item mid-run) that the index hasn't caught up to
+    yet. Unwrapped like the other readers (query_by_status, get_page_content, …): a
+    failure here propagates to the caller, which for run_reroute_stage is the stage
+    runner's own failure counting."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    page = client.pages.retrieve(page_id=page_id)
+    select = page.get("properties", {}).get("status", {}).get("select") or {}
+    return select.get("name")
 
 
 def mark_failed(env: EnvConfig, page_id: str, notes: str) -> None:

@@ -268,6 +268,38 @@ def test_write_unroute_sets_tagged_status_and_clears_route_target(monkeypatch):
     assert "distribute_notes" not in props and "distribute_version" not in props
 
 
+def test_get_item_status_reads_live_status(monkeypatch):
+    class _Pages:
+        def retrieve(self, page_id):
+            return {"properties": {"status": {"select": {"name": "Distributed"}}}}
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    assert notion.get_item_status(env, "pg42") == "Distributed"
+
+
+def test_get_item_status_none_when_status_missing(monkeypatch):
+    class _Pages:
+        def retrieve(self, page_id):
+            return {"properties": {}}
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    assert notion.get_item_status(env, "pg42") is None
+
+
 def test_requeue_sets_status_and_clears_failure_notes(monkeypatch):
     captured = {}
 
