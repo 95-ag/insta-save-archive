@@ -675,47 +675,93 @@ def _write_sections(env, page_id, blocks, ops, *, empty_page) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _Classification:
+    """One classification of a batch's items against a fill proposal — the write rules
+    `_write_items` applies, computed once and reused by `preview` so the two can never
+    disagree about what apply will do."""
+
+    linked: list  # items folded in with `](ig_link)` present on the applied body
+    unverified: list  # items folded but whose link never landed — left Routed
+    dropped: list  # (item, reason) dropped as off-topic
+    unmentioned: list  # items neither folded nor dropped — skipped as a duplicate
+    unknown_folded: list  # source_ids folded but absent from this batch
+    unknown_dropped: list  # source_ids dropped but absent from this batch
+
+
+def _classify_items(items, proposal, proposed_md) -> _Classification:
+    """Pure classification — no Notion calls, no logging. `folded`/`dropped` are read as the
+    proposal trailer stored them: `folded` is a raw list (an id can recur), `dropped` is
+    reduced to one reason per id first (a later duplicate wins), matching the order and
+    dedup `_write_items` has always applied."""
+    by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
+    folded = list(proposal.get("folded") or [])
+    dropped_map = {d["source_id"]: d.get("reason") for d in proposal.get("dropped") or []}
+
+    linked, unverified, unknown_folded = [], [], []
+    for sid in folded:
+        item = by_sid.get(sid)
+        if item is None:
+            unknown_folded.append(sid)
+            continue
+        ig_link = item.get("ig_link")
+        if ig_link is None or f"]({ig_link})" not in proposed_md:
+            unverified.append(item)
+        else:
+            linked.append(item)
+
+    dropped, unknown_dropped = [], []
+    for sid, reason in dropped_map.items():
+        item = by_sid.get(sid)
+        if item is None:
+            unknown_dropped.append(sid)
+            continue
+        dropped.append((item, reason))
+
+    handled = set(folded) | set(dropped_map)
+    unmentioned = [item for sid, item in by_sid.items() if sid not in handled]
+
+    return _Classification(
+        linked, unverified, dropped, unmentioned, unknown_folded, unknown_dropped
+    )
+
+
 def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
     """Item state — ONLY after every section write succeeded. The relation goes first so an
     interruption can never leave an item marked Distributed without its provenance link.
 
     A relation makes every future prepare skip the item, so a folded item is linked only when
     its link is on the applied body; otherwise it stays Routed for the next cycle."""
-    by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
-    folded = list(proposal.get("folded") or [])
-    dropped = {d["source_id"]: d.get("reason") for d in proposal.get("dropped") or []}
+    c = _classify_items(items, proposal, proposed_md)
     counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 0}
 
-    for sid in folded:
-        item = by_sid.get(sid)
-        if item is None:
-            log.warning("distribute.apply: proposal folded unknown source_id %s — ignoring", sid)
-            counts["unknown"] += 1
-            continue
-        ig_link = item.get("ig_link")
-        if ig_link is None or f"]({ig_link})" not in proposed_md:
-            log.warning(
-                "distribute.apply: folded %s but its link is not on the page — left Routed", sid
-            )
-            counts["unverified"] += 1
-            continue
+    # Log every unknown-id / unverified-id warning before any item write, right after
+    # classification — a later linked/dropped write that raises must never lose them.
+    for sid in c.unknown_folded:
+        log.warning("distribute.apply: proposal folded unknown source_id %s — ignoring", sid)
+        counts["unknown"] += 1
+
+    for item in c.unverified:
+        log.warning(
+            "distribute.apply: folded %s but its link is not on the page — left Routed",
+            item["source_id"],
+        )
+        counts["unverified"] += 1
+
+    for sid in c.unknown_dropped:
+        log.warning("distribute.apply: proposal dropped unknown source_id %s — ignoring", sid)
+        counts["unknown"] += 1
+
+    for item in c.linked:
         set_knowledge_relation(env, item["page_id"], page_id)
         write_distributed(env, item["page_id"], version)
         counts["folded"] += 1
 
-    for sid, reason in dropped.items():
-        item = by_sid.get(sid)
-        if item is None:
-            log.warning("distribute.apply: proposal dropped unknown source_id %s — ignoring", sid)
-            counts["unknown"] += 1
-            continue
+    for item, reason in c.dropped:
         write_misrouted(env, item["page_id"], reason, version)
         counts["misrouted"] += 1
 
-    handled = set(folded) | set(dropped)
-    for sid, item in by_sid.items():
-        if sid in handled:
-            continue
+    for item in c.unmentioned:
         write_distributed(env, item["page_id"], version, notes=_SKIP_NOTE)
         counts["skipped"] += 1
     return counts
@@ -765,13 +811,21 @@ def _already_applied(live_md, staged_current, proposed_md) -> bool:
     ) == _comparable_sections(expected_md)
 
 
-def apply(env, *, target, version) -> dict:
-    """Write the reviewed proposal to the page, then the item state. Aborts if the page moved
-    under the proposal — unless it already carries the proposal (a run that failed after its
-    section writes), in which case only the item state is written.
+@dataclass(frozen=True)
+class _Staged:
+    """The staged prepare+fill output for one target, as read from disk."""
 
-    Returns {"folded", "skipped", "misrouted", "unknown", "unverified"}: unverified counts
-    folded items left Routed because their link is not on the applied body."""
+    dir: Path
+    batch: dict
+    proposal: dict
+    current_md: str
+    proposed_md: str
+
+
+def _load_staged(env, target) -> _Staged:
+    """Read the staged files for `target`, raising apply's own errors when nothing is staged
+    or fill hasn't run yet. Shared by `apply` and `preview` so both read exactly the same
+    files, the same way — a preview can never describe a different run than apply performs."""
     d = staging_dir(env, target)
     if not (d / "batch.json").exists():
         raise RuntimeError(f"distribute.apply: nothing staged for {target!r} — run prepare first")
@@ -780,10 +834,93 @@ def apply(env, *, target, version) -> dict:
             f"distribute.apply: {target!r} is prepared but not filled — "
             "run the stage without --apply first"
         )
-    batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
-    proposal = json.loads((d / "proposal.json").read_text(encoding="utf-8"))
-    staged_current = (d / "current.md").read_text(encoding="utf-8")
-    proposed_md = (d / "proposed.md").read_text(encoding="utf-8")
+    return _Staged(
+        dir=d,
+        batch=json.loads((d / "batch.json").read_text(encoding="utf-8")),
+        proposal=json.loads((d / "proposal.json").read_text(encoding="utf-8")),
+        current_md=(d / "current.md").read_text(encoding="utf-8"),
+        proposed_md=(d / "proposed.md").read_text(encoding="utf-8"),
+    )
+
+
+@dataclass(frozen=True)
+class SectionChange:
+    """One section's change as `apply` would write it. `added`/`removed` are the `+`/`-`
+    line counts from a unified diff between the current and proposed section body — every
+    changed line counts, blank lines included; a sizing heuristic for the review summary,
+    not a semantic diff."""
+
+    heading: str
+    action: str
+    added: int
+    removed: int
+
+
+@dataclass(frozen=True)
+class ApplyPreview:
+    """Read-only summary of what `apply` would do for a target, built from staged files
+    alone — makes no Notion calls. Item tuples never fabricate a display value: `title` is
+    `None` when the source item has none (data-integrity.md) and the CLI falls back to the
+    source_id for display. `folded`/`unverified`/`unmentioned` carry `(source_id, title)`;
+    `dropped` carries `(source_id, title, reason)`."""
+
+    sections: list
+    folded: list
+    unverified: list
+    dropped: list
+    unmentioned: list
+    diff_text: str
+
+
+def _section_line_counts(before, after) -> tuple:
+    """(added, removed) `+`/`-` line counts between two section bodies, via a plain unified
+    diff — every changed line counts, blank lines included; a sizing heuristic for the
+    review summary, not a semantic diff."""
+    lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm=""))
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    return added, removed
+
+
+def preview(env, *, target) -> ApplyPreview:
+    """What `apply` would do for `target`, read from staged files only — no Notion calls.
+    Section changes come from the same `plan_sections` apply uses; item classification comes
+    from the same `_classify_items` `_write_items` uses, so this can never disagree with a
+    real apply. `diff_text` is recomputed via `render_diff` rather than read from the staged
+    `diff.txt`, which goes stale after a hand edit to `proposed.md`."""
+    staged = _load_staged(env, target)
+    current_sections = dict(split_sections(staged.current_md))
+    sections = [
+        SectionChange(
+            op.heading,
+            op.action,
+            *_section_line_counts(current_sections.get(op.heading, ""), op.body_markdown),
+        )
+        for op in plan_sections(staged.current_md, staged.proposed_md)
+    ]
+
+    c = _classify_items(staged.batch["items"], staged.proposal, staged.proposed_md)
+    return ApplyPreview(
+        sections=sections,
+        folded=[(item["source_id"], item.get("title")) for item in c.linked],
+        unverified=[(item["source_id"], item.get("title")) for item in c.unverified],
+        dropped=[(item["source_id"], item.get("title"), reason) for item, reason in c.dropped],
+        unmentioned=[(item["source_id"], item.get("title")) for item in c.unmentioned],
+        diff_text=render_diff(staged.current_md, staged.proposed_md),
+    )
+
+
+def apply(env, *, target, version) -> dict:
+    """Write the reviewed proposal to the page, then the item state. Aborts if the page moved
+    under the proposal — unless it already carries the proposal (a run that failed after its
+    section writes), in which case only the item state is written.
+
+    Returns {"folded", "skipped", "misrouted", "unknown", "unverified"}: unverified counts
+    folded items left Routed because their link is not on the applied body."""
+    staged = _load_staged(env, target)
+    d = staged.dir
+    batch, proposal = staged.batch, staged.proposal
+    staged_current, proposed_md = staged.current_md, staged.proposed_md
     _refuse_orphan_text(proposed_md)
 
     page_id = batch["page_id"]

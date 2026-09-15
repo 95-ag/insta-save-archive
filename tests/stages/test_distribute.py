@@ -1670,3 +1670,137 @@ def test_apply_resumes_with_untouched_section_having_trailing_space(tmp_path, mo
     assert "p-a" in distributed_pids
     for name in ("batch.json", "current.md", "proposed.md", "proposal.json"):
         assert not (d / name).exists()
+
+
+def test_apply_logs_the_unverified_warning_even_when_a_linked_write_raises(
+    tmp_path, monkeypatch, caplog
+):
+    page = _FakePage(
+        [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    ).patch(monkeypatch)
+    # "a" is folded and linked (its link lands on the applied body); "b" is folded but
+    # unverified (no link on the page). set_knowledge_relation fails for every linked item,
+    # so apply raises during the item-write phase — the unverified warning, logged right
+    # after classification, must already be on record by then.
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=items,
+        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a", "b"], "dropped": []},
+    )
+
+    def _always_fail(env, pid, kp):
+        raise RuntimeError("notion down")
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", _always_fail)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.apply(env, target="Page A", version="v")
+    assert any(
+        "folded b but its link is not on the page" in record.message for record in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# preview
+# ---------------------------------------------------------------------------
+
+
+def test_preview_classifies_sections_and_items(tmp_path, monkeypatch):
+    items = [
+        _item("a", ["fitness-workouts"], title="Folded linked"),
+        _item("b", ["fitness-workouts"], title="Folded no link"),
+        _item("c", ["fitness-workouts"], title="Dropped with reason"),
+        _item("d", ["fitness-workouts"], title="Dropped no reason"),
+        _item("e", ["fitness-workouts"], title="Unmentioned"),
+    ]
+    current_md = "# Workouts\n- old\n# Mobility\n- keep"
+    proposed_md = "# Workouts\n- new\n🔗 [Folded linked](https://ig/a)\n# New Topic\n- fresh"
+    proposal = {
+        "folded": ["a", "b"],
+        "dropped": [
+            {"source_id": "c", "reason": "off topic"},
+            {"source_id": "d", "reason": None},
+        ],
+    }
+    env, d = _staged(
+        tmp_path, items=items, current_md=current_md, proposed_md=proposed_md, proposal=proposal
+    )
+    result = dist.preview(env, target="Page A")
+
+    assert [(s.heading, s.action) for s in result.sections] == [
+        ("Workouts", "replace"),
+        ("New Topic", "append"),
+    ]
+    assert [(s.added, s.removed) for s in result.sections] == [(2, 1), (1, 0)]
+    assert result.folded == [("a", "Folded linked")]
+    assert result.unverified == [("b", "Folded no link")]
+    assert result.dropped == [
+        ("c", "Dropped with reason", "off topic"),
+        ("d", "Dropped no reason", None),
+    ]
+    assert result.unmentioned == [("e", "Unmentioned")]
+    assert "Workouts" in result.diff_text
+
+
+def test_preview_no_section_changes_yields_empty_sections(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- old",
+        proposal={"folded": [], "dropped": []},
+    )
+    result = dist.preview(env, target="Page A")
+    assert result.sections == []
+
+
+def test_preview_raises_when_nothing_staged(tmp_path):
+    with pytest.raises(
+        RuntimeError, match=re.escape("distribute.apply: nothing staged for 'Page A'")
+    ):
+        dist.preview(_env(tmp_path), target="Page A")
+
+
+def test_preview_raises_when_prepared_but_not_filled(tmp_path):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "batch.json").write_text(
+        json.dumps({"target": "Page A", "page_id": "kp", "items": []}), encoding="utf-8"
+    )
+    (d / "current.md").write_text("# X", encoding="utf-8")
+    with pytest.raises(
+        RuntimeError, match=re.escape("distribute.apply: 'Page A' is prepared but not filled")
+    ):
+        dist.preview(env, target="Page A")
+
+
+def test_preview_makes_no_adapter_calls(tmp_path, monkeypatch):
+    for name in (
+        "get_knowledge_page",
+        "get_page_blocks",
+        "query_routed_for_target",
+        "replace_section_blocks",
+        "set_heading_text",
+        "set_knowledge_relation",
+        "write_distributed",
+        "write_misrouted",
+    ):
+        monkeypatch.setattr(
+            dist,
+            name,
+            lambda *a, _name=name, **k: (_ for _ in ()).throw(
+                AssertionError(f"{_name} must not be called by preview")
+            ),
+        )
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    dist.preview(env, target="Page A")
