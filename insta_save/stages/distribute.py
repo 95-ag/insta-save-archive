@@ -233,6 +233,15 @@ def render_diff(current_md, proposed_md) -> str:
 
 _QUICK_ACCESS_MARKER = "Quick Access"
 
+_STAGED_FILES = (
+    "batch.json",
+    "current.md",
+    "prompt.txt",
+    "proposed.md",
+    "proposal.json",
+    "diff.txt",
+)
+
 
 def _slug(name) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-") or "page"
@@ -242,6 +251,15 @@ def staging_dir(env, target) -> Path:
     d = Path(env.tmp_dir) / "distribute" / _slug(target)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _clear_staging(env, target) -> None:
+    """Remove any staged files left from a previous cycle. apply's only freshness check
+    compares the live page to current.md, which can't detect a stale batch/proposal pair
+    from before new items were routed — so every prepare invalidates the prior cycle."""
+    d = staging_dir(env, target)
+    for name in _STAGED_FILES:
+        (d / name).unlink(missing_ok=True)
 
 
 def _heading_text(block) -> str:
@@ -278,6 +296,7 @@ def prepare(env, *, target, routes, vocab, budgets, version) -> int:
     Reconciles items already related to the page (proven folded in -> Distributed, no model
     call), then stages the rest. Returns the number of items staged; 0 means nothing left."""
     page_id = get_knowledge_page(env, target)
+    _clear_staging(env, target)
     items = query_routed_for_target(env, target)
 
     already = [i for i in items if page_id in i.get("knowledge_base", [])]

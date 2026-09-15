@@ -327,6 +327,50 @@ def test_prepare_returns_zero_when_nothing_is_pending(tmp_path, monkeypatch):
     )
 
 
+def test_prepare_clears_a_stale_proposal_from_a_previous_cycle(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    for name in ("proposed.md", "proposal.json", "diff.txt", "prompt.txt"):
+        (d / name).write_text("stale", encoding="utf-8")
+    _patch_prepare(
+        monkeypatch,
+        items=[_item("a", ["fitness-workouts"])],
+        blocks=[_h1("Workouts"), _bullet("old", "b1")],
+    )
+    dist.prepare(
+        env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+    )
+    for name in ("proposed.md", "proposal.json", "diff.txt", "prompt.txt"):
+        assert not (d / name).exists()
+    assert (d / "batch.json").exists() and (d / "current.md").exists()
+
+
+def test_prepare_clears_staging_even_when_nothing_is_pending(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "batch.json").write_text("stale", encoding="utf-8")
+    (d / "proposal.json").write_text("stale", encoding="utf-8")
+    _patch_prepare(monkeypatch, items=[])
+    assert (
+        dist.prepare(
+            env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+        )
+        == 0
+    )
+    assert not (d / "batch.json").exists() and not (d / "proposal.json").exists()
+
+
+def test_prepare_leaves_unrelated_files_in_the_staging_dir(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "notes.txt").write_text("keep me", encoding="utf-8")
+    _patch_prepare(monkeypatch, items=[])
+    dist.prepare(
+        env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+    )
+    assert (d / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
+
 def test_content_blocks_starts_at_the_first_h1():
     blocks = [
         {"id": "toc", "type": "table_of_contents", "table_of_contents": {}},
