@@ -113,12 +113,51 @@ def chunk_buckets(buckets, *, max_items, char_budget) -> list:
 _FENCE_RE = re.compile(r"```\s*json\s*\n(.*?)\n```", re.S)
 
 
+def _validate_trailer(meta) -> tuple:
+    """Validate a parsed trailer's shape, returning (folded, dropped). Raises ValueError
+    on any mismatch so the caller retries rather than propagating a wrong id list —
+    folded/dropped ids drive item relations and status writes downstream."""
+    if not isinstance(meta, dict):
+        raise ValueError("distribute proposal: trailer must be a JSON object")
+
+    raw_folded = meta.get("folded")
+    if raw_folded is None:
+        folded = []
+    elif isinstance(raw_folded, list) and all(isinstance(s, str) and s for s in raw_folded):
+        folded = list(raw_folded)
+    else:
+        raise ValueError("distribute proposal: 'folded' must be a list of source ids")
+
+    raw_dropped = meta.get("dropped")
+    if raw_dropped is None:
+        dropped = []
+    elif isinstance(raw_dropped, list) and all(isinstance(d, dict) for d in raw_dropped):
+        dropped = []
+        for entry in raw_dropped:
+            source_id = entry.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                raise ValueError(
+                    "distribute proposal: 'dropped' entries need a non-empty source_id string"
+                )
+            reason = entry.get("reason")
+            if reason is None:
+                reason = ""
+            elif not isinstance(reason, str):
+                raise ValueError("distribute proposal: 'dropped' reason must be a string")
+            dropped.append({"source_id": source_id, "reason": reason})
+    else:
+        raise ValueError("distribute proposal: 'dropped' must be a list of objects")
+
+    return folded, dropped
+
+
 def parse_proposal(text) -> tuple:
     """(body_markdown, folded_source_ids, dropped) from a fill response.
 
     The LAST fenced block is the JSON trailer; everything before it is the page body.
     strict=False tolerates the raw control characters the model emits inside JSON strings.
-    Raises ValueError when the trailer is missing or malformed so the caller can retry."""
+    Raises ValueError when the trailer is missing, malformed, or wrong-shaped so the
+    caller can retry."""
     matches = list(_FENCE_RE.finditer(text or ""))
     if not matches:
         raise ValueError("distribute proposal: no fenced JSON trailer found")
@@ -128,9 +167,5 @@ def parse_proposal(text) -> tuple:
     except json.JSONDecodeError as exc:
         raise ValueError(f"distribute proposal: malformed JSON trailer — {exc}") from exc
     body = text[: trailer.start()].rstrip()
-    folded = [str(s) for s in meta.get("folded") or []]
-    dropped = [
-        {"source_id": str(d.get("source_id")), "reason": d.get("reason") or ""}
-        for d in meta.get("dropped") or []
-    ]
+    folded, dropped = _validate_trailer(meta)
     return body, folded, dropped

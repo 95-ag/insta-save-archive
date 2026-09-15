@@ -151,3 +151,36 @@ def test_parse_proposal_raises_without_a_trailer():
 def test_parse_proposal_raises_on_malformed_json():
     with pytest.raises(ValueError, match="malformed JSON trailer"):
         dist.parse_proposal('# Sec\n\n```json\n{"folded": [\n```')
+
+
+def _trailer(payload):
+    return "# Sec\n- a\n\n```json\n" + payload + "\n```"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '["not", "an", "object"]',
+        '{"folded": "abc"}',
+        '{"folded": [1, 2]}',
+        '{"folded": [""]}',
+        '{"dropped": "xyz"}',
+        '{"dropped": ["not-a-dict"]}',
+        '{"dropped": [{"reason": "missing id"}]}',
+        '{"dropped": [{"source_id": 7, "reason": "x"}]}',
+        '{"dropped": [{"source_id": "b", "reason": 5}]}',
+    ],
+)
+def test_parse_proposal_rejects_a_wrong_shaped_trailer(payload):
+    with pytest.raises(ValueError, match="distribute proposal: "):
+        dist.parse_proposal(_trailer(payload))
+
+
+def test_parse_proposal_treats_null_lists_as_empty():
+    _, folded, dropped = dist.parse_proposal(_trailer('{"folded": null, "dropped": null}'))
+    assert folded == [] and dropped == []
+
+
+def test_parse_proposal_defaults_a_missing_reason_to_empty():
+    _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b"}]}'))
+    assert dropped == [{"source_id": "b", "reason": ""}]
