@@ -1,7 +1,9 @@
 import json
+import types
 
 import pytest
 
+from insta_save.backends.base import TerminalBackendError
 from insta_save.config.routes import Routes
 from insta_save.stages import distribute as dist
 
@@ -384,3 +386,160 @@ def test_content_blocks_starts_at_the_first_h1():
 def test_content_blocks_refuses_when_quick_access_is_an_h1():
     with pytest.raises(RuntimeError, match="Quick Access"):
         dist._content_blocks([_h1("🔗 Quick Access")])
+
+
+TEMPLATE = (
+    "PAGE: {page_name}\nNUMBERING: {numbering}\nSECTIONS: {sections}\n"
+    "CURRENT:\n{current}\nITEMS:\n{buckets}\n"
+)
+
+
+def _fill_env(tmp_path, monkeypatch, items, current_md):
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "batch.json").write_text(
+        json.dumps({"target": "Page A", "page_id": "kp", "items": items}), encoding="utf-8"
+    )
+    (d / "current.md").write_text(current_md, encoding="utf-8")
+    return env, d
+
+
+def test_fill_stages_the_proposal_and_diff(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "# Workouts\n- old")
+    reply = '# Workouts\n- new\n\n```json\n{"folded": ["a"]}\n```'
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda prompt, model: reply,
+    )
+    assert out == {"calls": 1, "folded": 1, "dropped": 0}
+    assert (d / "proposed.md").read_text() == "# Workouts\n- new"
+    assert json.loads((d / "proposal.json").read_text())["folded"] == ["a"]
+    assert "+- new" in (d / "diff.txt").read_text()
+
+
+def test_fill_chains_over_budget_calls_on_the_merged_body(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["mobility-posture"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    seen = []
+    replies = [
+        '# Workouts\n- a\n\n```json\n{"folded": ["a"]}\n```',
+        '# Mobility\n- b\n\n```json\n{"folded": ["b"]}\n```',
+    ]
+
+    def _call(prompt, model):
+        seen.append(prompt)
+        return replies[len(seen) - 1]
+
+    budgets = types.SimpleNamespace(max_items=1, char_budget=10000)
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=budgets,
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+    )
+    assert out["calls"] == 2
+    assert "- a" in seen[1]  # the second call sees the first call's merged body
+    assert (d / "proposed.md").read_text() == "# Workouts\n- a\n# Mobility\n- b"
+
+
+def test_fill_retries_a_malformed_proposal(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(["no trailer here", '# W\n- a\n\n```json\n{"folded": ["a"]}\n```'])
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: next(replies),
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 1 and out["folded"] == 1
+
+
+def test_fill_stops_immediately_on_a_terminal_backend_error(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+
+    def _boom(prompt, model):
+        raise RuntimeError("OAuth token has expired")
+
+    with pytest.raises(TerminalBackendError):
+        dist.fill(
+            env,
+            target="Page A",
+            routes=ROUTES,
+            vocab=_Vocab(),
+            budgets=_Budgets(),
+            model="m",
+            template=TEMPLATE,
+            call=_boom,
+            sleep=lambda s: None,
+        )
+
+
+def test_fill_scrubs_a_fabricated_url(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    reply = '# W\n- see https://invented.example.com now\n\n```json\n{"folded": ["a"]}\n```'
+    dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: reply,
+    )
+    assert "invented.example.com" not in (d / "proposed.md").read_text()
+
+
+def test_fill_keeps_a_link_that_came_from_an_item(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    reply = '# W\n- [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```'
+    dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: reply,
+    )
+    assert "https://ig/a" in (d / "proposed.md").read_text()
+
+
+def test_render_prompt_fills_every_placeholder():
+    buckets = [dist.Bucket("fitness-workouts", [_item("a", ["fitness-workouts"])])]
+    out = dist.render_prompt(
+        TEMPLATE, target="Page A", current_md="# 1 Workouts\n- a", buckets=buckets
+    )
+    for placeholder in ("{page_name}", "{numbering}", "{sections}", "{current}", "{buckets}"):
+        assert placeholder not in out
+    assert "Page A" in out and "[a]" in out and "1 Workouts" in out
+
+
+def test_render_prompt_detects_numbered_headings():
+    assert (
+        "numbers"
+        in dist.render_prompt(
+            TEMPLATE, target="X", current_md="# 1 Foundations", buckets=[]
+        ).lower()
+    )

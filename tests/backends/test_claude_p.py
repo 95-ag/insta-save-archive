@@ -248,3 +248,8 @@ def test_run_claude_p_falls_back_to_stderr_when_no_envelope(monkeypatch):
         claude_p._run_claude_p("P", "claude-sonnet")
     assert "socket hang up" in str(ei.value)
     assert not is_terminal_error(ei.value)  # stays transient
+
+
+def test_consolidate_returns_raw_text(monkeypatch):
+    monkeypatch.setattr(claude_p, "_run_claude_p", lambda prompt, model: "  # Sec  ")
+    assert claude_p.consolidate("p", "claude-sonnet") == "  # Sec  "

@@ -9,6 +9,7 @@ import difflib
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,10 @@ from insta_save.adapters.notion import (
     query_routed_for_target,
     write_distributed,
 )
-from insta_save.markdown_blocks import blocks_to_markdown, split_sections
+from insta_save.backends import claude_p
+from insta_save.backends.base import TerminalBackendError, is_terminal_error
+from insta_save.backends.sanitize import scrub_fabricated
+from insta_save.markdown_blocks import blocks_to_markdown, merge_sections, split_sections
 
 log = logging.getLogger(__name__)
 
@@ -323,3 +327,128 @@ def prepare(env, *, target, routes, vocab, budgets, version) -> int:
     (d / "current.md").write_text(current_md, encoding="utf-8")
     log.info("distribute.prepare: staged %d items for %s", len(pending), target)
     return len(pending)
+
+
+_FILL_ATTEMPTS = 3  # 1 initial + 2 retries for a transient or malformed reply
+_RETRY_BACKOFF_S = 2.0
+
+
+def _numbering_hint(current_md) -> str:
+    """Mirror the page's own heading convention. Some knowledge pages number their headings
+    (`1 Foundations`, `2.3 …`) and some do not; a mismatch reads as a different author."""
+    for heading, _ in split_sections(current_md):
+        if heading and heading[0].isdigit():
+            return "this page numbers its headings — mirror the same scheme"
+    return "this page does not number its headings — do not add numbers"
+
+
+def _section_list(current_md) -> str:
+    headings = [h for h, _ in split_sections(current_md)]
+    return "\n".join(f"- {h}" for h in headings) or "(none — this page has no sections yet)"
+
+
+def _render_buckets(buckets) -> str:
+    lines = []
+    for bucket in buckets:
+        lines.append(f"### BUCKET: {bucket.name}")
+        for item in bucket.items:
+            lines.append(
+                f"- [{item.get('source_id')}] «{item.get('title')}» "
+                f"(url={item.get('ig_link')})\n  summary: {item.get('summary')}"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_prompt(template, *, target, current_md, buckets) -> str:
+    """Substitute with str.replace, never str.format — the template contains literal JSON braces."""
+    return (
+        template.replace("{page_name}", target)
+        .replace("{numbering}", _numbering_hint(current_md))
+        .replace("{sections}", _section_list(current_md))
+        .replace("{current}", current_md or "(empty — this page has no content yet)")
+        .replace("{buckets}", _render_buckets(buckets))
+    )
+
+
+def _fill_chunk(prompt, model, *, call, sleep, label):
+    """One consolidation call, parsed. Retries transient failures AND malformed proposals
+    (claude-p is non-deterministic and usually succeeds on retry). A terminal error —
+    auth expiry, usage limit — raises immediately; retrying those within a run is pointless."""
+    last = None
+    for attempt in range(1, _FILL_ATTEMPTS + 1):
+        try:
+            return parse_proposal(call(prompt, model))
+        except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
+            if is_terminal_error(exc):
+                raise TerminalBackendError(
+                    f"claude-p hit a terminal error during distribute ({label}): {exc}"
+                ) from exc
+            last = exc
+            log.warning(
+                "distribute.fill: attempt %d/%d failed for %s — %s",
+                attempt,
+                _FILL_ATTEMPTS,
+                label,
+                exc,
+            )
+            if attempt < _FILL_ATTEMPTS:
+                sleep(_RETRY_BACKOFF_S * attempt)
+    raise RuntimeError(f"distribute.fill: {label} failed after {_FILL_ATTEMPTS} attempts: {last}")
+
+
+def _scrub(body_md, items, current_md) -> str:
+    """Strip URLs and version tokens absent from the sources.
+
+    The CURRENT page body is part of the source text: without it, legitimate pre-existing
+    links in prose the model reproduced would be removed as if it had invented them."""
+    parts = [current_md]
+    for item in items:
+        parts += [item.get("title"), item.get("summary"), item.get("ig_link")]
+    cleaned, removed = scrub_fabricated(body_md, " ".join(p for p in parts if p))
+    if removed:
+        log.info("distribute.fill: scrubbed fabricated tokens — %s", removed)
+    return cleaned
+
+
+def fill(
+    env, *, target, routes, vocab, budgets, model, template, call=None, sleep=time.sleep
+) -> dict:
+    """Consolidate the staged items into the page and stage the proposal for review.
+    Writes nothing to Notion. Returns {"calls", "folded", "dropped"}."""
+    call = call or claude_p.consolidate
+    d = staging_dir(env, target)
+    batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
+    current_md = (d / "current.md").read_text(encoding="utf-8")
+
+    buckets = bucket_items(
+        batch["items"],
+        _routing_tags_for(routes, target),
+        vocab.content_types,
+        max_items=budgets.max_items,
+        char_budget=budgets.char_budget,
+    )
+    chunks = chunk_buckets(buckets, max_items=budgets.max_items, char_budget=budgets.char_budget)
+
+    running, folded, dropped, prompts = current_md, [], [], []
+    for index, chunk in enumerate(chunks, start=1):
+        prompt = render_prompt(template, target=target, current_md=running, buckets=chunk)
+        prompts.append(prompt)
+        body, chunk_folded, chunk_dropped = _fill_chunk(
+            prompt, model, call=call, sleep=sleep, label=f"{target} call {index}/{len(chunks)}"
+        )
+        folded += chunk_folded
+        dropped += chunk_dropped
+        # Chain on the MERGED body: the next call must see the whole page as it now stands,
+        # not just the sections the previous call happened to touch.
+        running = merge_sections(running, body)
+
+    proposed_md = _scrub(running, batch["items"], current_md)
+    (d / "prompt.txt").write_text("\n\n=== NEXT CALL ===\n\n".join(prompts), encoding="utf-8")
+    (d / "proposed.md").write_text(proposed_md, encoding="utf-8")
+    (d / "proposal.json").write_text(
+        json.dumps({"folded": folded, "dropped": dropped}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (d / "diff.txt").write_text(render_diff(current_md, proposed_md), encoding="utf-8")
+    return {"calls": len(chunks), "folded": len(folded), "dropped": len(dropped)}

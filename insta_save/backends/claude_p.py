@@ -99,6 +99,14 @@ def propose_vocab(prompt: str, model: str) -> dict:
     return parse_results_object(text)
 
 
+def consolidate(prompt: str, model: str) -> str:
+    """Raw response text for a distribute consolidation prompt.
+
+    Deliberately unparsed: the reply is markdown with a JSON trailer, not a JSON object, so
+    parse_results_object would be wrong here. The stage's parse_proposal handles it."""
+    return _run_claude_p(prompt, model)
+
+
 def fill(env, run_cfg, enrich_dir) -> FillResult:
     d = Path(enrich_dir)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))

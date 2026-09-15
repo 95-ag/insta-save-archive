@@ -1,0 +1,42 @@
+You are folding saved Instagram items into ONE existing Notion knowledge page titled
+"{page_name}". Return the page sections you changed, as Markdown.
+
+THE PAGE'S EXISTING TOP-LEVEL SECTIONS:
+{sections}
+
+HEADING NUMBERING: {numbering}
+
+CURRENT PAGE CONTENT:
+{current}
+
+ITEMS TO FOLD IN — pre-grouped into buckets. Each is [source_id] «title» (url) + its summary:
+
+{buckets}
+
+RULES
+1. Return ONLY the top-level sections you actually changed. A section you did not change must
+   NOT appear in your output. Never rename an existing section heading — the heading text is
+   how your output is matched back onto the page.
+2. Markdown levels map to the page: `#` = top-level section, `##` = topic, `###` = a large or
+   unique sub-topic. Use `###` only where it earns its place. Never write a table of contents.
+3. MERGE an item into an existing entry when it covers the same thing, rather than appending a
+   near-duplicate. Reproduce the whole section you are changing, including the parts you kept.
+4. DROP any item that is not about this page's subject. Do not fold it in anywhere. Record it in
+   the dropped list with a short reason.
+5. An item whose information is already fully present adds nothing: leave the page as it is and
+   do NOT list that item as folded.
+6. Prefer bulleted lists for steps, cues and sequences over dense paragraphs.
+7. End every entry with its source link(s). Link text is the item's EXACT TITLE, never the word
+   "watch". Join multiple with ` · `. Do not write a "Sources:" label.
+   - REFERENCE (the summary already conveys it): `🔗 [exact title](url)`
+   - MUST-WATCH (a technique you must SEE performed): `🎬 **Watch:** [exact title](url)`
+   Judge must-watch per item from what the item is, not from whether it has a transcript.
+8. Do not invent facts, URLs, version numbers or tool names beyond what the summaries say.
+9. After the sections, output ONE fenced json block, and nothing after it:
+
+```json
+{"folded": ["source_id", "..."], "dropped": [{"source_id": "...", "reason": "..."}]}
+```
+
+`folded` lists every item whose information is now present in the page, including items merged
+into an existing entry. It must NOT list dropped items or items that added nothing.
