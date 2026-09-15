@@ -120,7 +120,7 @@ the URL. Schema properties are created automatically on first write.
 | `IG_USERNAME` | Instagram handle (no `@`) |
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
-| `NOTION_KNOWLEDGE_DATABASE_ID` | the `learnings` Knowledge-DB id — only for `distribute` |
+| `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
 | `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.0-distribute`) |
 
 ## Configuration
@@ -266,14 +266,14 @@ Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do ste
 ## Distribute (optional)
 
 `route` only **labels** an item's destination (`route_target`); `distribute` is the stage that
-actually folds a routed item's content into its target page in the Knowledge DB (`learnings`),
+actually folds a routed item's content into its target page in the Knowledge DB,
 section by section, then sets a two-way relation back to the archive item. It's **attended
 only** — it never runs as part of `isa run --mode first-time|incremental`, and every apply goes
 through a diff review.
 
 ```bash
-isa run --stage distribute --target "Fitness & Mobility"
-isa run --stage distribute --target "Fitness & Mobility" --apply
+isa run --stage distribute --target "<page name>"
+isa run --stage distribute --target "<page name>" --apply
 ```
 
 The first command writes **nothing to Notion**: it prepares the batch, calls the backend, and
