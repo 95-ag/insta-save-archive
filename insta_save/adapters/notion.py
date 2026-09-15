@@ -22,8 +22,10 @@ _V2_PROPERTIES = {
     "route_target": {"select": {}},
     "extract_version": {"rich_text": {}},
     "enrich_version": {"rich_text": {}},
+    "distribute_notes": {"rich_text": {}},
+    "distribute_version": {"rich_text": {}},
 }
-_V2_STATUS_OPTIONS = ("Tagged", "Routed")
+_V2_STATUS_OPTIONS = ("Tagged", "Routed", "Distributed", "Misrouted")
 
 OCR_MAX_CHARS = 12000  # enrich-read OCR safety cap: bounds pathological frame-OCR jitter
                        # (raw_extraction keeps the full OCR; D13). ~typical cleaned text is far below.
@@ -192,7 +194,7 @@ def _status_option_additions(existing_option_names: list[str]):
 
 # --- API surface -----------------------------------------------------------
 def ensure_schema(env: EnvConfig) -> None:
-    """Idempotently add v2 properties + Tagged/Routed status options. Additive only."""
+    """Idempotently add v2 properties and status options. Additive only."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)

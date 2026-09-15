@@ -46,7 +46,7 @@ def test_status_option_additions_appends_missing_keeping_existing():
 
 
 def test_status_option_additions_noop_when_all_present():
-    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed"]
+    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted", "Failed"]
     assert notion._status_option_additions(existing) is None
 
 
@@ -305,3 +305,16 @@ def test_query_all_pages_paginates_and_returns_all(monkeypatch):
     # raw properties preserved
     assert "properties" in result[0]
     assert "properties" in result[1]
+
+
+def test_schema_additions_include_distribute_properties():
+    add = notion._schema_property_additions({"tags": {}})
+    assert add["distribute_notes"] == {"rich_text": {}}
+    assert add["distribute_version"] == {"rich_text": {}}
+
+
+def test_status_additions_include_distributed_and_misrouted():
+    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed"]
+    names = [o["name"] for o in notion._status_option_additions(existing)]
+    assert "Distributed" in names and "Misrouted" in names
+    assert set(existing) <= set(names)
