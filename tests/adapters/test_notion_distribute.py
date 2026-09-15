@@ -1,5 +1,6 @@
 import types
 
+import httpx
 import pytest
 from notion_client.errors import RequestTimeoutError
 
@@ -310,6 +311,15 @@ def test_write_misrouted_sets_status_and_reason(monkeypatch):
 def test_write_distributed_wraps_a_request_timeout(monkeypatch):
     def _update(page_id, properties):
         raise RequestTimeoutError()
+
+    _patch(monkeypatch, types.SimpleNamespace(pages=types.SimpleNamespace(update=_update)))
+    with pytest.raises(RuntimeError, match="failed to mark pg Distributed"):
+        notion.write_distributed(_Env(), "pg", "v")
+
+
+def test_write_distributed_wraps_a_transport_error(monkeypatch):
+    def _update(page_id, properties):
+        raise httpx.ConnectError("boom")
 
     _patch(monkeypatch, types.SimpleNamespace(pages=types.SimpleNamespace(update=_update)))
     with pytest.raises(RuntimeError, match="failed to mark pg Distributed"):

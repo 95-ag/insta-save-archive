@@ -7,6 +7,7 @@ import json
 import logging
 import os
 
+import httpx
 from notion_client import Client
 from notion_client.errors import APIResponseError, HTTPResponseError, RequestTimeoutError
 
@@ -625,9 +626,15 @@ def query_routed_for_target(env: EnvConfig, target: str) -> list:
 
 
 _APPEND_CHUNK = 100  # Notion caps children per blocks.children.append call
-# A distribute write that times out or gets a non-API HTTP error must stop apply as cleanly
-# as an API error does, so the stage sees one exception type for every failed write.
-_DISTRIBUTE_WRITE_ERRORS = (APIResponseError, HTTPResponseError, RequestTimeoutError)
+# A distribute write that times out, gets a non-API HTTP error, or fails at the transport
+# level (dropped connection, DNS, etc.) must stop apply as cleanly as an API error does, so
+# the stage sees one exception type for every failed write.
+_DISTRIBUTE_WRITE_ERRORS = (
+    APIResponseError,
+    HTTPResponseError,
+    RequestTimeoutError,
+    httpx.TransportError,
+)
 
 
 def _chunked(items, size):
