@@ -23,7 +23,8 @@ from insta_save.orchestrator.preflight import preflight
 from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
 from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
-STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic",
+          "route", "distribute"]
 
 
 def _guard(load, *args, **kwargs):
@@ -92,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lane", choices=["text", "vision"], default="text")
     run.add_argument("--status", action="store_true")
     run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
+    run.add_argument("--target", default=None,
+                     help="distribute: the route_target page name to ingest into")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -370,6 +373,58 @@ def dispatch_run(args) -> None:
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
         return
 
+    if args.stage == "distribute":
+        from insta_save.backends import base
+        from insta_save.helpers.observability import flush_logs
+        from insta_save.stages import distribute
+
+        # Validate before loading anything — a bad invocation must not touch real config.
+        if not args.target:
+            raise SystemExit("isa run --stage distribute: --target '<page name>' is required")
+        env = _guard(_load_env)
+        ensure_schema(env)
+        run_cfg = _guard(_load_run)
+        version = f"{run_cfg.distribute.model}/{env.distribute_version}"
+        log_path = setup_logging("distribute")
+        print(f"Logging to {_rel(log_path)}")
+
+        try:
+            if args.apply:
+                counts = distribute.apply(env, target=args.target, version=version)
+                print(f"Distributed: {counts['folded']} folded in, {counts['skipped']} already "
+                      f"covered, {counts['misrouted']} misrouted.")
+                if counts.get("unverified", 0):
+                    print(f"  {counts['unverified']} folded item(s) had no link in the applied "
+                          f"page and were left Routed — see the log.")
+                return
+
+            routes = load_routes()
+            vocab = _guard(load_vocab)
+            budgets = base.get_backend(run_cfg.distribute.backend).batch_budgets(run_cfg)
+            n = distribute.prepare(env, target=args.target, routes=routes, vocab=vocab,
+                                   budgets=budgets, version=version)
+            if n == 0:
+                print(f"Nothing left to distribute for {args.target!r}.")
+                return
+            result = distribute.fill(
+                env, target=args.target, routes=routes, vocab=vocab, budgets=budgets,
+                model=run_cfg.distribute.model,
+                template=Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8"))
+            d = distribute.staging_dir(env, args.target)
+            print(f"Staged {n} items in {result['calls']} call(s) -> {_rel(d)}\n"
+                  f"  Review {_rel(d / 'diff.txt')}, edit {_rel(d / 'proposed.md')} if needed, then:\n"
+                  f"  isa run --stage distribute --target {args.target!r} --apply")
+            return
+        except TerminalBackendError as exc:
+            flush_logs()
+            print(f"\n⏹  stopped · {exc}")
+            print("   This won't resolve by retrying now (usage limit / auth). "
+                  f"Resume later with: isa run --stage distribute --target {args.target!r}"
+                  f"{' --apply' if args.apply else ''}")
+            return
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc))
+
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
@@ -497,8 +552,8 @@ def _print_plan(plan, dry_run: bool) -> None:
         print(f"\nNext: {na.group} — {na.detail}{label}")
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if args.command == "run":
         if args.stage is None:
             _dispatch_mode(args)

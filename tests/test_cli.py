@@ -1,3 +1,5 @@
+import types
+
 import pytest
 from cli.isa import build_parser
 
@@ -1047,3 +1049,147 @@ def test_stage_extract_load_run_error_raises_system_exit(monkeypatch):
     args = isa.build_parser().parse_args(["run", "--stage", "extract"])
     with pytest.raises(SystemExit):
         isa.dispatch_run(args)
+
+
+# ---------------------------------------------------------------------------
+# distribute stage CLI wiring
+# ---------------------------------------------------------------------------
+
+class _FakeTemplatePath:
+    """Stand-in for cli.isa's `Path` inside the distribute prepare path, so reading the
+    prompt template never touches the real filesystem."""
+
+    def __init__(self, *a, **k):
+        pass
+
+    def read_text(self, encoding="utf-8"):
+        return "TEMPLATE"
+
+
+def _run_distribute_cli(monkeypatch, argv):
+    """Wire the distribute stage dispatch with lightweight stubs, then call isa.main(argv)."""
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
+        tmp_dir="tmp", distribute_version="v2.0-distribute"))
+    monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
+        distribute=types.SimpleNamespace(backend="claude-p", model="m")))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
+    monkeypatch.setattr(isa, "load_routes", lambda: "ROUTES")
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+    monkeypatch.setattr(base, "get_backend", lambda name: types.SimpleNamespace(
+        batch_budgets=lambda run_cfg: types.SimpleNamespace(max_items=10, char_budget=1000)))
+    monkeypatch.setattr(isa, "Path", _FakeTemplatePath)
+    isa.main(argv)
+
+
+def test_distribute_requires_a_target(monkeypatch):
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir="tmp"))
+    with pytest.raises(SystemExit, match="--target"):
+        isa.main(["run", "--stage", "distribute"])
+
+
+def test_distribute_prepare_then_fill_stages_without_applying(monkeypatch, capsys):
+    # NOTE: `seen.setdefault(key, kw) or <return>` (as the brief originally wrote this test)
+    # always evaluates to `kw` here, since dict.setdefault returns the just-inserted value and
+    # a non-empty kwargs dict is truthy — the `or <return>` branch never fires. Explicit
+    # closures avoid that trap and actually return the stubbed values.
+    seen = {}
+
+    def _fake_prepare(env, **kw):
+        seen["prepare"] = kw
+        return 3
+
+    def _fake_fill(env, **kw):
+        seen["fill"] = kw
+        return {"calls": 1, "folded": 3, "dropped": 0}
+
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", _fake_prepare)
+    monkeypatch.setattr("insta_save.stages.distribute.fill", _fake_fill)
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: pytest.fail("apply must not run without --apply"))
+    _run_distribute_cli(monkeypatch, ["run", "--stage", "distribute", "--target", "Page B"])
+    assert seen["prepare"]["target"] == "Page B"
+    assert "--apply" in capsys.readouterr().out
+
+
+def test_distribute_apply_skips_prepare(monkeypatch, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: pytest.fail("prepare must not run with --apply"))
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: {"folded": 2, "skipped": 1, "misrouted": 1,
+                                           "unknown": 0, "unverified": 0})
+    _run_distribute_cli(monkeypatch,
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+    out = capsys.readouterr().out
+    assert "2 folded in" in out
+    assert "no link" not in out
+
+
+def test_distribute_apply_reports_unverified(monkeypatch, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: {"folded": 2, "skipped": 0, "misrouted": 0,
+                                           "unknown": 0, "unverified": 1})
+    _run_distribute_cli(monkeypatch,
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+    out = capsys.readouterr().out
+    assert "1 folded item(s) had no link in the applied page" in out
+
+
+def test_distribute_reports_nothing_left(monkeypatch, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 0)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: pytest.fail("fill must not run on an empty batch"))
+    _run_distribute_cli(monkeypatch, ["run", "--stage", "distribute", "--target", "Page B"])
+    assert "Nothing left to distribute" in capsys.readouterr().out
+
+
+def test_distribute_ensure_schema_runs_before_prepare(monkeypatch):
+    """ensure_schema must run before prepare — the distribute props/statuses it creates
+    (distribute_notes/distribute_version, Distributed/Misrouted) must exist first."""
+    order = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
+        tmp_dir="tmp", distribute_version="v2.0-distribute"))
+    monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
+        distribute=types.SimpleNamespace(backend="claude-p", model="m")))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: order.append("schema"))
+    monkeypatch.setattr(isa, "load_routes", lambda: "ROUTES")
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+    monkeypatch.setattr(base, "get_backend", lambda name: types.SimpleNamespace(
+        batch_budgets=lambda run_cfg: types.SimpleNamespace(max_items=10, char_budget=1000)))
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: order.append("prepare") or 0)
+    isa.main(["run", "--stage", "distribute", "--target", "Page B"])
+    assert order == ["schema", "prepare"]
+
+
+def test_distribute_prepare_runtime_error_becomes_system_exit(monkeypatch):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            RuntimeError("distribute.prepare: the page's first heading_1 "
+                                        "is the template section")))
+    with pytest.raises(SystemExit, match="template section"):
+        _run_distribute_cli(monkeypatch, ["run", "--stage", "distribute", "--target", "Page B"])
+
+
+def test_distribute_apply_runtime_error_becomes_system_exit(monkeypatch):
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            RuntimeError("distribute.apply: 'Page B' changed since prepare")))
+    with pytest.raises(SystemExit, match="changed since prepare"):
+        _run_distribute_cli(monkeypatch,
+                            ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+
+
+def test_distribute_fill_terminal_backend_error_stops_cleanly(monkeypatch, capsys):
+    from insta_save.backends.base import TerminalBackendError
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 3)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            TerminalBackendError("claude-p: access token has expired")))
+    _run_distribute_cli(monkeypatch, ["run", "--stage", "distribute", "--target", "Page B"])
+    out = capsys.readouterr().out
+    assert "stopped" in out
+    assert "access token has expired" in out
