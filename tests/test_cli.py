@@ -1092,6 +1092,24 @@ def _empty_distribute_preview():
     )
 
 
+def _default_rebuild_preview():
+    """A RebuildPreview stand-in with something to rebuild, so the default `--rebuild` path
+    reaches the confirmation prompt instead of short-circuiting on "nothing to rebuild"."""
+    return types.SimpleNamespace(
+        sections=[("Section", 1)],
+        blocks_to_delete=1,
+        blocks_kept=0,
+        items=[("a", "Item A", "Distributed")],
+        relations_only=[],
+        refused=[],
+    )
+
+
+def _default_rebuild_counts():
+    return {"items_reset": 1, "relations_removed": 1, "relations_only": 0,
+            "blocks_deleted": 1, "heading_cleared": True, "page_skipped": False}
+
+
 def _make_confirm(values):
     """A scripted `tui.confirm_action` replacement — needs `*args, **kwargs` since
     confirm_action is called positionally with (message, actions) (see lessons.md)."""
@@ -1099,12 +1117,15 @@ def _make_confirm(values):
     return lambda *a, **k: next(it)
 
 
-def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=None):
+def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=None,
+                        rebuild_preview=None, rebuild=None):
     """Wire the distribute stage dispatch with lightweight stubs, then call isa.main(argv).
 
     `tmp_path` keeps distribute.staging_dir's real mkdir off the repo's tmp/. `preview` and
     `confirm` override the default stubs for distribute.preview (an empty no-op preview) and
-    tui.confirm_action (immediate "apply") — only reached by the apply path."""
+    tui.confirm_action (immediate "apply") — only reached by the apply path. `rebuild_preview`
+    and `rebuild` override the default stubs for the `--rebuild` path (a preview with one item
+    and one block to delete, and matching counts) — only reached with `--rebuild`."""
     monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
         tmp_dir=str(tmp_path), distribute_version="v2.1-distribute"))
     monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
@@ -1120,6 +1141,10 @@ def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=No
     monkeypatch.setattr("insta_save.stages.distribute.preview",
                         preview or (lambda env, **kw: _empty_distribute_preview()))
     monkeypatch.setattr("insta_save.helpers.tui.confirm_action", confirm or _make_confirm(["apply"]))
+    monkeypatch.setattr("insta_save.stages.distribute.rebuild_preview",
+                        rebuild_preview or (lambda env, **kw: _default_rebuild_preview()))
+    monkeypatch.setattr("insta_save.stages.distribute.rebuild",
+                        rebuild or (lambda env, **kw: _default_rebuild_counts()))
     isa.main(argv)
 
 
@@ -1371,6 +1396,210 @@ def test_distribute_stage_prints_preview_summary_before_applying(monkeypatch, tm
     assert "Unmentioned" in out
     assert "Nothing has been written to the page yet." in out
     assert "--apply" in out
+
+
+# ---------------------------------------------------------------------------
+# distribute rebuild — CLI wiring
+# ---------------------------------------------------------------------------
+
+
+def test_distribute_rebuild_and_apply_cannot_combine(monkeypatch, tmp_path):
+    monkeypatch.setattr(isa, "_load_env", lambda: pytest.fail("must not load config"))
+    with pytest.raises(SystemExit, match="--rebuild and --apply cannot be combined"):
+        isa.main(["run", "--stage", "distribute", "--target", "Page B",
+                 "--rebuild", "--apply"])
+
+
+def test_distribute_rebuild_confirm_rebuild_calls_rebuild_once(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm(["rebuild"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1]
+    out = capsys.readouterr().out
+    assert "1 item(s) reset" in out
+    assert "1 relation(s) removed" in out
+    assert "1 block(s) deleted" in out
+
+
+def test_distribute_rebuild_confirm_cancel_does_not_rebuild(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm(["cancel"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == []
+    assert "Cancelled — nothing changed." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_confirm_ctrl_c_does_not_rebuild(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm([None]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == []
+    assert "Cancelled — nothing changed." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_non_interactive_without_yes_refuses(monkeypatch, tmp_path):
+    calls = []
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    with pytest.raises(SystemExit, match="refusing to change Notion without confirmation"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            confirm=lambda *a, **k: confirmed.append(1),
+            rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+        )
+    assert calls == [] and confirmed == []
+
+
+def test_distribute_rebuild_yes_rebuilds_without_confirm_even_when_not_a_tty(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild", "--yes"],
+        confirm=lambda *a, **k: confirmed.append(1),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1] and confirmed == []
+    assert "1 item(s) reset" in capsys.readouterr().out
+
+
+def test_distribute_rebuild_refusals_raise_before_confirming(monkeypatch, tmp_path):
+    confirmed = []
+    rebuilt = []
+    review = types.SimpleNamespace(
+        sections=[("Off-topic", 0)], blocks_to_delete=0, blocks_kept=0, items=[],
+        relations_only=[], refused=[("Off-topic", ["image"])],
+    )
+    with pytest.raises(SystemExit, match="Off-topic"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            rebuild_preview=lambda env, **kw: review,
+            confirm=lambda *a, **k: confirmed.append(1),
+            rebuild=lambda env, **kw: rebuilt.append(1),
+        )
+    assert confirmed == [] and rebuilt == []
+
+
+def test_distribute_rebuild_nothing_to_rebuild_skips_confirm(monkeypatch, tmp_path, capsys):
+    confirmed = []
+    rebuilt = []
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[], refused=[],
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=lambda *a, **k: confirmed.append(1),
+        rebuild=lambda env, **kw: rebuilt.append(1),
+    )
+    assert confirmed == [] and rebuilt == []
+    assert "Nothing to rebuild for 'Page B'." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_no_items_but_blocks_warns_before_prompting(
+    monkeypatch, tmp_path, capsys
+):
+    review = types.SimpleNamespace(
+        sections=[("Old Content", 4)], blocks_to_delete=4, blocks_kept=0, items=[],
+        relations_only=[], refused=[],
+    )
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=_make_confirm(["cancel"]),
+    )
+    out = capsys.readouterr().out
+    assert "No archive items are linked to this page" in out
+    warn_pos = out.index("No archive items are linked")
+    cancel_pos = out.index("Cancelled — nothing changed.")
+    assert warn_pos < cancel_pos
+
+
+def test_distribute_rebuild_page_skipped_prints_items_only_line(monkeypatch, tmp_path, capsys):
+    counts = {"items_reset": 2, "relations_removed": 2, "relations_only": 0,
+              "blocks_deleted": 0, "heading_cleared": False, "page_skipped": True}
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild", "--yes"],
+        rebuild=lambda env, **kw: counts,
+    )
+    out = capsys.readouterr().out
+    assert "has no content heading" in out
+    assert "only its items were reset" in out
+
+
+# ---------------------------------------------------------------------------
+# _format_rebuild_preview
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_preview(*, sections=(), blocks_to_delete=0, blocks_kept=0, items=(),
+                     relations_only=(), refused=()):
+    return types.SimpleNamespace(
+        sections=list(sections), blocks_to_delete=blocks_to_delete, blocks_kept=blocks_kept,
+        items=list(items), relations_only=list(relations_only), refused=list(refused),
+    )
+
+
+def test_format_rebuild_preview_none_title_falls_back_to_source_id(capsys):
+    preview = _rebuild_preview(items=[("src-id-9", None, "Distributed")])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "src-id-9" in out
+    assert "None" not in out
+
+
+def test_format_rebuild_preview_groups_items_by_status(capsys):
+    preview = _rebuild_preview(items=[
+        ("a", "Item A", "Distributed"),
+        ("b", "Item B", "Misrouted"),
+    ])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "Distributed" in out and "Misrouted" in out
+    assert "Item A" in out and "Item B" in out
+
+
+def test_format_rebuild_preview_lists_relations_only_separately_from_reset(capsys):
+    preview = _rebuild_preview(
+        items=[("a", "Item A", "Distributed"), ("b", "Item B", "Queued")],
+        relations_only=[("b", "Item B", "Queued")],
+    )
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "unlink" in out.lower()
+    assert "Item B" in out
+
+
+def test_format_rebuild_preview_lists_refused_sections_with_reason(capsys):
+    preview = _rebuild_preview(refused=[("Weird Section", ["image", "has_children"])])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "Weird Section" in out
+    assert "image" in out and "has_children" in out
 
 
 # ---------------------------------------------------------------------------

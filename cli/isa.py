@@ -84,6 +84,43 @@ def _format_distribute_preview(preview) -> str:
     return "\n".join(lines)
 
 
+def _format_rebuild_preview(preview) -> str:
+    """Render a RebuildPreview compactly: per-section block counts, items grouped by what
+    rebuild will do to them (reset to Tagged, or unlink only), and any refused sections a
+    reviewer must fix in Notion before rebuild will touch the page."""
+    lines = []
+    if preview.sections:
+        for heading, count in preview.sections:
+            lines.append(f"  section {heading!r}: {count} block(s) to delete")
+    else:
+        lines.append("  No sections")
+    lines.append(f"  blocks kept (dividers/empty paragraphs): {preview.blocks_kept}")
+
+    relations_only_ids = {source_id for source_id, _, _ in preview.relations_only}
+    reset_items = [row for row in preview.items if row[0] not in relations_only_ids]
+    if reset_items:
+        by_status: dict = {}
+        for source_id, title, status in reset_items:
+            by_status.setdefault(status, []).append((source_id, title))
+        lines.append(f"  items to reset to Tagged ({len(reset_items)}):")
+        for status in sorted(by_status):
+            lines.append(f"    {status}:")
+            for source_id, title in by_status[status]:
+                lines.append(f"      - {_distribute_label(source_id, title)}")
+
+    if preview.relations_only:
+        lines.append(f"  items to unlink only, status untouched ({len(preview.relations_only)}):")
+        for source_id, title, status in preview.relations_only:
+            lines.append(f"    - {_distribute_label(source_id, title)} ({status})")
+
+    if preview.refused:
+        lines.append(f"  refused sections ({len(preview.refused)}) — fix these in Notion first:")
+        for heading, kinds in preview.refused:
+            lines.append(f"    - {heading!r}: {', '.join(kinds)}")
+
+    return "\n".join(lines)
+
+
 _STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
                 "Failed", "remaining")
 
@@ -139,8 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
     run.add_argument("--target", default=None,
                      help="distribute: the route_target page name to ingest into")
+    run.add_argument("--rebuild", action="store_true",
+                     help="distribute: reset --target to its template and its items to Tagged")
     run.add_argument("--yes", action="store_true",
-                     help="skip the distribute apply confirmation")
+                     help="skip the distribute apply/rebuild confirmation")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -425,6 +464,10 @@ def dispatch_run(args) -> None:
         from insta_save.stages import distribute
 
         # Validate before loading anything — a bad invocation must not touch real config.
+        if args.rebuild and args.apply:
+            raise SystemExit(
+                "isa run --stage distribute: --rebuild and --apply cannot be combined"
+            )
         if not args.target:
             raise SystemExit("isa run --stage distribute: --target '<page name>' is required")
         env = _guard(_load_env)
@@ -435,6 +478,64 @@ def dispatch_run(args) -> None:
         print(f"Logging to {_rel(log_path)}")
 
         try:
+            if args.rebuild:
+                review = distribute.rebuild_preview(env, target=args.target)
+                print(_format_rebuild_preview(review))
+
+                if review.refused:
+                    problems = "; ".join(
+                        f"{heading!r} ({', '.join(kinds)})" for heading, kinds in review.refused
+                    )
+                    raise SystemExit(
+                        "isa run --stage distribute --rebuild: refusing — fix these sections "
+                        f"in Notion first: {problems}"
+                    )
+
+                if not review.items and review.blocks_to_delete == 0:
+                    print(f"Nothing to rebuild for {args.target!r}.")
+                    return
+
+                if not review.items and review.blocks_to_delete:
+                    print("⚠ No archive items are linked to this page — its content may be "
+                          "hand-built. Rebuilding deletes it.")
+
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage distribute --rebuild: refusing to change Notion "
+                        "without confirmation in a non-interactive run — re-run in a "
+                        "terminal or pass --yes"
+                    )
+                else:
+                    choice = tui.confirm_action(
+                        f"Rebuild {args.target!r}? This removes its distributed content and "
+                        "resets its items.",
+                        [
+                            ("Rebuild this page", "rebuild",
+                             "delete the page's content and reset its items to Tagged"),
+                            ("Cancel — change nothing", "cancel", "write nothing"),
+                        ],
+                    )
+                    proceed = choice == "rebuild"
+
+                if not proceed:
+                    print("Cancelled — nothing changed.")
+                    return
+
+                counts = distribute.rebuild(env, target=args.target)
+                print(f"Rebuilt {args.target!r}: {counts['items_reset']} item(s) reset to "
+                      f"Tagged, {counts['relations_removed']} relation(s) removed, "
+                      f"{counts['relations_only']} item(s) unlinked only, "
+                      f"{counts['blocks_deleted']} block(s) deleted, heading "
+                      f"{'cleared' if counts['heading_cleared'] else 'left as is'}.")
+                if counts.get("page_skipped"):
+                    print(f"  {args.target!r} has no content heading — only its items "
+                          "were reset.")
+                print("  Re-running after a partial failure is safe: already-reset items "
+                      "show as unlink-only next time.")
+                return
+
             if args.apply:
                 review = distribute.preview(env, target=args.target)
                 print(_format_distribute_preview(review))
