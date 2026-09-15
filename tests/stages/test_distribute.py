@@ -108,3 +108,46 @@ def test_bucket_items_gives_an_item_over_the_char_budget_its_own_part():
     ]
     buckets = dist.bucket_items(items, TAGS, CTYPES, max_items=None, char_budget=100)
     assert [[i["source_id"] for i in b.items] for b in buckets] == [["a"], ["b"]]
+
+
+PROPOSAL = """# Workouts
+- cue one
+
+```json
+{"folded": ["abc"], "dropped": [{"source_id": "xyz", "reason": "meal prep"}]}
+```
+"""
+
+
+def test_parse_proposal_splits_body_from_the_json_trailer():
+    body, folded, dropped = dist.parse_proposal(PROPOSAL)
+    assert body == "# Workouts\n- cue one"
+    assert folded == ["abc"]
+    assert dropped == [{"source_id": "xyz", "reason": "meal prep"}]
+
+
+def test_parse_proposal_uses_the_last_fenced_block():
+    text = '```python\ncode\n```\n# Sec\n\n```json\n{"folded": ["a"]}\n```'
+    body, folded, _ = dist.parse_proposal(text)
+    assert "# Sec" in body and folded == ["a"]
+
+
+def test_parse_proposal_tolerates_raw_control_chars():
+    text = '# Sec\n\n```json\n{"folded": ["a"], "dropped": [{"source_id": "b", "reason": "x\ty"}]}\n```'
+    _, _, dropped = dist.parse_proposal(text)
+    assert dropped[0]["reason"] == "x\ty"
+
+
+def test_parse_proposal_defaults_missing_keys_to_empty():
+    body, folded, dropped = dist.parse_proposal("# Sec\n\n```json\n{}\n```")
+    assert folded == [] and dropped == []
+
+
+def test_parse_proposal_raises_without_a_trailer():
+    with pytest.raises(ValueError, match="no fenced JSON trailer"):
+        dist.parse_proposal("# Sec\n- a")
+
+
+def test_parse_proposal_raises_on_malformed_json():
+    with pytest.raises(ValueError, match="malformed JSON trailer"):
+        dist.parse_proposal('# Sec\n\n```json\n{"folded": [\n```')

@@ -5,7 +5,9 @@ prepare (deterministic bucketing, no model) -> fill (claude-p consolidation, ver
 prompt) -> apply (section-level replace, then relations and statuses). Attended only:
 prepare+fill write nothing to Notion, apply is a separate invocation."""
 
+import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -106,3 +108,29 @@ def chunk_buckets(buckets, *, max_items, char_budget) -> list:
     if current:
         chunks.append(current)
     return chunks
+
+
+_FENCE_RE = re.compile(r"```\s*json\s*\n(.*?)\n```", re.S)
+
+
+def parse_proposal(text) -> tuple:
+    """(body_markdown, folded_source_ids, dropped) from a fill response.
+
+    The LAST fenced block is the JSON trailer; everything before it is the page body.
+    strict=False tolerates the raw control characters the model emits inside JSON strings.
+    Raises ValueError when the trailer is missing or malformed so the caller can retry."""
+    matches = list(_FENCE_RE.finditer(text or ""))
+    if not matches:
+        raise ValueError("distribute proposal: no fenced JSON trailer found")
+    trailer = matches[-1]
+    try:
+        meta = json.loads(trailer.group(1), strict=False)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"distribute proposal: malformed JSON trailer — {exc}") from exc
+    body = text[: trailer.start()].rstrip()
+    folded = [str(s) for s in meta.get("folded") or []]
+    dropped = [
+        {"source_id": str(d.get("source_id")), "reason": d.get("reason") or ""}
+        for d in meta.get("dropped") or []
+    ]
+    return body, folded, dropped
