@@ -5,11 +5,14 @@ prepare (deterministic bucketing, no model) -> fill (claude-p consolidation, ver
 prompt) -> apply (section-level replace, then relations and statuses). Attended only:
 prepare+fill write nothing to Notion, apply is a separate invocation."""
 
+import difflib
 import json
 import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+
+from insta_save.markdown_blocks import split_sections
 
 log = logging.getLogger(__name__)
 
@@ -169,3 +172,53 @@ def parse_proposal(text) -> tuple:
     body = text[: trailer.start()].rstrip()
     folded, dropped = _validate_trailer(meta)
     return body, folded, dropped
+
+
+@dataclass(frozen=True)
+class SectionOp:
+    """One section write. `replace` rewrites an existing H1's children in place;
+    `append` adds a new section at the end of the content region."""
+
+    heading: str
+    body_markdown: str
+    action: str
+
+
+def plan_sections(current_md, proposed_md) -> list:
+    """Map the proposal's H1 sections onto the live page. Heading text is the join key,
+    so the prompt forbids renaming an existing heading. Sections the proposal omits are
+    never returned and never rewritten."""
+    proposed = split_sections(proposed_md)
+    seen = set()
+    for heading, _ in proposed:
+        if heading in seen:
+            raise ValueError(f"distribute proposal: duplicate section heading {heading!r}")
+        seen.add(heading)
+    current = dict(split_sections(current_md))
+    ops = []
+    for heading, body in proposed:
+        if current.get(heading) == body:
+            continue  # byte-identical -> never rewritten, whatever the model echoed back
+        ops.append(SectionOp(heading, body, "replace" if heading in current else "append"))
+    return ops
+
+
+def render_diff(current_md, proposed_md) -> str:
+    """Per-section unified diff, before vs proposed. The review surface: untouched
+    sections never appear, so a first-time build reads as all-additions."""
+    current = dict(split_sections(current_md))
+    chunks = []
+    for op in plan_sections(current_md, proposed_md):
+        before = current.get(op.heading, "")
+        chunks.append(
+            "\n".join(
+                difflib.unified_diff(
+                    before.splitlines(),
+                    op.body_markdown.splitlines(),
+                    fromfile=f"{op.heading} (current)",
+                    tofile=f"{op.heading} (proposed)",
+                    lineterm="",
+                )
+            )
+        )
+    return "\n\n".join(chunks) if chunks else "no changes proposed"

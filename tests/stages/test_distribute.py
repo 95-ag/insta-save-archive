@@ -184,3 +184,41 @@ def test_parse_proposal_treats_null_lists_as_empty():
 def test_parse_proposal_defaults_a_missing_reason_to_empty():
     _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b"}]}'))
     assert dropped == [{"source_id": "b", "reason": ""}]
+
+
+def test_plan_sections_replaces_an_existing_heading():
+    ops = dist.plan_sections("# One\n- old", "# One\n- new")
+    assert [(o.heading, o.action) for o in ops] == [("One", "replace")]
+    assert ops[0].body_markdown == "- new"
+
+
+def test_plan_sections_appends_a_new_heading():
+    ops = dist.plan_sections("# One\n- a", "# Two\n- b")
+    assert [(o.heading, o.action) for o in ops] == [("Two", "append")]
+
+
+def test_plan_sections_omits_untouched_sections():
+    ops = dist.plan_sections("# One\n- a\n# Two\n- b", "# One\n- new")
+    assert [o.heading for o in ops] == ["One"]
+
+
+def test_plan_sections_omits_a_section_echoed_back_unchanged():
+    # fill() proposes the FULL merged body, so unchanged sections DO come back. A section
+    # whose body is byte-identical must never be rewritten.
+    ops = dist.plan_sections("# One\n- a\n# Two\n- b", "# One\n- new\n# Two\n- b")
+    assert [o.heading for o in ops] == ["One"]
+
+
+def test_plan_sections_rejects_a_duplicate_proposed_heading():
+    with pytest.raises(ValueError, match="duplicate section heading"):
+        dist.plan_sections("# One\n- a", "# One\n- x\n# One\n- y")
+
+
+def test_render_diff_shows_the_change_and_names_the_section():
+    out = dist.render_diff("# One\n- old", "# One\n- new")
+    assert "One (current)" in out and "One (proposed)" in out
+    assert "-- old" in out and "+- new" in out
+
+
+def test_render_diff_reports_no_change_when_the_proposal_is_empty():
+    assert "no changes" in dist.render_diff("# One\n- a", "").lower()
