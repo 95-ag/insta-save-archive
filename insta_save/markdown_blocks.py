@@ -101,3 +101,45 @@ def markdown_to_blocks(md) -> list:
         else:
             blocks.append(_block("paragraph", line))
     return blocks
+
+
+def split_sections(md) -> list:
+    """Split a page body into [(h1_heading_text, section_markdown)].
+
+    Content before the first H1 is dropped: below the content anchor there should be
+    none, and above it lives template furniture this stage never rewrites."""
+    sections, heading, buf = [], None, []
+    for line in (md or "").splitlines():
+        if line.startswith("# "):
+            if heading is not None:
+                sections.append((heading, "\n".join(buf).strip("\n")))
+            heading, buf = line[2:].strip(), []
+        elif heading is not None:
+            buf.append(line)
+    if heading is not None:
+        sections.append((heading, "\n".join(buf).strip("\n")))
+    return sections
+
+
+def merge_sections(current_md, proposed_md) -> str:
+    """Apply a proposal's sections onto the current body and return the FULL body.
+
+    Heading text is the join key: a heading already present is replaced in place, a new
+    one is appended at the end. Sections the proposal omits come through untouched.
+    Used to chain over-budget fill calls, where each call needs the running full body."""
+    proposed = dict(split_sections(proposed_md))
+    merged, seen = [], set()
+    for heading, body in split_sections(current_md):
+        body = proposed.get(heading, body)
+        if heading in proposed:
+            seen.add(heading)
+        merged.append((heading, body))
+    for heading, body in split_sections(proposed_md):
+        if heading not in seen:
+            merged.append((heading, body))
+    lines = []
+    for heading, body in merged:
+        lines.append(f"# {heading}")
+        if body:
+            lines.append(body)
+    return "\n".join(lines)

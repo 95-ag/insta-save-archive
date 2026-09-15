@@ -79,3 +79,31 @@ def test_markdown_to_blocks_builds_bold_spans():
 def test_markdown_to_blocks_round_trips_through_blocks_to_markdown():
     md = "# Workouts\n## Pelvic tilt\n- cue one\n🔗 [Hip drills](https://ig/x)"
     assert mb.blocks_to_markdown(mb.markdown_to_blocks(md)) == md
+
+
+def test_split_sections_splits_on_h1_only():
+    md = "# One\n## Topic\n- a\n# Two\n- b"
+    assert mb.split_sections(md) == [("One", "## Topic\n- a"), ("Two", "- b")]
+
+
+def test_split_sections_ignores_content_before_the_first_h1():
+    assert mb.split_sections("stray line\n# One\n- a") == [("One", "- a")]
+
+
+def test_split_sections_returns_empty_for_no_headings():
+    assert mb.split_sections("- just a bullet") == []
+
+
+def test_merge_sections_replaces_a_matching_heading_in_place():
+    current = "# One\n- old\n# Two\n- keep"
+    assert mb.merge_sections(current, "# One\n- new") == "# One\n- new\n# Two\n- keep"
+
+
+def test_merge_sections_appends_a_new_heading_at_the_end():
+    assert mb.merge_sections("# One\n- a", "# Two\n- b") == "# One\n- a\n# Two\n- b"
+
+
+def test_merge_sections_leaves_untouched_sections_byte_identical():
+    current = "# One\n- a\n# Two\n-  odd   spacing"
+    merged = mb.merge_sections(current, "# One\n- new")
+    assert "-  odd   spacing" in merged
