@@ -8,7 +8,7 @@ import logging
 import os
 
 from notion_client import Client
-from notion_client.errors import APIResponseError
+from notion_client.errors import APIResponseError, HTTPResponseError, RequestTimeoutError
 
 from insta_save.config.env import EnvConfig, validate_notion
 from insta_save.engines.ocr_clean import clean_ocr_text
@@ -625,6 +625,9 @@ def query_routed_for_target(env: EnvConfig, target: str) -> list:
 
 
 _APPEND_CHUNK = 100  # Notion caps children per blocks.children.append call
+# A distribute write that times out or gets a non-API HTTP error must stop apply as cleanly
+# as an API error does, so the stage sees one exception type for every failed write.
+_DISTRIBUTE_WRITE_ERRORS = (APIResponseError, HTTPResponseError, RequestTimeoutError)
 
 
 def _chunked(items, size):
@@ -634,8 +637,13 @@ def _chunked(items, size):
 
 def replace_section_blocks(env: EnvConfig, page_id: str, *, after_block_id: str,
                            delete_block_ids: list, blocks: list) -> str:
-    """Replace one section's content: delete its current children, then insert `blocks`
-    after `after_block_id`. The heading block itself is never deleted.
+    """Replace one section's content: insert `blocks` after `after_block_id`, then delete
+    the section's old children. The heading block itself is never deleted.
+
+    Inserting first means a failed insert can never leave a curated section empty: the
+    worst case is old content plus a partial copy of the new, which the next prepare shows
+    the model to dedup. The ids are logged before deletion so an interrupted delete can be
+    traced in Notion's trash.
 
     Inserts in chunks of 100, re-anchoring each chunk on the previous chunk's last block,
     so a section larger than one append call lands in order. Returns the last inserted
@@ -643,16 +651,17 @@ def replace_section_blocks(env: EnvConfig, page_id: str, *, after_block_id: str,
     validate_notion(env)
     client = Client(auth=env.notion_token)
     try:
-        for block_id in delete_block_ids:
-            client.blocks.delete(block_id=block_id)
         anchor = after_block_id
         for chunk in _chunked(blocks, _APPEND_CHUNK):
             resp = client.blocks.children.append(block_id=page_id, children=chunk, after=anchor)
             anchor = resp["results"][-1]["id"]
-        log.info("notion: replaced section on %s (deleted %d, inserted %d)",
-                 page_id, len(delete_block_ids), len(blocks))
+        log.info("notion: deleting replaced blocks on %s: %s", page_id, delete_block_ids)
+        for block_id in delete_block_ids:
+            client.blocks.delete(block_id=block_id)
+        log.info("notion: replaced section on %s (inserted %d, deleted %d)",
+                 page_id, len(blocks), len(delete_block_ids))
         return anchor
-    except APIResponseError as e:
+    except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to replace section on {page_id}: {e}") from e
 
 
@@ -662,7 +671,7 @@ def set_heading_text(env: EnvConfig, block_id: str, text: str) -> None:
     client = Client(auth=env.notion_token)
     try:
         client.blocks.update(block_id=block_id, heading_1={"rich_text": _rich_text(text)["rich_text"]})
-    except APIResponseError as e:
+    except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to fill heading {block_id}: {e}") from e
 
 
@@ -679,7 +688,7 @@ def set_knowledge_relation(env: EnvConfig, page_id: str, target_page_id: str) ->
         client.pages.update(page_id=page_id, properties={
             "Knowledge Base": {"relation": current + [{"id": target_page_id}]}})
         return True
-    except APIResponseError as e:
+    except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to relate {page_id} -> {target_page_id}: {e}") from e
 
 
@@ -693,7 +702,7 @@ def write_distributed(env: EnvConfig, page_id: str, version: str, *, notes=None)
         props["distribute_notes"] = _rich_text(notes)
     try:
         client.pages.update(page_id=page_id, properties=props)
-    except APIResponseError as e:
+    except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to mark {page_id} Distributed: {e}") from e
 
 
@@ -706,5 +715,5 @@ def write_misrouted(env: EnvConfig, page_id: str, reason: str, version: str) -> 
              "distribute_version": _rich_text(version)}
     try:
         client.pages.update(page_id=page_id, properties=props)
-    except APIResponseError as e:
+    except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to mark {page_id} Misrouted: {e}") from e

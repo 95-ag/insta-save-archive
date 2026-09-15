@@ -47,6 +47,27 @@ def blocks_to_markdown(blocks) -> str:
     return "\n".join(lines)
 
 
+_SPAN_UNIT_LIMIT = 2000  # Notion caps one rich_text span's content at 2000 UTF-16 code units
+
+
+def _split_span(span, limit=_SPAN_UNIT_LIMIT) -> list:
+    """Split a write-shape span into consecutive spans of at most `limit` UTF-16 units,
+    each keeping the original link and annotations. Cuts only between code points, so a
+    non-BMP character (2 units) is never split into lone surrogates."""
+    content = span["text"]["content"]
+    pieces, start, units = [], 0, 0
+    for i, ch in enumerate(content):
+        width = 2 if ord(ch) > 0xFFFF else 1
+        if units + width > limit:
+            pieces.append(content[start:i])
+            start, units = i, 0
+        units += width
+    if not pieces:
+        return [span]
+    pieces.append(content[start:])
+    return [{**span, "text": {**span["text"], "content": piece}} for piece in pieces]
+
+
 def _write_plain(text) -> list:
     """Plain markdown (bold only) -> write-shape rich_text spans."""
     spans, pos = [], 0
@@ -77,6 +98,7 @@ def _write_rich(text) -> list:
         pos = m.end()
     if pos < len(text):
         spans += _write_plain(text[pos:])
+    spans = [piece for span in spans for piece in _split_span(span)]
     return spans or [{"type": "text", "text": {"content": ""}}]
 
 

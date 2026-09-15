@@ -83,6 +83,49 @@ def test_markdown_to_blocks_round_trips_through_blocks_to_markdown():
     assert mb.blocks_to_markdown(mb.markdown_to_blocks(md)) == md
 
 
+def _utf16_units(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def test_markdown_to_blocks_splits_a_long_span_at_2000_units():
+    line = "abcde" * 900
+    [block] = mb.markdown_to_blocks(line)
+    spans = block["paragraph"]["rich_text"]
+    assert [len(s["text"]["content"]) for s in spans] == [2000, 2000, 500]
+    assert "".join(s["text"]["content"] for s in spans) == line
+
+
+def test_markdown_to_blocks_split_link_spans_all_carry_the_link():
+    label = "x" * 2500
+    spans = mb.markdown_to_blocks(f"[{label}](https://ig/x)")[0]["paragraph"]["rich_text"]
+    assert len(spans) == 2
+    assert all(s["text"]["link"] == {"url": "https://ig/x"} for s in spans)
+    assert "".join(s["text"]["content"] for s in spans) == label
+
+
+def test_markdown_to_blocks_split_bold_spans_keep_their_annotations():
+    text = "y" * 2100
+    spans = mb.markdown_to_blocks(f"**{text}**")[0]["paragraph"]["rich_text"]
+    assert len(spans) == 2
+    assert all(s["annotations"] == {"bold": True} for s in spans)
+
+
+def test_markdown_to_blocks_never_splits_a_surrogate_pair():
+    line = "\U0001f525" * 1500
+    spans = mb.markdown_to_blocks(f"- {line}")[0]["bulleted_list_item"]["rich_text"]
+    assert len(spans) == 2
+    assert all(_utf16_units(s["text"]["content"]) <= 2000 for s in spans)
+    for span in spans:
+        span["text"]["content"].encode("utf-16-le", errors="strict")
+        assert not any(0xD800 <= ord(ch) <= 0xDFFF for ch in span["text"]["content"])
+    assert "".join(s["text"]["content"] for s in spans) == line
+
+
+def test_markdown_to_blocks_round_trips_a_long_line():
+    md = "# Workouts\n- " + "cue " * 1200 + "[Hip drills](https://ig/x)"
+    assert mb.blocks_to_markdown(mb.markdown_to_blocks(md)) == md
+
+
 def test_split_sections_splits_on_h1_only():
     md = "# One\n## Topic\n- a\n# Two\n- b"
     assert mb.split_sections(md) == [("One", "## Topic\n- a"), ("Two", "- b")]

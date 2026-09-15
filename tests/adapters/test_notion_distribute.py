@@ -1,6 +1,7 @@
 import types
 
 import pytest
+from notion_client.errors import RequestTimeoutError
 
 from insta_save.adapters import notion
 
@@ -143,19 +144,37 @@ def test_query_routed_for_target_returns_none_for_missing_text(monkeypatch):
 
 
 class _Blocks:
-    def __init__(self):
+    def __init__(self, append_error=None):
         self.deleted, self.appends, self.updates = [], [], []
+        self.calls = []
+        self.append_error = append_error
         self.children = types.SimpleNamespace(append=self._append, list=None)
 
     def delete(self, block_id):
+        self.calls.append(("delete", block_id))
         self.deleted.append(block_id)
 
     def update(self, block_id, **props):
         self.updates.append((block_id, props))
 
     def _append(self, block_id, children, after=None):
+        self.calls.append(("append", after))
+        if self.append_error is not None:
+            raise self.append_error
         self.appends.append((after, len(children)))
         return {"results": [{"id": f"new-{len(self.appends)}-{i}"} for i in range(len(children))]}
+
+
+def _api_error():
+    import httpx
+
+    return notion.APIResponseError(
+        code="internal_server_error",
+        status=500,
+        message="boom",
+        headers=httpx.Headers(),
+        raw_body_text="boom",
+    )
 
 
 def test_replace_section_blocks_deletes_then_inserts(monkeypatch):
@@ -166,6 +185,30 @@ def test_replace_section_blocks_deletes_then_inserts(monkeypatch):
     )
     assert blocks.deleted == ["b1", "b2"]
     assert blocks.appends == [("h1", 1)]
+
+
+def test_replace_section_blocks_inserts_every_block_before_deleting(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    notion.replace_section_blocks(
+        _Env(),
+        "pg",
+        after_block_id="h1",
+        delete_block_ids=["b1", "b2"],
+        blocks=[{"x": i} for i in range(150)],
+    )
+    kinds = [kind for kind, _ in blocks.calls]
+    assert kinds == ["append", "append", "delete", "delete"]
+
+
+def test_replace_section_blocks_failed_insert_deletes_nothing(monkeypatch):
+    blocks = _Blocks(append_error=_api_error())
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    with pytest.raises(RuntimeError, match="failed to replace section on pg"):
+        notion.replace_section_blocks(
+            _Env(), "pg", after_block_id="h1", delete_block_ids=["b1"], blocks=[{"x": 1}]
+        )
+    assert [kind for kind, _ in blocks.calls] == ["append"]
 
 
 def test_replace_section_blocks_chunks_at_100_and_reanchors(monkeypatch):
@@ -262,3 +305,12 @@ def test_write_misrouted_sets_status_and_reason(monkeypatch):
         updates[0]["distribute_notes"]["rich_text"][0]["text"]["content"]
         == "meal prep, not movement"
     )
+
+
+def test_write_distributed_wraps_a_request_timeout(monkeypatch):
+    def _update(page_id, properties):
+        raise RequestTimeoutError()
+
+    _patch(monkeypatch, types.SimpleNamespace(pages=types.SimpleNamespace(update=_update)))
+    with pytest.raises(RuntimeError, match="failed to mark pg Distributed"):
+        notion.write_distributed(_Env(), "pg", "v")
