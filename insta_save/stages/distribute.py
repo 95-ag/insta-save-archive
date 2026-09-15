@@ -694,7 +694,7 @@ def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
             counts["unknown"] += 1
             continue
         ig_link = item.get("ig_link")
-        if ig_link is None or ig_link not in proposed_md:
+        if ig_link is None or f"]({ig_link})" not in proposed_md:
             log.warning(
                 "distribute.apply: folded %s but its link is not on the page — left Routed", sid
             )
@@ -744,6 +744,26 @@ def _comparable_sections(md) -> list:
     ]
 
 
+def _already_applied(live_md, staged_current, proposed_md) -> bool:
+    """True when the live page already renders the proposal's effect, so a re-run after a
+    partial failure can resume at the item writes instead of rewriting sections.
+
+    Comparing the live page against RAW proposed_md misses two things markdown_to_blocks
+    normalizes away when a real write happens: an indented sub-bullet and trailing
+    whitespace. Round-tripping the merged proposal through that same write/read path
+    reproduces exactly what live_md contains after a real write. merge_sections also
+    carries an untouched section forward when a reviewer deletes it from proposed.md by
+    hand, so its removal alone doesn't look like drift. A duplicate-heading ValueError from
+    merge_sections means the page isn't in a shape this check can reason about — treat it as
+    not-yet-applied and let the caller's stale-page error fire instead."""
+    try:
+        merged = merge_sections(staged_current, proposed_md)
+    except ValueError:
+        return False
+    expected_md = blocks_to_markdown(markdown_to_blocks(merged))
+    return _comparable_sections(live_md) == _comparable_sections(expected_md)
+
+
 def apply(env, *, target, version) -> dict:
     """Write the reviewed proposal to the page, then the item state. Aborts if the page moved
     under the proposal — unless it already carries the proposal (a run that failed after its
@@ -754,6 +774,11 @@ def apply(env, *, target, version) -> dict:
     d = staging_dir(env, target)
     if not (d / "batch.json").exists():
         raise RuntimeError(f"distribute.apply: nothing staged for {target!r} — run prepare first")
+    if any(not (d / name).exists() for name in ("current.md", "proposed.md", "proposal.json")):
+        raise RuntimeError(
+            f"distribute.apply: {target!r} is prepared but not filled — "
+            "run the stage without --apply first"
+        )
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     proposal = json.loads((d / "proposal.json").read_text(encoding="utf-8"))
     staged_current = (d / "current.md").read_text(encoding="utf-8")
@@ -767,7 +792,7 @@ def apply(env, *, target, version) -> dict:
         ops = plan_sections(staged_current, proposed_md)
         _refuse_unshowable(blocks, ops)
         _write_sections(env, page_id, blocks, ops, empty_page=_is_empty_page(staged_current))
-    elif _comparable_sections(live_md) == _comparable_sections(proposed_md):
+    elif _already_applied(live_md, staged_current, proposed_md):
         log.info("distribute.apply: %s already carries the proposal — resuming item writes", target)
     else:
         raise RuntimeError(

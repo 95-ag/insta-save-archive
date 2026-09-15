@@ -1474,3 +1474,121 @@ def test_apply_refuses_text_before_the_first_heading(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="before its first heading"):
         dist.apply(env, target="Page A", version="v")
     assert page.writes() == []
+
+
+def test_apply_resumes_after_a_partial_failure_despite_indentation_and_trailing_space(
+    tmp_path, monkeypatch
+):
+    page = _FakePage(
+        [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    ).patch(monkeypatch)
+    # A hand-editable indented sub-bullet and a trailing space: markdown_to_blocks flattens
+    # and strips both on the real write, so the raw text never reappears on the live page.
+    proposed = "# X\n- parent\n  - child\n- item \n🔗 [t-a](https://ig/a)\n🔗 [t-b](https://ig/b)"
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
+    env, d = _stage_for(
+        tmp_path,
+        page,
+        items=items,
+        proposed_md=proposed,
+        proposal={"folded": ["a", "b"], "dropped": []},
+    )
+
+    real_relation = page.set_knowledge_relation
+
+    def _fail_on_b(env, pid, kp):
+        if pid == "p-b":
+            raise RuntimeError("notion down")
+        return real_relation(env, pid, kp)
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", _fail_on_b)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.apply(env, target="Page A", version="v")
+    assert (d / "batch.json").exists()
+    assert any(entry[0] == "replace_section_blocks" for entry in page.log)
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", real_relation)
+    before = len(page.log)
+    counts = dist.apply(env, target="Page A", version="v")
+    resumed = page.log[before:]
+    assert not any(entry[0] in ("replace_section_blocks", "set_heading_text") for entry in resumed)
+    assert counts["folded"] == 2
+    relation_pids = {e[1] for e in page.log if e[0] == "set_knowledge_relation"}
+    distributed_pids = {e[1] for e in page.log if e[0] == "write_distributed"}
+    assert {"p-a", "p-b"} <= relation_pids
+    assert {"p-a", "p-b"} <= distributed_pids
+    for name in ("batch.json", "current.md", "proposed.md", "proposal.json"):
+        assert not (d / name).exists()
+
+
+def test_apply_resumes_after_a_partial_failure_when_an_untouched_section_was_deleted(
+    tmp_path, monkeypatch
+):
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "old"),
+            _read_block("hy", "heading_1", "Y"),
+            _read_block("by", "bulleted_list_item", "y keep"),
+        ]
+    ).patch(monkeypatch)
+    # The reviewer hand-edited proposed.md and dropped the untouched "Y" section entirely;
+    # plan_sections leaves a section the proposal omits alone, so Y stays on the page.
+    proposed = "# X\n- new\n🔗 [t-a](https://ig/a)"
+    env, d = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+
+    def _always_fail(env, pid, kp):
+        raise RuntimeError("notion down")
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", _always_fail)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.apply(env, target="Page A", version="v")
+    assert (d / "batch.json").exists()
+    assert page.render() == "# X\n- new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep"
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", page.set_knowledge_relation)
+    before = len(page.log)
+    counts = dist.apply(env, target="Page A", version="v")
+    resumed = page.log[before:]
+    assert not any(entry[0] in ("replace_section_blocks", "set_heading_text") for entry in resumed)
+    assert counts["folded"] == 1
+    for name in ("batch.json", "current.md", "proposed.md", "proposal.json"):
+        assert not (d / name).exists()
+
+
+def test_apply_refuses_when_prepared_but_not_filled(tmp_path, monkeypatch):
+    page = _FakePage([_read_block("hx", "heading_1", "X")]).patch(monkeypatch)
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    (d / "batch.json").write_text(
+        json.dumps({"target": "Page A", "page_id": "kp", "items": []}), encoding="utf-8"
+    )
+    (d / "current.md").write_text("# X", encoding="utf-8")
+    with pytest.raises(
+        RuntimeError, match=re.escape("distribute.apply: 'Page A' is prepared but not filled")
+    ):
+        dist.apply(env, target="Page A", version="v")
+    assert page.writes() == []
+
+
+def test_apply_does_not_verify_a_folded_item_whose_link_is_only_a_url_prefix(tmp_path, monkeypatch):
+    page = _FakePage(
+        [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    ).patch(monkeypatch)
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md="# X\n- new\n🔗 [x](https://ig/ab)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts == {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 1}
+    writes = page.writes()
+    assert len(writes) == 1 and writes[0][0] == "replace_section_blocks"
