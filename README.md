@@ -15,7 +15,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **Reference**
 - [How it works](#how-it-works) — the pipeline and status flow
 - [Setup](#setup) · [Configuration](#configuration) · [Running](#running) · [Backends](#backends)
-- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends)
+- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends) · [Distribute](#distribute-optional)
 - [Failures, guardrails, backup](#failures-guardrails-backup) · [Reprocessing](#reprocessing) · [Troubleshooting](#troubleshooting)
 - [Requirements](#requirements) · [Repo layout](#repo-layout)
 
@@ -91,12 +91,15 @@ flowchart LR
     C -->|"enrich · vocab locked by calibrate"| E[Tagged]
     D --> E
     E -->|"route · optional"| F[Routed]
+    F -->|"distribute · attended, optional"| G[Distributed]
     style D fill:#eee,stroke:#999
 ```
 
 - **Extract-path** items (collections you mark `extract=yes`) get transcript/OCR, then LLM enrichment.
 - **Deterministic** items (`extract=no`) are tagged straight from their collection — no transcript, no LLM.
 - **Calibrate** is a one-time human gate per group that locks its tag vocabulary before enrich runs.
+- **Distribute** (attended-only, not part of `isa run`) folds a `Routed` item's content into its
+  Knowledge-DB page; off-topic drops land in `Misrouted` instead — see [Distribute](#distribute-optional).
 
 `isa run` handles discovery and import, then a **sequencer** drives each group through the
 remaining steps one action at a time. `--fresh` (incremental mode) forces a re-crawl to catch new
@@ -117,6 +120,8 @@ the URL. Schema properties are created automatically on first write.
 | `IG_USERNAME` | Instagram handle (no `@`) |
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
+| `NOTION_KNOWLEDGE_DATABASE_ID` | the `learnings` Knowledge-DB id — only for `distribute` |
+| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.0-distribute`) |
 
 ## Configuration
 
@@ -193,13 +198,15 @@ isa backup [--restore-check]  # snapshot Notion to JSON (+ optional restore test
 **Flag reference (allowed values):**
 ```
 isa run   --mode  {first-time | incremental}        # default: incremental
-          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route}
+          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route | distribute}
           --group <name>        # restrict to one group (e.g. calibrate a single group)
           --limit <N>           # cap items processed this run
           --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
+          --target <page name>  # distribute only: the Knowledge-DB page to fold items into
           --reextract           # re-run extract on already-Extracted items
           --retry-failed        # reprocess items currently in Failed
           --fresh               # force a current re-crawl (incremental mode)
+          --apply               # apply a staged result: enrich (session backends) results.json, or a reviewed distribute proposal
           --dry-run             # compute the plan, no writes
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
@@ -255,6 +262,27 @@ modality lanes per group** — drain text first, then vision:
 
 In **Cowork**, one kickoff message per lane drives the loop; if the session dies, restart and
 Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do steps 1–3 automatically.
+
+## Distribute (optional)
+
+`route` only **labels** an item's destination (`route_target`); `distribute` is the stage that
+actually folds a routed item's content into its target page in the Knowledge DB (`learnings`),
+section by section, then sets a two-way relation back to the archive item. It's **attended
+only** — it never runs as part of `isa run --mode first-time|incremental`, and every apply goes
+through a diff review.
+
+```bash
+isa run --stage distribute --target "Fitness & Mobility"
+isa run --stage distribute --target "Fitness & Mobility" --apply
+```
+
+The first command writes **nothing to Notion**: it prepares the batch, calls the backend, and
+stages `tmp/distribute/<slug>/` — including `diff.txt` (the per-section unified diff to review)
+and `proposed.md` (hand-editable before applying). The second re-reads the live page, aborts if
+it changed since staging, then writes the reviewed sections and marks items `Distributed` (folded
+in, or skipped as a pure duplicate) or `Misrouted` (dropped as off-topic — its tags need fixing).
+
+Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 
 ## Failures, guardrails, backup
 
