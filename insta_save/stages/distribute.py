@@ -959,7 +959,9 @@ class RebuildPreview:
     `relations_only` is the subset of `items` (same shape) whose status distribute does not
     own — `rebuild` removes only their relation to the page, leaving status and fields
     untouched. `refused` carries `(heading_text, sorted kinds)` for each section that makes
-    `rebuild` refuse."""
+    `rebuild` refuse. `heading_needs_clearing` is True when the content region's first
+    heading_1 (the template anchor) still carries text — a rebuild would empty it even when
+    there are no items or blocks to touch."""
 
     sections: list
     blocks_to_delete: int
@@ -967,6 +969,7 @@ class RebuildPreview:
     items: list
     relations_only: list
     refused: list
+    heading_needs_clearing: bool
 
 
 def _is_template_spacing(block) -> bool:
@@ -1011,7 +1014,7 @@ def _rebuild_refusals(region) -> list:
     return refused
 
 
-def _refusal_messages(refused) -> list:
+def refusal_messages(refused) -> list:
     """One or two messages per refused section — the Quick Access refusal is worded
     separately from an unshowable-block-type refusal since they are different problems for
     the user to fix in Notion."""
@@ -1070,6 +1073,7 @@ def rebuild_preview(env, *, target) -> RebuildPreview:
             if item.get("status") not in _REBUILD_OWNED_STATUSES
         ],
         refused=_rebuild_refusals(region),
+        heading_needs_clearing=bool(region) and bool(_heading_text(region[0])),
     )
 
 
@@ -1104,7 +1108,7 @@ def rebuild(env, *, target) -> dict:
 
     refused = _rebuild_refusals(region)
     if refused:
-        problems = "; ".join(_refusal_messages(refused))
+        problems = "; ".join(refusal_messages(refused))
         raise RuntimeError(f"distribute.rebuild: {problems} — edit it in Notion first")
 
     counts = {"items_reset": 0, "relations_removed": 0, "relations_only": 0, "blocks_deleted": 0}

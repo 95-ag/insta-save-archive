@@ -95,6 +95,8 @@ def _format_rebuild_preview(preview) -> str:
     else:
         lines.append("  No sections")
     lines.append(f"  blocks kept (dividers/empty paragraphs): {preview.blocks_kept}")
+    if preview.heading_needs_clearing:
+        lines.append("  content anchor heading still has text — will be cleared")
 
     relations_only_ids = {source_id for source_id, _, _ in preview.relations_only}
     reset_items = [row for row in preview.items if row[0] not in relations_only_ids]
@@ -511,15 +513,14 @@ def dispatch_run(args) -> None:
                 print(_format_rebuild_preview(review))
 
                 if review.refused:
-                    problems = "; ".join(
-                        f"{heading!r} ({', '.join(kinds)})" for heading, kinds in review.refused
-                    )
+                    problems = "; ".join(distribute.refusal_messages(review.refused))
                     raise SystemExit(
                         "isa run --stage distribute --rebuild: refusing — fix these sections "
                         f"in Notion first: {problems}"
                     )
 
-                if not review.items and review.blocks_to_delete == 0:
+                if (not review.items and review.blocks_to_delete == 0
+                        and not review.heading_needs_clearing):
                     print(f"Nothing to rebuild for {args.target!r}.")
                     return
 

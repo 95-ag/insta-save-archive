@@ -1199,6 +1199,7 @@ def _default_rebuild_preview():
         items=[("a", "Item A", "Distributed")],
         relations_only=[],
         refused=[],
+        heading_needs_clearing=False,
     )
 
 
@@ -1584,7 +1585,7 @@ def test_distribute_rebuild_refusals_raise_before_confirming(monkeypatch, tmp_pa
     rebuilt = []
     review = types.SimpleNamespace(
         sections=[("Off-topic", 0)], blocks_to_delete=0, blocks_kept=0, items=[],
-        relations_only=[], refused=[("Off-topic", ["image"])],
+        relations_only=[], refused=[("Off-topic", ["image"])], heading_needs_clearing=False,
     )
     with pytest.raises(SystemExit, match="Off-topic"):
         _run_distribute_cli(
@@ -1602,6 +1603,7 @@ def test_distribute_rebuild_nothing_to_rebuild_skips_confirm(monkeypatch, tmp_pa
     rebuilt = []
     review = types.SimpleNamespace(
         sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[], refused=[],
+        heading_needs_clearing=False,
     )
     _run_distribute_cli(
         monkeypatch, tmp_path,
@@ -1614,12 +1616,34 @@ def test_distribute_rebuild_nothing_to_rebuild_skips_confirm(monkeypatch, tmp_pa
     assert "Nothing to rebuild for 'Page B'." in capsys.readouterr().out
 
 
+def test_distribute_rebuild_heading_only_dirty_prompts_and_rebuilds(monkeypatch, tmp_path, capsys):
+    """No items and no blocks to delete, but the template anchor still carries text —
+    'Nothing to rebuild' must not fire, and confirming still runs rebuild."""
+    calls = []
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[], refused=[],
+        heading_needs_clearing=True,
+    )
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=_make_confirm(["rebuild"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1]
+    out = capsys.readouterr().out
+    assert "Nothing to rebuild" not in out
+    assert "content anchor heading still has text" in out
+
+
 def test_distribute_rebuild_no_items_but_blocks_warns_before_prompting(
     monkeypatch, tmp_path, capsys
 ):
     review = types.SimpleNamespace(
         sections=[("Old Content", 4)], blocks_to_delete=4, blocks_kept=0, items=[],
-        relations_only=[], refused=[],
+        relations_only=[], refused=[], heading_needs_clearing=False,
     )
     monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     _run_distribute_cli(
@@ -1633,6 +1657,23 @@ def test_distribute_rebuild_no_items_but_blocks_warns_before_prompting(
     warn_pos = out.index("No archive items are linked")
     cancel_pos = out.index("Cancelled — nothing changed.")
     assert warn_pos < cancel_pos
+
+
+def test_distribute_rebuild_refusal_uses_plain_english_quick_access_wording(monkeypatch, tmp_path):
+    """The CLI refusal reuses distribute.refusal_messages' wording — never the raw
+    'quick_access' kind token a reader would have to decode."""
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[],
+        refused=[("Z", ["quick_access"])], heading_needs_clearing=False,
+    )
+    with pytest.raises(SystemExit) as exc:
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            rebuild_preview=lambda env, **kw: review,
+        )
+    assert "holds the Quick Access section" in str(exc.value)
+    assert "quick_access" not in str(exc.value)
 
 
 def test_distribute_rebuild_page_skipped_prints_items_only_line(monkeypatch, tmp_path, capsys):
@@ -1654,10 +1695,11 @@ def test_distribute_rebuild_page_skipped_prints_items_only_line(monkeypatch, tmp
 
 
 def _rebuild_preview(*, sections=(), blocks_to_delete=0, blocks_kept=0, items=(),
-                     relations_only=(), refused=()):
+                     relations_only=(), refused=(), heading_needs_clearing=False):
     return types.SimpleNamespace(
         sections=list(sections), blocks_to_delete=blocks_to_delete, blocks_kept=blocks_kept,
         items=list(items), relations_only=list(relations_only), refused=list(refused),
+        heading_needs_clearing=heading_needs_clearing,
     )
 
 
@@ -1697,6 +1739,18 @@ def test_format_rebuild_preview_lists_refused_sections_with_reason(capsys):
     out = capsys.readouterr().out
     assert "Weird Section" in out
     assert "image" in out and "has_children" in out
+
+
+def test_format_rebuild_preview_flags_a_dirty_anchor_heading(capsys):
+    preview = _rebuild_preview(heading_needs_clearing=True)
+    print(isa._format_rebuild_preview(preview))
+    assert "still has text" in capsys.readouterr().out
+
+
+def test_format_rebuild_preview_omits_heading_line_when_already_clear(capsys):
+    preview = _rebuild_preview(heading_needs_clearing=False)
+    print(isa._format_rebuild_preview(preview))
+    assert "still has text" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -1925,6 +1925,7 @@ def test_rebuild_preview_reports_sections_counts_and_items_without_writing(tmp_p
         ],
         relations_only=[],
         refused=[],
+        heading_needs_clearing=True,
     )
     assert page.writes() == []
 
@@ -2096,6 +2097,44 @@ def test_rebuild_preview_reports_a_quick_access_refusal(tmp_path, monkeypatch):
     result = dist.rebuild_preview(_env(tmp_path), target="Page A")
     assert result.refused == [("Z", ["quick_access"])]
     assert page.writes() == []
+
+
+# ---------------------------------------------------------------------------
+# rebuild preview — review fix round 2 (R5): dirty-anchor visibility
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_preview_heading_needs_clearing_true_when_anchor_has_text(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.heading_needs_clearing is True
+
+
+def test_rebuild_preview_heading_needs_clearing_false_when_anchor_already_empty(
+    tmp_path, monkeypatch
+):
+    blocks = [
+        {"id": "toc", "type": "table_of_contents", "has_children": False},
+        _read_block("qa", "heading_2", "🔗 Quick Access"),
+        _read_block("qp", "paragraph", "links"),
+        _read_block("anchor", "heading_1"),
+        _read_block("dv", "divider"),
+        _read_block("ep", "paragraph"),
+    ]
+    page = _RebuildPage(blocks).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.heading_needs_clearing is False
+
+
+def test_rebuild_preview_heading_needs_clearing_false_when_no_heading_1(tmp_path, monkeypatch):
+    blocks = [
+        {"id": "toc", "type": "table_of_contents", "has_children": False},
+        _read_block("qa", "heading_2", "🔗 Quick Access"),
+        _read_block("qp", "paragraph", "links"),
+    ]
+    page = _RebuildPage(blocks).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.heading_needs_clearing is False
 
 
 def test_rebuild_resets_before_removing_the_relation_so_a_failed_removal_can_resume(
