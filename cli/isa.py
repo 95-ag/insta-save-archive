@@ -491,7 +491,7 @@ def dispatch_run(args) -> None:
             result = distribute.fill(
                 env, target=args.target, routes=routes, vocab=vocab, budgets=budgets,
                 model=run_cfg.distribute.model,
-                template=Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8"))
+                template=Path("prompts/distribute_v2.1.txt").read_text(encoding="utf-8"))
             d = distribute.staging_dir(env, args.target)
             print(_format_distribute_preview(distribute.preview(env, target=args.target)))
             print(f"Staged {n} items in {result['calls']} call(s) -> {_rel(d)}\n"

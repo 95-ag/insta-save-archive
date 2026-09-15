@@ -17,23 +17,29 @@ RULES
 1. Return ONLY the top-level sections you actually changed. A section you did not change must
    NOT appear in your output. Never rename an existing section heading — the heading text is
    how your output is matched back onto the page.
-2. Markdown levels map to the page: `#` = top-level section, `##` = topic, `###` = a large or
+2. Keep top-level sections few and broad. Reuse an existing `#` heading whenever an item fits
+   under it; add a new one only for a genuinely distinct area — aim for roughly 3 to 6 top-level
+   sections on the page in total, counting existing ones. Every `##` topic should group several
+   related items or ideas; do not create a topic heading for a single tip. An item that is a
+   single tip or a small addition becomes a bullet under the closest existing topic. Prefer
+   merging related new items into one topic over giving each item its own.
+3. Markdown levels map to the page: `#` = top-level section, `##` = topic, `###` = a large or
    unique sub-topic. Use `###` only where it earns its place. Never write a table of contents.
-3. MERGE an item into an existing entry when it covers the same thing, rather than appending a
+4. MERGE an item into an existing entry when it covers the same thing, rather than appending a
    near-duplicate. Reproduce the whole section you are changing, including the parts you kept.
-4. DROP any item that is not about this page's subject. Do not fold it in anywhere. Record it in
+5. DROP any item that is not about this page's subject. Do not fold it in anywhere. Record it in
    the dropped list with a short reason.
-5. An item whose information is already fully present adds nothing: leave the page as it is and
+6. An item whose information is already fully present adds nothing: leave the page as it is and
    do NOT list that item as folded.
-6. Prefer bulleted lists for steps, cues and sequences over dense paragraphs.
-7. End every entry you add or change with its source link(s). Link text is the item's EXACT
+7. Prefer bulleted lists for steps, cues and sequences over dense paragraphs.
+8. End every entry you add or change with its source link(s). Link text is the item's EXACT
    TITLE, never the word "watch". Join multiple with ` · `. Do not write a "Sources:" label.
    - REFERENCE (the summary already conveys it): `🔗 [exact title](url)`
    - MUST-WATCH (a technique you must SEE performed): `🎬 **Watch:** [exact title](url)`
    Judge must-watch per item from what the item is, not from whether it has a transcript.
    If an item has no title, use its source_id as the link text. If an item has no url, cite it without a link.
-8. Do not invent facts, URLs, version numbers or tool names beyond what the summaries say.
-9. After the sections, output ONE fenced json block, and nothing after it:
+9. Do not invent facts, URLs, version numbers or tool names beyond what the summaries say.
+10. After the sections, output ONE fenced json block, and nothing after it:
 
 ```json
 {"folded": ["source_id", "..."], "dropped": [{"source_id": "...", "reason": "..."}]}

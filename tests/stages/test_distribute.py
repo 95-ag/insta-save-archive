@@ -586,16 +586,24 @@ def test_render_buckets_omits_none_fields():
 def test_prompt_rule_7_covers_only_added_or_changed_entries():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.1.txt").read_text(encoding="utf-8")
     assert "every entry you add or change" in text
 
 
 def test_prompt_rule_7_explains_a_missing_title_or_url():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.1.txt").read_text(encoding="utf-8")
     assert "use its source_id as the link text" in text
     assert "cite it without a link" in text
+
+
+def test_prompt_v2_1_guides_toward_few_broad_sections():
+    from pathlib import Path
+
+    text = Path("prompts/distribute_v2.1.txt").read_text(encoding="utf-8")
+    assert "few and broad" in text
+    assert "single tip" in text
 
 
 def test_fill_leaves_an_untouched_section_byte_identical(tmp_path, monkeypatch):

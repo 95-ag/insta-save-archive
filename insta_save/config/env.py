@@ -29,7 +29,7 @@ class EnvConfig:
     ig_username: str = ""
     anthropic_api_key: str = ""
     notion_knowledge_database_id: str = ""
-    distribute_version: str = "v2.0-distribute"
+    distribute_version: str = "v2.1-distribute"
 
 
 def _env_float(key: str, default: float) -> float:
@@ -67,7 +67,7 @@ def load_env() -> EnvConfig:
         ig_username=os.getenv("IG_USERNAME", "").strip(),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
         notion_knowledge_database_id=os.getenv("NOTION_KNOWLEDGE_DATABASE_ID", "").strip(),
-        distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.0-distribute").strip(),
+        distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.1-distribute").strip(),
     )
 
 
