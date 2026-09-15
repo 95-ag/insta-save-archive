@@ -2080,7 +2080,7 @@ def test_rebuild_refuses_a_quick_access_block_inside_a_section(tmp_path, monkeyp
     ]
     page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
     before_items = copy.deepcopy(page.items)
-    with pytest.raises(RuntimeError, match=r"section 'Z' holds blocks .*quick_access") as exc:
+    with pytest.raises(RuntimeError, match=r"section 'Z' holds the Quick Access section") as exc:
         dist.rebuild(_env(tmp_path), target="Page A")
     assert "'X'" not in str(exc.value) and "'Y'" not in str(exc.value)
     assert page.writes() == []
@@ -2186,3 +2186,71 @@ def test_rebuild_page_step_failure_leaves_items_reset_and_a_rerun_completes_the_
     counts = dist.rebuild(_env(tmp_path), target="Page A")
     assert counts["items_reset"] == 0  # already reset on the failed attempt
     assert page.ids() == _TEMPLATE_ABOVE + ["hx", "dv", "ep"]
+
+
+# ---------------------------------------------------------------------------
+# rebuild — review fix round 2
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_does_not_refuse_a_bullet_that_merely_mentions_quick_access(tmp_path, monkeypatch):
+    blocks = _distributed_page_blocks() + [
+        _read_block("hz", "heading_1", "Z"),
+        _read_block("zb", "bulleted_list_item", "Pin it to the Quick Access toolbar"),
+    ]
+    page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
+    dist.rebuild(_env(tmp_path), target="Page A")
+    # Z was an ordinary (non-first) section, so it — bullet included — was deleted normally,
+    # not refused.
+    assert page.ids() == _TEMPLATE_ABOVE + ["hx", "dv", "ep"]
+
+
+def test_rebuild_preview_does_not_flag_a_bullet_that_merely_mentions_quick_access(
+    tmp_path, monkeypatch
+):
+    blocks = _distributed_page_blocks() + [
+        _read_block("hz", "heading_1", "Z"),
+        _read_block("zb", "bulleted_list_item", "Pin it to the Quick Access toolbar"),
+    ]
+    page = _RebuildPage(blocks).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.refused == []
+
+
+def test_rebuild_heading_clear_failure_uses_the_rebuild_wording(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+
+    def _fail_heading(env, bid, text):
+        raise RuntimeError("notion down")
+
+    monkeypatch.setattr(dist, "set_heading_text", _fail_heading)
+    with pytest.raises(RuntimeError, match="failed while clearing") as exc:
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert "items were already reset" in str(exc.value)
+    for pid in ("folded", "skipped", "dropped", "moved"):
+        assert page.items[pid]["status"] == "Tagged"
+    # the block delete already landed before the heading-clear call that then failed
+    assert page.ids() == _TEMPLATE_ABOVE + ["hx", "dv", "ep"]
+
+
+def test_rebuild_reraises_fresh_read_template_error_with_rebuild_wording(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    real_get = page.get_page_blocks
+    calls = {"n": 0}
+
+    def _get_page_blocks(env, pid):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            qa = next(b for b in page.blocks if b["id"] == "qa")
+            qa["type"] = "heading_1"
+            qa["heading_1"] = qa.pop("heading_2")
+        return real_get(env, pid)
+
+    monkeypatch.setattr(dist, "get_page_blocks", _get_page_blocks)
+    with pytest.raises(RuntimeError, match="items were already reset") as exc:
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert "nothing on the page was deleted" in str(exc.value)
+    assert "Quick Access" in str(exc.value)
+    assert page.page_writes() == []
+    # items were already reset before the fresh re-read that then failed
+    assert page.items["folded"]["status"] == "Tagged"

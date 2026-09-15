@@ -983,13 +983,20 @@ def _rebuild_deletes(region) -> list:
     return [b for b in region[1:] if not _is_template_spacing(b)]
 
 
+_HEADING_TYPES = {"heading_1", "heading_2", "heading_3"}
+
+
 def _has_quick_access(block) -> bool:
-    return _QUICK_ACCESS_MARKER in blocks_to_markdown([block])
+    """True only for a HEADING carrying the marker — a bullet or paragraph that merely
+    mentions "Quick Access" in prose is not the template section and must not refuse."""
+    return block.get("type") in _HEADING_TYPES and _QUICK_ACCESS_MARKER in blocks_to_markdown(
+        [block]
+    )
 
 
 def _rebuild_refusals(region) -> list:
     """[(heading_text, sorted kinds)] for each section holding what the markdown review never
-    shows, or a `🔗 Quick Access` block that has strayed into the content region — global-
+    shows, or a `🔗 Quick Access` heading that has strayed into the content region — global-
     constraints.md: that section is never touched, so a rebuild must refuse rather than
     delete it. Checks the H1 itself for children too: deleting it would take them along."""
     refused = []
@@ -1002,6 +1009,33 @@ def _rebuild_refusals(region) -> list:
         if kinds:
             refused.append((_heading_text(heading), sorted(kinds)))
     return refused
+
+
+def _refusal_messages(refused) -> list:
+    """One or two messages per refused section — the Quick Access refusal is worded
+    separately from an unshowable-block-type refusal since they are different problems for
+    the user to fix in Notion."""
+    messages = []
+    for heading, kinds in refused:
+        other_kinds = [k for k in kinds if k != "quick_access"]
+        if "quick_access" in kinds:
+            messages.append(f"section {heading!r} holds the Quick Access section")
+        if other_kinds:
+            messages.append(
+                f"section {heading!r} holds blocks the review cannot show "
+                f"({', '.join(other_kinds)})"
+            )
+    return messages
+
+
+def _reraise_clearing_failure(target, exc) -> None:
+    """Shared wording for either page-step write (block delete, heading clear) failing after
+    the item loop has already committed — the same recovery applies to both: nothing else on
+    the page was touched, and re-running rebuild picks up where this left off."""
+    raise RuntimeError(
+        f"distribute.rebuild: failed while clearing {target!r} — items were "
+        f"already reset; re-run rebuild to finish: {exc}"
+    ) from exc
 
 
 # Statuses distribute owns: `rebuild` resets these to Tagged. Any other status (Extracted,
@@ -1070,10 +1104,7 @@ def rebuild(env, *, target) -> dict:
 
     refused = _rebuild_refusals(region)
     if refused:
-        problems = "; ".join(
-            f"section {heading!r} holds blocks the review cannot show ({', '.join(kinds)})"
-            for heading, kinds in refused
-        )
+        problems = "; ".join(_refusal_messages(refused))
         raise RuntimeError(f"distribute.rebuild: {problems} — edit it in Notion first")
 
     counts = {"items_reset": 0, "relations_removed": 0, "relations_only": 0, "blocks_deleted": 0}
@@ -1088,7 +1119,13 @@ def rebuild(env, *, target) -> dict:
                 counts["relations_removed"] += 1
             counts["relations_only"] += 1
 
-    fresh_region = _content_blocks(get_page_blocks(env, page_id))
+    try:
+        fresh_region = _content_blocks(get_page_blocks(env, page_id))
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"distribute.rebuild: {target!r} changed during rebuild — items were already "
+            f"reset and nothing on the page was deleted: {exc}"
+        ) from exc
     if _rebuild_refusals(fresh_region):
         raise RuntimeError(
             f"distribute.rebuild: {target!r} changed during rebuild — nothing on the page was "
@@ -1112,13 +1149,13 @@ def rebuild(env, *, target) -> dict:
                     blocks=[],
                 )
             except RuntimeError as exc:
-                raise RuntimeError(
-                    f"distribute.rebuild: failed while clearing {target!r} — items were "
-                    f"already reset; re-run rebuild to finish: {exc}"
-                ) from exc
+                _reraise_clearing_failure(target, exc)
             counts["blocks_deleted"] = len(delete_ids)
         if _heading_text(anchor):
-            set_heading_text(env, anchor["id"], "")
+            try:
+                set_heading_text(env, anchor["id"], "")
+            except RuntimeError as exc:
+                _reraise_clearing_failure(target, exc)
             heading_cleared = True
 
     _clear_staging(env, target)
