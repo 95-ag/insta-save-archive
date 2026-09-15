@@ -18,8 +18,11 @@ from pathlib import Path
 from insta_save.adapters.notion import (
     get_knowledge_page,
     get_page_blocks,
+    query_items_for_rebuild,
     query_routed_for_target,
+    remove_knowledge_relation,
     replace_section_blocks,
+    reset_item_to_tagged,
     set_heading_text,
     set_knowledge_relation,
     write_distributed,
@@ -570,19 +573,21 @@ _SHOWABLE_TYPES = {"heading_2", "heading_3", "bulleted_list_item", "paragraph", 
 _REWRITTEN_TYPES = {"heading_2", "heading_3", "bulleted_list_item"}
 
 
-def _section_spans(blocks) -> dict:
-    """{heading_text: (heading_block_id, [content_blocks])} for each H1 in the content region."""
-    spans, heading, content = {}, None, []
+def _sections(blocks) -> list:
+    """[(heading_block, [content_blocks])] for each H1 in the content region, in page order —
+    duplicates included, so a caller that must see every section never loses one."""
+    sections = []
     for block in blocks:
         if block.get("type") == "heading_1":
-            if heading is not None:
-                spans[heading[0]] = (heading[1], content)
-            heading, content = (_heading_text(block), block["id"]), []
-        elif heading is not None:
-            content.append(block)
-    if heading is not None:
-        spans[heading[0]] = (heading[1], content)
-    return spans
+            sections.append((block, []))
+        elif sections:
+            sections[-1][1].append(block)
+    return sections
+
+
+def _section_spans(blocks) -> dict:
+    """{heading_text: (heading_block_id, [content_blocks])} for each H1 in the content region."""
+    return {_heading_text(h): (h["id"], content) for h, content in _sections(blocks)}
 
 
 def _unshowable_kinds(content) -> list:
@@ -941,4 +946,122 @@ def apply(env, *, target, version) -> dict:
     for name in _STAGED_FILES:
         (d / name).unlink(missing_ok=True)
     log.info("distribute.apply: %s — %s", target, counts)
+    return counts
+
+
+@dataclass(frozen=True)
+class RebuildPreview:
+    """Read-only summary of what `rebuild` would do for a target. `sections` carries
+    `(heading_text, blocks_to_delete)` per H1 section of the content region — the first
+    heading_1 itself is kept (emptied), every later one counts as deleted. `blocks_kept` counts
+    the dividers and empty paragraphs left in place. `items` carries `(source_id, title,
+    status)` with `title` `None` when the item has none. `refused` carries
+    `(heading_text, sorted kinds)` for each section that makes `rebuild` refuse."""
+
+    sections: list
+    blocks_to_delete: int
+    blocks_kept: int
+    items: list
+    refused: list
+
+
+def _is_template_spacing(block) -> bool:
+    """Dividers and empty paragraphs belong to the page template, so a rebuild keeps them."""
+    btype = block.get("type")
+    if btype == "paragraph":
+        return not blocks_to_markdown([block]).strip()
+    return btype == "divider"
+
+
+def _rebuild_deletes(region) -> list:
+    """Content-region blocks a rebuild deletes: all but the first heading_1 (the template
+    anchor, emptied instead) and the template spacing."""
+    return [b for b in region[1:] if not _is_template_spacing(b)]
+
+
+def _rebuild_refusals(region) -> list:
+    """[(heading_text, sorted kinds)] for each section holding what the markdown review never
+    shows. Checks the H1 itself for children too: deleting it would take them along."""
+    refused = []
+    for heading, content in _sections(region):
+        kinds = _unshowable_kinds(content)
+        if heading.get("has_children") and "has_children" not in kinds:
+            kinds.append("has_children")
+        if kinds:
+            refused.append((_heading_text(heading), sorted(kinds)))
+    return refused
+
+
+def rebuild_preview(env, *, target) -> RebuildPreview:
+    """What `rebuild` would do for `target`. Notion reads only — never writes."""
+    page_id = get_knowledge_page(env, target)
+    region = _content_blocks(get_page_blocks(env, page_id))
+    items = query_items_for_rebuild(env, target, page_id)
+    deleted_ids = {b["id"] for b in _rebuild_deletes(region)}
+    sections = [
+        (
+            _heading_text(heading),
+            sum(1 for b in [heading, *content] if b["id"] in deleted_ids),
+        )
+        for heading, content in _sections(region)
+    ]
+    return RebuildPreview(
+        sections=sections,
+        blocks_to_delete=len(deleted_ids),
+        blocks_kept=sum(1 for b in region if _is_template_spacing(b)),
+        items=[(item["source_id"], item.get("title"), item.get("status")) for item in items],
+        refused=_rebuild_refusals(region),
+    )
+
+
+def rebuild(env, *, target) -> dict:
+    """Reset `target` to its template and every item distributed onto it back to Tagged, so
+    route and distribute can run again. Destructive on the live page.
+
+    Refuses before any write when the content region holds anything the markdown review
+    cannot show (other block types, child blocks): a rebuild must never delete content the
+    user had no way to see first.
+
+    Items go FIRST: a failure there leaves the page untouched and a re-run picks up the rest,
+    whereas a page wiped before its items would leave relations pointing at removed content.
+
+    Re-running is safe: an already-reset page with no items in scope makes no writes.
+    Returns {"items_reset", "relations_removed", "blocks_deleted", "heading_cleared"}."""
+    page_id = get_knowledge_page(env, target)
+    region = _content_blocks(get_page_blocks(env, page_id))
+    items = query_items_for_rebuild(env, target, page_id)
+
+    refused = _rebuild_refusals(region)
+    if refused:
+        problems = "; ".join(
+            f"section {heading!r} holds blocks the review cannot show ({', '.join(kinds)})"
+            for heading, kinds in refused
+        )
+        raise RuntimeError(f"distribute.rebuild: {problems} — edit it in Notion first")
+
+    counts = {"items_reset": 0, "relations_removed": 0, "blocks_deleted": 0}
+    for item in items:
+        if remove_knowledge_relation(env, item["page_id"], page_id):
+            counts["relations_removed"] += 1
+        reset_item_to_tagged(env, item["page_id"])
+        counts["items_reset"] += 1
+
+    heading_cleared = False
+    if not region:
+        log.warning("distribute.rebuild: %s has no heading_1 — page left as is", target)
+    else:
+        anchor = region[0]
+        delete_ids = [b["id"] for b in _rebuild_deletes(region)]
+        if delete_ids:
+            replace_section_blocks(
+                env, page_id, after_block_id=anchor["id"], delete_block_ids=delete_ids, blocks=[]
+            )
+            counts["blocks_deleted"] = len(delete_ids)
+        if _heading_text(anchor):
+            set_heading_text(env, anchor["id"], "")
+            heading_cleared = True
+
+    _clear_staging(env, target)
+    counts["heading_cleared"] = heading_cleared
+    log.info("distribute.rebuild: %s — %s", target, counts)
     return counts

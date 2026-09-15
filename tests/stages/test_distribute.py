@@ -1812,3 +1812,250 @@ def test_preview_makes_no_adapter_calls(tmp_path, monkeypatch):
         proposal={"folded": ["a"], "dropped": []},
     )
     dist.preview(env, target="Page A")
+
+
+class _RebuildPage(_FakePage):
+    """A live page plus the archive items pointing at it, sharing ONE ordered call log so a
+    test can assert that every item write precedes every page write."""
+
+    ITEM_WRITES = {"remove_knowledge_relation", "reset_item_to_tagged"}
+    PAGE_WRITES = {"replace_section_blocks", "set_heading_text"}
+    WRITES = _FakePage.WRITES | ITEM_WRITES
+
+    def __init__(self, blocks, items=(), *, fail_on_reset=None):
+        super().__init__(blocks)
+        self.items = {item["page_id"]: copy.deepcopy(item) for item in items}
+        self.fail_on_reset = fail_on_reset
+
+    def patch(self, monkeypatch):
+        super().patch(monkeypatch)
+        for name in ("get_knowledge_page", "query_items_for_rebuild"):
+            monkeypatch.setattr(dist, name, getattr(self, name))
+        return self
+
+    def get_knowledge_page(self, env, name):
+        self.log.append(("get_knowledge_page", name))
+        return "kp"
+
+    def query_items_for_rebuild(self, env, target, page_id):
+        self.log.append(("query_items_for_rebuild", target, page_id))
+        return [
+            {k: item[k] for k in ("page_id", "source_id", "title", "status", "knowledge_base")}
+            for item in copy.deepcopy(list(self.items.values()))
+            if page_id in item["knowledge_base"]
+            or (item["route_target"] == target and item["status"] in {"Distributed", "Misrouted"})
+        ]
+
+    def remove_knowledge_relation(self, env, pid, kp):
+        self.log.append(("remove_knowledge_relation", pid, kp))
+        item = self.items[pid]
+        if kp not in item["knowledge_base"]:
+            return False
+        item["knowledge_base"] = [k for k in item["knowledge_base"] if k != kp]
+        return True
+
+    def reset_item_to_tagged(self, env, pid):
+        self.log.append(("reset_item_to_tagged", pid))
+        if pid == self.fail_on_reset:
+            raise RuntimeError("notion down")
+        self.items[pid].update(
+            status="Tagged", route_target=None, distribute_notes=None, distribute_version=None
+        )
+
+    def page_writes(self):
+        return [entry for entry in self.log if entry[0] in self.PAGE_WRITES]
+
+
+def _archive_item(pid, status, *, knowledge_base=(), route_target="Page A", title=None):
+    return {
+        "page_id": pid,
+        "source_id": f"s-{pid}",
+        "title": title,
+        "status": status,
+        "route_target": route_target,
+        "knowledge_base": list(knowledge_base),
+        "distribute_notes": "note",
+        "distribute_version": "v",
+    }
+
+
+def _distributed_page_blocks():
+    return [
+        {"id": "toc", "type": "table_of_contents", "has_children": False},
+        _read_block("qa", "heading_2", "🔗 Quick Access"),
+        _read_block("qdv", "divider"),
+        _read_block("qp", "paragraph", "links"),
+        _read_block("hx", "heading_1", "X"),
+        _read_block("x2", "heading_2", "X topic"),
+        _read_block("xb", "bulleted_list_item", "x tip"),
+        _read_block("xp", "paragraph", "x prose"),
+        _read_block("dv", "divider"),
+        _read_block("ep", "paragraph"),
+        _read_block("hy", "heading_1", "Y"),
+        _read_block("y3", "heading_3", "Y detail"),
+        _read_block("yb", "bulleted_list_item", "y tip"),
+    ]
+
+
+def _rebuild_items():
+    return [
+        _archive_item("folded", "Distributed", knowledge_base=["other-kp", "kp"], title="F"),
+        _archive_item("skipped", "Distributed"),
+        _archive_item("dropped", "Misrouted", title="D"),
+        _archive_item("moved", "Routed", knowledge_base=["kp"], route_target="Page B"),
+        _archive_item("pending", "Routed"),
+    ]
+
+
+_TEMPLATE_ABOVE = ["toc", "qa", "qdv", "qp"]
+
+
+def test_rebuild_preview_reports_sections_counts_and_items_without_writing(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result == dist.RebuildPreview(
+        sections=[("X", 3), ("Y", 3)],
+        blocks_to_delete=6,
+        blocks_kept=2,
+        items=[
+            ("s-folded", "F", "Distributed"),
+            ("s-skipped", None, "Distributed"),
+            ("s-dropped", "D", "Misrouted"),
+            ("s-moved", None, "Routed"),
+        ],
+        refused=[],
+    )
+    assert page.writes() == []
+
+
+def test_rebuild_preview_reports_refusals(tmp_path, monkeypatch):
+    blocks = _distributed_page_blocks() + [
+        _read_block("hz", "heading_1", "Z", has_children=True),
+        _read_block("zn", "numbered_list_item", "hidden"),
+        _read_block("zc", "bulleted_list_item", "parent", has_children=True),
+    ]
+    page = _RebuildPage(blocks).patch(monkeypatch)
+    result = dist.rebuild_preview(_env(tmp_path), target="Page A")
+    assert result.refused == [("Z", ["has_children", "numbered_list_item"])]
+    assert page.writes() == []
+
+
+@pytest.mark.parametrize(
+    "bad_blocks, kind",
+    [
+        ([_read_block("zn", "numbered_list_item", "hidden")], "numbered_list_item"),
+        ([_read_block("zc", "bulleted_list_item", "parent", has_children=True)], "has_children"),
+        ([{"id": "zt", "type": "toggle", "has_children": False, "toggle": {}}], "toggle"),
+    ],
+)
+def test_rebuild_refuses_unshowable_content_before_any_write(
+    tmp_path, monkeypatch, bad_blocks, kind
+):
+    blocks = _distributed_page_blocks() + [_read_block("hz", "heading_1", "Z")] + bad_blocks
+    page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
+    before_items = copy.deepcopy(page.items)
+    with pytest.raises(RuntimeError, match=rf"section 'Z' holds blocks .*{kind}") as exc:
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert "'X'" not in str(exc.value) and "'Y'" not in str(exc.value)
+    assert page.writes() == []
+    assert page.items == before_items
+
+
+def test_rebuild_refuses_a_heading_1_with_children(tmp_path, monkeypatch):
+    blocks = _distributed_page_blocks()
+    blocks[10] = _read_block("hy", "heading_1", "Y", has_children=True)
+    page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
+    with pytest.raises(RuntimeError, match=r"section 'Y' holds blocks .*has_children"):
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.writes() == []
+
+
+def test_rebuild_writes_every_item_before_touching_the_page(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    dist.rebuild(_env(tmp_path), target="Page A")
+    kinds = [entry[0] for entry in page.writes()]
+    last_item_write = max(i for i, k in enumerate(kinds) if k in _RebuildPage.ITEM_WRITES)
+    first_page_write = min(i for i, k in enumerate(kinds) if k in _RebuildPage.PAGE_WRITES)
+    assert last_item_write < first_page_write
+
+
+def test_rebuild_resets_scoped_items_and_preserves_other_relations(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    counts = dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.items["folded"]["knowledge_base"] == ["other-kp"]
+    for pid in ("folded", "skipped", "dropped", "moved"):
+        item = page.items[pid]
+        assert item["status"] == "Tagged" and item["route_target"] is None
+        assert item["distribute_notes"] is None and item["distribute_version"] is None
+        assert "kp" not in item["knowledge_base"]
+    assert page.items["pending"]["status"] == "Routed"
+    assert page.items["pending"]["route_target"] == "Page A"
+    assert counts == {
+        "items_reset": 4,
+        "relations_removed": 2,
+        "blocks_deleted": 6,
+        "heading_cleared": True,
+    }
+
+
+def test_rebuild_restores_the_page_to_its_template(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.ids() == _TEMPLATE_ABOVE + ["hx", "dv", "ep"]
+    assert page.blocks[: len(_TEMPLATE_ABOVE)] == _distributed_page_blocks()[: len(_TEMPLATE_ABOVE)]
+    assert dist._heading_text(page.blocks[4]) == ""
+    assert ("set_heading_text", "hx", "") in page.log
+
+
+def test_rebuild_stops_before_the_page_when_an_item_write_fails(tmp_path, monkeypatch):
+    page = _RebuildPage(
+        _distributed_page_blocks(), _rebuild_items(), fail_on_reset="skipped"
+    ).patch(monkeypatch)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.page_writes() == []
+    assert page.ids() == [b["id"] for b in _distributed_page_blocks()]
+
+
+def test_rebuild_clears_the_staging_files(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    env = _env(tmp_path)
+    d = dist.staging_dir(env, "Page A")
+    for name in dist._STAGED_FILES:
+        (d / name).write_text("stale", encoding="utf-8")
+    dist.rebuild(env, target="Page A")
+    assert not any((d / name).exists() for name in dist._STAGED_FILES)
+
+
+def test_rebuild_twice_makes_no_writes_the_second_time(tmp_path, monkeypatch):
+    page = _RebuildPage(_distributed_page_blocks(), _rebuild_items()).patch(monkeypatch)
+    env = _env(tmp_path)
+    dist.rebuild(env, target="Page A")
+    after_first = len(page.log)
+    counts = dist.rebuild(env, target="Page A")
+    assert [e for e in page.log[after_first:] if e[0] in page.WRITES] == []
+    assert counts == {
+        "items_reset": 0,
+        "relations_removed": 0,
+        "blocks_deleted": 0,
+        "heading_cleared": False,
+    }
+
+
+def test_rebuild_resets_items_but_skips_a_page_with_no_heading_1(tmp_path, monkeypatch):
+    blocks = [
+        {"id": "toc", "type": "table_of_contents", "has_children": False},
+        _read_block("qa", "heading_2", "🔗 Quick Access"),
+        _read_block("qp", "paragraph", "links"),
+    ]
+    page = _RebuildPage(blocks, _rebuild_items()).patch(monkeypatch)
+    counts = dist.rebuild(_env(tmp_path), target="Page A")
+    assert page.page_writes() == []
+    assert page.ids() == ["toc", "qa", "qp"]
+    assert page.items["folded"]["status"] == "Tagged"
+    assert counts == {
+        "items_reset": 4,
+        "relations_removed": 2,
+        "blocks_deleted": 0,
+        "heading_cleared": False,
+    }

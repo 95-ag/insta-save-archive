@@ -341,3 +341,168 @@ def test_write_misrouted_omits_notes_without_a_reason(monkeypatch, reason):
     assert "distribute_notes" not in updates[0]
     assert updates[0]["status"] == {"select": {"name": "Misrouted"}}
     assert updates[0]["distribute_version"]["rich_text"][0]["text"]["content"] == "v"
+
+
+REBUILD_FILTER = {
+    "or": [
+        {"property": "Knowledge Base", "relation": {"contains": "kp"}},
+        {
+            "and": [
+                {"property": "route_target", "select": {"equals": "Page A"}},
+                {
+                    "or": [
+                        {"property": "status", "select": {"equals": "Distributed"}},
+                        {"property": "status", "select": {"equals": "Misrouted"}},
+                    ]
+                },
+            ]
+        },
+    ]
+}
+
+
+def test_query_items_for_rebuild_sends_the_scope_filter_and_paginates(monkeypatch):
+    seen = []
+
+    def _query(ds, **kw):
+        seen.append((ds, kw))
+        if kw.get("start_cursor") is None:
+            return {"results": [_routed_page()], "has_more": True, "next_cursor": "c1"}
+        return {"results": [{"id": "pg2", "properties": {}}], "has_more": False}
+
+    _patch(monkeypatch, types.SimpleNamespace(data_sources=types.SimpleNamespace(query=_query)))
+    rows = notion.query_items_for_rebuild(_Env(), "Page A", "kp")
+    assert [ds for ds, _ in seen] == ["ds-db", "ds-db"]
+    assert all(kw["filter"] == REBUILD_FILTER for _, kw in seen)
+    assert seen[1][1]["start_cursor"] == "c1"
+    assert [r["page_id"] for r in rows] == ["pg", "pg2"]
+
+
+def test_query_items_for_rebuild_maps_the_fields(monkeypatch):
+    page = _routed_page()
+    page["properties"]["status"] = {"select": {"name": "Distributed"}}
+    bare = {"id": "pg2", "properties": {}}
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            data_sources=types.SimpleNamespace(
+                query=lambda ds, **kw: {"results": [page, bare], "has_more": False}
+            )
+        ),
+    )
+    rows = notion.query_items_for_rebuild(_Env(), "Page A", "kp")
+    assert rows == [
+        {
+            "page_id": "pg",
+            "source_id": "ABC",
+            "title": "Hip drills",
+            "status": "Distributed",
+            "knowledge_base": ["kp"],
+        },
+        {
+            "page_id": "pg2",
+            "source_id": None,
+            "title": None,
+            "status": None,
+            "knowledge_base": [],
+        },
+    ]
+
+
+def _relation_pages(relation, updates, *, has_more=False):
+    return types.SimpleNamespace(
+        retrieve=lambda page_id: {
+            "properties": {"Knowledge Base": {"relation": relation, "has_more": has_more}}
+        },
+        update=lambda page_id, properties: updates.append((page_id, properties)),
+    )
+
+
+def test_remove_knowledge_relation_removes_only_the_target(monkeypatch):
+    updates = []
+    relation = [{"id": "other"}, {"id": "kp"}, {"id": "third"}]
+    _patch(monkeypatch, types.SimpleNamespace(pages=_relation_pages(relation, updates)))
+    assert notion.remove_knowledge_relation(_Env(), "pg", "kp") is True
+    assert updates == [("pg", {"Knowledge Base": {"relation": [{"id": "other"}, {"id": "third"}]}})]
+
+
+def test_remove_knowledge_relation_writes_nothing_when_absent(monkeypatch):
+    updates = []
+    _patch(monkeypatch, types.SimpleNamespace(pages=_relation_pages([{"id": "other"}], updates)))
+    assert notion.remove_knowledge_relation(_Env(), "pg", "kp") is False
+    assert updates == []
+
+
+def test_remove_knowledge_relation_refuses_a_truncated_relation(monkeypatch):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(pages=_relation_pages([{"id": "kp"}], updates, has_more=True)),
+    )
+    with pytest.raises(RuntimeError, match="more than one page of"):
+        notion.remove_knowledge_relation(_Env(), "pg", "kp")
+    assert updates == []
+
+
+@pytest.mark.parametrize("error", [RequestTimeoutError(), httpx.ConnectError("boom"), _api_error()])
+def test_remove_knowledge_relation_wraps_write_errors(monkeypatch, error):
+    def _update(page_id, properties):
+        raise error
+
+    pages = types.SimpleNamespace(
+        retrieve=lambda page_id: {"properties": {"Knowledge Base": {"relation": [{"id": "kp"}]}}},
+        update=_update,
+    )
+    _patch(monkeypatch, types.SimpleNamespace(pages=pages))
+    with pytest.raises(RuntimeError, match="failed to unlink pg -> kp"):
+        notion.remove_knowledge_relation(_Env(), "pg", "kp")
+
+
+def test_reset_item_to_tagged_clears_distribute_state(monkeypatch):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            pages=types.SimpleNamespace(
+                update=lambda page_id, properties: updates.append((page_id, properties))
+            )
+        ),
+    )
+    notion.reset_item_to_tagged(_Env(), "pg")
+    assert updates == [
+        (
+            "pg",
+            {
+                "status": {"select": {"name": "Tagged"}},
+                "route_target": {"select": None},
+                "distribute_notes": {"rich_text": []},
+                "distribute_version": {"rich_text": []},
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("error", [RequestTimeoutError(), httpx.ConnectError("boom"), _api_error()])
+def test_reset_item_to_tagged_wraps_write_errors(monkeypatch, error):
+    def _update(page_id, properties):
+        raise error
+
+    _patch(monkeypatch, types.SimpleNamespace(pages=types.SimpleNamespace(update=_update)))
+    with pytest.raises(RuntimeError, match="failed to reset pg to Tagged"):
+        notion.reset_item_to_tagged(_Env(), "pg")
+
+
+def test_set_heading_text_writes_a_truly_empty_heading_for_empty_text(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    notion.set_heading_text(_Env(), "h1", "")
+    assert blocks.updates == [("h1", {"heading_1": {"rich_text": []}})]
+
+
+def test_set_heading_text_fills_non_empty_text(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    notion.set_heading_text(_Env(), "h1", "Workouts")
+    assert blocks.updates == [
+        ("h1", {"heading_1": {"rich_text": [{"text": {"content": "Workouts"}}]}})
+    ]

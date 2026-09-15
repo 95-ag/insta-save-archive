@@ -673,11 +673,15 @@ def replace_section_blocks(env: EnvConfig, page_id: str, *, after_block_id: str,
 
 
 def set_heading_text(env: EnvConfig, block_id: str, text: str) -> None:
-    """Fill an existing heading_1 in place — used to fill the template's empty content anchor."""
+    """Fill an existing heading_1 in place — used to fill the template's empty content anchor.
+
+    Empty `text` writes no span at all: an empty-content span is not the same block as the
+    template's truly empty anchor, and rebuild restores exactly that anchor."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
+    rich_text = _rich_text(text)["rich_text"] if text else []
     try:
-        client.blocks.update(block_id=block_id, heading_1={"rich_text": _rich_text(text)["rich_text"]})
+        client.blocks.update(block_id=block_id, heading_1={"rich_text": rich_text})
     except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to fill heading {block_id}: {e}") from e
 
@@ -728,3 +732,77 @@ def write_misrouted(env: EnvConfig, page_id: str, reason: str | None, version: s
         client.pages.update(page_id=page_id, properties=props)
     except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to mark {page_id} Misrouted: {e}") from e
+
+
+def query_items_for_rebuild(env: EnvConfig, target: str, page_id: str) -> list:
+    """Every archive item a rebuild of `target` resets: items related to the page, plus
+    items routed there that distribute already settled (Distributed or Misrouted).
+
+    The relation arm catches an item whose route_target has since moved; the status arm
+    catches skipped and dropped items, which never got a relation. Routed items are
+    deliberately out of scope — nothing of theirs is on the page."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_database_id)
+    settled = {"or": [{"property": "status", "select": {"equals": "Distributed"}},
+                      {"property": "status", "select": {"equals": "Misrouted"}}]}
+    flt = {"or": [{"property": "Knowledge Base", "relation": {"contains": page_id}},
+                  {"and": [{"property": "route_target", "select": {"equals": target}}, settled]}]}
+    items, cursor = [], None
+    while True:
+        kwargs = {"filter": flt, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            row = _distribute_row(page)
+            status = (page.get("properties", {}).get("status", {}).get("select") or {}).get("name")
+            items.append({"page_id": row["page_id"], "source_id": row["source_id"],
+                          "title": row["title"], "status": status,
+                          "knowledge_base": row["knowledge_base"]})
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return items
+
+
+def remove_knowledge_relation(env: EnvConfig, page_id: str, target_page_id: str) -> bool:
+    """Unlink an archive item from one knowledge page, keeping every other link. Returns
+    True when it removed the link, False (and writes nothing) when it was not there.
+
+    The relation is written back whole, so a truncated read (Notion caps a relation in
+    pages.retrieve at 25) would silently drop the unread links — refuse instead."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        prop = client.pages.retrieve(page_id=page_id)["properties"].get("Knowledge Base", {})
+        if prop.get("has_more"):
+            raise RuntimeError(
+                f"notion: {page_id} has more than one page of Knowledge Base links — "
+                "refusing to rewrite a truncated relation")
+        current = prop.get("relation", [])
+        if not any(r["id"] == target_page_id for r in current):
+            return False
+        kept = [{"id": r["id"]} for r in current if r["id"] != target_page_id]
+        client.pages.update(page_id=page_id, properties={"Knowledge Base": {"relation": kept}})
+        return True
+    except _DISTRIBUTE_WRITE_ERRORS as e:
+        raise RuntimeError(f"notion: failed to unlink {page_id} -> {target_page_id}: {e}") from e
+
+
+def reset_item_to_tagged(env: EnvConfig, page_id: str) -> None:
+    """Item -> Tagged with its routing and distribute state cleared, so route and distribute
+    treat it as never having run. Text fields clear with `[]`, as in requeue — an
+    empty-content span would read back as an empty string rather than as unset."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Tagged"),
+        "route_target": {"select": None},
+        "distribute_notes": {"rich_text": []},
+        "distribute_version": {"rich_text": []},
+    }
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+    except _DISTRIBUTE_WRITE_ERRORS as e:
+        raise RuntimeError(f"notion: failed to reset {page_id} to Tagged: {e}") from e
