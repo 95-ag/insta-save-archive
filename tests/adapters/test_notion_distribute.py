@@ -140,3 +140,125 @@ def test_query_routed_for_target_returns_none_for_missing_text(monkeypatch):
     )
     [row] = notion.query_routed_for_target(_Env(), "X")
     assert row["source_id"] is None and row["summary"] is None and row["ig_link"] is None
+
+
+class _Blocks:
+    def __init__(self):
+        self.deleted, self.appends, self.updates = [], [], []
+        self.children = types.SimpleNamespace(append=self._append, list=None)
+
+    def delete(self, block_id):
+        self.deleted.append(block_id)
+
+    def update(self, block_id, **props):
+        self.updates.append((block_id, props))
+
+    def _append(self, block_id, children, after=None):
+        self.appends.append((after, len(children)))
+        return {"results": [{"id": f"new-{len(self.appends)}-{i}"} for i in range(len(children))]}
+
+
+def test_replace_section_blocks_deletes_then_inserts(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    notion.replace_section_blocks(
+        _Env(), "pg", after_block_id="h1", delete_block_ids=["b1", "b2"], blocks=[{"x": 1}]
+    )
+    assert blocks.deleted == ["b1", "b2"]
+    assert blocks.appends == [("h1", 1)]
+
+
+def test_replace_section_blocks_chunks_at_100_and_reanchors(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    last = notion.replace_section_blocks(
+        _Env(),
+        "pg",
+        after_block_id="h1",
+        delete_block_ids=[],
+        blocks=[{"x": i} for i in range(250)],
+    )
+    assert [n for _, n in blocks.appends] == [100, 100, 50]
+    assert [a for a, _ in blocks.appends] == ["h1", "new-1-99", "new-2-99"]
+    assert last == "new-3-49"
+
+
+def test_replace_section_blocks_with_no_blocks_returns_the_anchor(monkeypatch):
+    blocks = _Blocks()
+    _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
+    assert (
+        notion.replace_section_blocks(
+            _Env(), "pg", after_block_id="h1", delete_block_ids=[], blocks=[]
+        )
+        == "h1"
+    )
+    assert blocks.appends == []
+
+
+def test_set_knowledge_relation_is_idempotent(monkeypatch):
+    updates = []
+    pages = types.SimpleNamespace(
+        retrieve=lambda page_id: {"properties": {"Knowledge Base": {"relation": [{"id": "kp"}]}}},
+        update=lambda page_id, properties: updates.append(properties),
+    )
+    _patch(monkeypatch, types.SimpleNamespace(pages=pages))
+    assert notion.set_knowledge_relation(_Env(), "pg", "kp") is False
+    assert updates == []
+
+
+def test_set_knowledge_relation_preserves_existing_links(monkeypatch):
+    updates = []
+    pages = types.SimpleNamespace(
+        retrieve=lambda page_id: {"properties": {"Knowledge Base": {"relation": [{"id": "old"}]}}},
+        update=lambda page_id, properties: updates.append(properties),
+    )
+    _patch(monkeypatch, types.SimpleNamespace(pages=pages))
+    assert notion.set_knowledge_relation(_Env(), "pg", "kp") is True
+    assert updates == [{"Knowledge Base": {"relation": [{"id": "old"}, {"id": "kp"}]}}]
+
+
+def test_write_distributed_sets_status_and_version(monkeypatch):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            pages=types.SimpleNamespace(
+                update=lambda page_id, properties: updates.append(properties)
+            )
+        ),
+    )
+    notion.write_distributed(_Env(), "pg", "claude-sonnet/v2.0-distribute")
+    assert updates[0]["status"] == {"select": {"name": "Distributed"}}
+    assert "distribute_notes" not in updates[0]
+
+
+def test_write_distributed_records_a_skip_note(monkeypatch):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            pages=types.SimpleNamespace(
+                update=lambda page_id, properties: updates.append(properties)
+            )
+        ),
+    )
+    notion.write_distributed(_Env(), "pg", "v", notes="already covered")
+    assert updates[0]["distribute_notes"]["rich_text"][0]["text"]["content"] == "already covered"
+
+
+def test_write_misrouted_sets_status_and_reason(monkeypatch):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            pages=types.SimpleNamespace(
+                update=lambda page_id, properties: updates.append(properties)
+            )
+        ),
+    )
+    notion.write_misrouted(_Env(), "pg", "meal prep, not movement", "v")
+    assert updates[0]["status"] == {"select": {"name": "Misrouted"}}
+    assert (
+        updates[0]["distribute_notes"]["rich_text"][0]["text"]["content"]
+        == "meal prep, not movement"
+    )

@@ -622,3 +622,89 @@ def query_routed_for_target(env: EnvConfig, target: str) -> list:
             break
         cursor = resp.get("next_cursor")
     return items
+
+
+_APPEND_CHUNK = 100  # Notion caps children per blocks.children.append call
+
+
+def _chunked(items, size):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def replace_section_blocks(env: EnvConfig, page_id: str, *, after_block_id: str,
+                           delete_block_ids: list, blocks: list) -> str:
+    """Replace one section's content: delete its current children, then insert `blocks`
+    after `after_block_id`. The heading block itself is never deleted.
+
+    Inserts in chunks of 100, re-anchoring each chunk on the previous chunk's last block,
+    so a section larger than one append call lands in order. Returns the last inserted
+    block id (the anchor for whatever comes next)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        for block_id in delete_block_ids:
+            client.blocks.delete(block_id=block_id)
+        anchor = after_block_id
+        for chunk in _chunked(blocks, _APPEND_CHUNK):
+            resp = client.blocks.children.append(block_id=page_id, children=chunk, after=anchor)
+            anchor = resp["results"][-1]["id"]
+        log.info("notion: replaced section on %s (deleted %d, inserted %d)",
+                 page_id, len(delete_block_ids), len(blocks))
+        return anchor
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to replace section on {page_id}: {e}") from e
+
+
+def set_heading_text(env: EnvConfig, block_id: str, text: str) -> None:
+    """Fill an existing heading_1 in place — used to fill the template's empty content anchor."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        client.blocks.update(block_id=block_id, heading_1={"rich_text": _rich_text(text)["rich_text"]})
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to fill heading {block_id}: {e}") from e
+
+
+def set_knowledge_relation(env: EnvConfig, page_id: str, target_page_id: str) -> bool:
+    """Idempotently link an archive item to its knowledge page. Returns True when it added
+    the link, False when it was already there. Notion mirrors the knowledge-page side."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        current = client.pages.retrieve(page_id=page_id)["properties"].get(
+            "Knowledge Base", {}).get("relation", [])
+        if any(r["id"] == target_page_id for r in current):
+            return False
+        client.pages.update(page_id=page_id, properties={
+            "Knowledge Base": {"relation": current + [{"id": target_page_id}]}})
+        return True
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to relate {page_id} -> {target_page_id}: {e}") from e
+
+
+def write_distributed(env: EnvConfig, page_id: str, version: str, *, notes=None) -> None:
+    """Item -> Distributed. `notes` records why nothing was added when the item was fed
+    but folded nothing in (a pure duplicate); omitted when it genuinely landed."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {"status": _select("Distributed"), "distribute_version": _rich_text(version)}
+    if notes is not None:
+        props["distribute_notes"] = _rich_text(notes)
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to mark {page_id} Distributed: {e}") from e
+
+
+def write_misrouted(env: EnvConfig, page_id: str, reason: str, version: str) -> None:
+    """Item -> Misrouted: dropped as off-topic for its target page. Its tags need fixing,
+    so it is deliberately NOT a Failed item and NOT retryable through the pipeline."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {"status": _select("Misrouted"), "distribute_notes": _rich_text(reason),
+             "distribute_version": _rich_text(version)}
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to mark {page_id} Misrouted: {e}") from e
