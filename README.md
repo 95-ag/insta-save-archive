@@ -4,7 +4,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **title, summary, and tags**, so you never need to re-open the original.
 
 > **Status:** the one-call orchestrator (`isa run --mode first-time|incremental`) is live —
-> a full clean run through every stage, resumable and crash-safe via Notion state. 711 tests passing.
+> a full clean run through every stage, resumable and crash-safe via Notion state. 717 tests passing.
 
 ## Contents
 

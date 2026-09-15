@@ -178,7 +178,7 @@ def _api_error():
     )
 
 
-def test_replace_section_blocks_deletes_then_inserts(monkeypatch):
+def test_replace_section_blocks_inserts_then_deletes(monkeypatch):
     blocks = _Blocks()
     _patch(monkeypatch, types.SimpleNamespace(blocks=blocks))
     notion.replace_section_blocks(

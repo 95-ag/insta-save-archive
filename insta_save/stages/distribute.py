@@ -3,7 +3,8 @@ into its target Knowledge-DB page behind a diff review gate.
 
 prepare (deterministic bucketing, no model) -> fill (claude-p consolidation, versioned
 prompt) -> apply (section-level replace, then relations and statuses). Attended only:
-prepare+fill write nothing to Notion, apply is a separate invocation."""
+prepare+fill write no page content (the CLI ensures the schema, and prepare marks
+already-related items Distributed), apply is a separate invocation."""
 
 import difflib
 import json
