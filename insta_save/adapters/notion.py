@@ -706,13 +706,17 @@ def write_distributed(env: EnvConfig, page_id: str, version: str, *, notes=None)
         raise RuntimeError(f"notion: failed to mark {page_id} Distributed: {e}") from e
 
 
-def write_misrouted(env: EnvConfig, page_id: str, reason: str, version: str) -> None:
+def write_misrouted(env: EnvConfig, page_id: str, reason: str | None, version: str) -> None:
     """Item -> Misrouted: dropped as off-topic for its target page. Its tags need fixing,
-    so it is deliberately NOT a Failed item and NOT retryable through the pipeline."""
+    so it is deliberately NOT a Failed item and NOT retryable through the pipeline.
+
+    `distribute_notes` is written only for a non-empty reason — a missing reason stays
+    unset rather than becoming an empty note."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
-    props = {"status": _select("Misrouted"), "distribute_notes": _rich_text(reason),
-             "distribute_version": _rich_text(version)}
+    props = {"status": _select("Misrouted"), "distribute_version": _rich_text(version)}
+    if reason:
+        props["distribute_notes"] = _rich_text(reason)
     try:
         client.pages.update(page_id=page_id, properties=props)
     except _DISTRIBUTE_WRITE_ERRORS as e:

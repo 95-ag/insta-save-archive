@@ -314,3 +314,20 @@ def test_write_distributed_wraps_a_request_timeout(monkeypatch):
     _patch(monkeypatch, types.SimpleNamespace(pages=types.SimpleNamespace(update=_update)))
     with pytest.raises(RuntimeError, match="failed to mark pg Distributed"):
         notion.write_distributed(_Env(), "pg", "v")
+
+
+@pytest.mark.parametrize("reason", [None, ""])
+def test_write_misrouted_omits_notes_without_a_reason(monkeypatch, reason):
+    updates = []
+    _patch(
+        monkeypatch,
+        types.SimpleNamespace(
+            pages=types.SimpleNamespace(
+                update=lambda page_id, properties: updates.append(properties)
+            )
+        ),
+    )
+    notion.write_misrouted(_Env(), "pg", reason, "v")
+    assert "distribute_notes" not in updates[0]
+    assert updates[0]["status"] == {"select": {"name": "Misrouted"}}
+    assert updates[0]["distribute_version"]["rich_text"][0]["text"]["content"] == "v"

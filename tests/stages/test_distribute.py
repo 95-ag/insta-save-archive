@@ -189,8 +189,20 @@ def test_parse_proposal_treats_null_lists_as_empty():
     assert folded == [] and dropped == []
 
 
-def test_parse_proposal_defaults_a_missing_reason_to_empty():
+def test_parse_proposal_leaves_a_missing_reason_none():
     _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b"}]}'))
+    assert dropped == [{"source_id": "b", "reason": None}]
+
+
+def test_parse_proposal_leaves_a_null_reason_none():
+    _, _, dropped = dist.parse_proposal(
+        _trailer('{"dropped": [{"source_id": "b", "reason": null}]}')
+    )
+    assert dropped == [{"source_id": "b", "reason": None}]
+
+
+def test_parse_proposal_keeps_an_empty_string_reason_as_given():
+    _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b", "reason": ""}]}'))
     assert dropped == [{"source_id": "b", "reason": ""}]
 
 
@@ -1071,6 +1083,22 @@ def test_apply_marks_a_dropped_item_misrouted_without_a_relation(tmp_path, monke
     assert counts["misrouted"] == 1
     assert calls["misrouted"] == [("p-a", "meal prep")]
     assert "relations" not in calls
+
+
+def test_apply_passes_a_missing_drop_reason_through_as_none(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new",
+        proposal={"folded": [], "dropped": [{"source_id": "a", "reason": None}]},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["misrouted"] == 1
+    assert calls["misrouted"] == [("p-a", None)]
 
 
 def test_apply_marks_an_unmentioned_item_distributed_with_a_skip_note(tmp_path, monkeypatch):

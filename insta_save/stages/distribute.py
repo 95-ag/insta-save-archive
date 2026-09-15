@@ -163,9 +163,7 @@ def _validate_trailer(meta) -> tuple:
                     "distribute proposal: 'dropped' entries need a non-empty source_id string"
                 )
             reason = entry.get("reason")
-            if reason is None:
-                reason = ""
-            elif not isinstance(reason, str):
+            if reason is not None and not isinstance(reason, str):
                 raise ValueError("distribute proposal: 'dropped' reason must be a string")
             dropped.append({"source_id": source_id, "reason": reason})
     else:
@@ -684,7 +682,7 @@ def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
     its link is on the applied body; otherwise it stays Routed for the next cycle."""
     by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
     folded = list(proposal.get("folded") or [])
-    dropped = {d["source_id"]: d.get("reason") or "" for d in proposal.get("dropped") or []}
+    dropped = {d["source_id"]: d.get("reason") for d in proposal.get("dropped") or []}
     counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 0}
 
     for sid in folded:
