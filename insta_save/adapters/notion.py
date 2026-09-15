@@ -528,3 +528,97 @@ def requeue(env: EnvConfig, page_id: str, status: str) -> None:
     except APIResponseError as e:
         log.error("notion: could not requeue %s: %s", page_id, e)
         raise
+
+
+def _page_title(page: dict) -> str:
+    """Title of a page in ANY database — found by property TYPE, so the knowledge DB's
+    title property can be renamed without breaking resolution."""
+    for prop in (page.get("properties") or {}).values():
+        if prop.get("type") == "title":
+            return "".join(b.get("plain_text", "") for b in prop.get("title") or [])
+    return ""
+
+
+def get_knowledge_page(env: EnvConfig, name: str) -> str:
+    """Resolve a route_target page NAME -> page id in the knowledge database.
+
+    Fails loud on absent or ambiguous: route_target keys on the page name, so a rename
+    must stop the run rather than silently write somewhere else."""
+    validate_notion(env)
+    if not env.notion_knowledge_database_id:
+        raise RuntimeError("Missing NOTION_KNOWLEDGE_DATABASE_ID — set it to the Knowledge DB")
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_knowledge_database_id)
+    matches, cursor = [], None
+    while True:
+        kwargs = {"page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.data_sources.query(ds_id, **kwargs)
+        matches.extend(p["id"] for p in resp.get("results", []) if _page_title(p) == name)
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"notion: expected exactly 1 knowledge page named {name!r}, found {len(matches)}")
+    return matches[0]
+
+
+def get_page_blocks(env: EnvConfig, page_id: str) -> list:
+    """Every child block of a page, paginated (Notion caps a listing at 100)."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    blocks, cursor = [], None
+    while True:
+        kwargs = {"block_id": page_id, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.blocks.children.list(**kwargs)
+        blocks.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return blocks
+
+
+def _distribute_row(page: dict) -> dict:
+    props = page.get("properties", {})
+
+    def _text(name):
+        spans = props.get(name, {}).get("rich_text", [])
+        return "".join(b.get("plain_text", "") for b in spans) or None
+
+    title_spans = props.get("title", {}).get("title", [])
+    return {
+        "page_id": page["id"],
+        "source_id": _text("source_id"),
+        "title": "".join(b.get("plain_text", "") for b in title_spans) or None,
+        "summary": _text("summary"),
+        "tags": [t["name"] for t in props.get("tags", {}).get("multi_select", [])],
+        "ig_link": props.get("ig_link", {}).get("url"),
+        "knowledge_base": [r["id"] for r in props.get("Knowledge Base", {}).get("relation", [])],
+    }
+
+
+def query_routed_for_target(env: EnvConfig, target: str) -> list:
+    """Routed items whose route_target is `target`, carrying everything distribute needs.
+
+    One query, no per-item reads. The item side of the Knowledge Base relation holds at
+    most one page, so the 25-item relation cap (which bites on the page side) never applies."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_database_id)
+    flt = {"and": [{"property": "status", "select": {"equals": "Routed"}},
+                   {"property": "route_target", "select": {"equals": target}}]}
+    items, cursor = [], None
+    while True:
+        kwargs = {"filter": flt, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.data_sources.query(ds_id, **kwargs)
+        items.extend(_distribute_row(p) for p in resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return items
