@@ -1592,3 +1592,53 @@ def test_apply_does_not_verify_a_folded_item_whose_link_is_only_a_url_prefix(tmp
     assert counts == {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 1}
     writes = page.writes()
     assert len(writes) == 1 and writes[0][0] == "replace_section_blocks"
+
+
+def test_apply_resumes_with_untouched_section_having_trailing_space(tmp_path, monkeypatch):
+    # An untouched section Y with trailing whitespace on its bullet ("y keep ") is stored
+    # in the fake page's read shape. The proposal replaces X only and folds one item.
+    # Resume detection must normalize both live and expected through the write/read path
+    # so trailing space (stripped by markdown_to_blocks) doesn't cause a false stale-page error.
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "x old"),
+            _read_block("hy", "heading_1", "Y"),
+            _read_block("by", "bulleted_list_item", "y keep "),  # trailing space
+        ]
+    ).patch(monkeypatch)
+    proposed = "# X\n- x new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep "
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _stage_for(
+        tmp_path,
+        page,
+        items=items,
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+
+    real_relation = page.set_knowledge_relation
+
+    def _fail_on_a(env, pid, kp):
+        if pid == "p-a":
+            raise RuntimeError("relation write failed")
+        return real_relation(env, pid, kp)
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", _fail_on_a)
+    with pytest.raises(RuntimeError, match="relation write failed"):
+        dist.apply(env, target="Page A", version="v")
+    assert (d / "batch.json").exists()
+    assert any(entry[0] == "replace_section_blocks" for entry in page.log)
+
+    monkeypatch.setattr(dist, "set_knowledge_relation", real_relation)
+    before = len(page.log)
+    counts = dist.apply(env, target="Page A", version="v")
+    resumed = page.log[before:]
+    assert not any(entry[0] in ("replace_section_blocks", "set_heading_text") for entry in resumed)
+    assert counts["folded"] == 1
+    relation_pids = {e[1] for e in page.log if e[0] == "set_knowledge_relation"}
+    distributed_pids = {e[1] for e in page.log if e[0] == "write_distributed"}
+    assert "p-a" in relation_pids
+    assert "p-a" in distributed_pids
+    for name in ("batch.json", "current.md", "proposed.md", "proposal.json"):
+        assert not (d / name).exists()

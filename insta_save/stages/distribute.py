@@ -761,7 +761,9 @@ def _already_applied(live_md, staged_current, proposed_md) -> bool:
     except ValueError:
         return False
     expected_md = blocks_to_markdown(markdown_to_blocks(merged))
-    return _comparable_sections(live_md) == _comparable_sections(expected_md)
+    return _comparable_sections(
+        blocks_to_markdown(markdown_to_blocks(live_md))
+    ) == _comparable_sections(expected_md)
 
 
 def apply(env, *, target, version) -> dict:
