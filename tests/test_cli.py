@@ -1083,10 +1083,25 @@ class _FakeTemplatePath:
         return "TEMPLATE"
 
 
-def _run_distribute_cli(monkeypatch, tmp_path, argv):
+def _empty_distribute_preview():
+    return types.SimpleNamespace(
+        sections=[], folded=[], unverified=[], dropped=[], unmentioned=[], diff_text=""
+    )
+
+
+def _make_confirm(values):
+    """A scripted `tui.confirm_action` replacement — needs `*args, **kwargs` since
+    confirm_action is called positionally with (message, actions) (see lessons.md)."""
+    it = iter(values)
+    return lambda *a, **k: next(it)
+
+
+def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=None):
     """Wire the distribute stage dispatch with lightweight stubs, then call isa.main(argv).
 
-    `tmp_path` keeps distribute.staging_dir's real mkdir off the repo's tmp/."""
+    `tmp_path` keeps distribute.staging_dir's real mkdir off the repo's tmp/. `preview` and
+    `confirm` override the default stubs for distribute.preview (an empty no-op preview) and
+    tui.confirm_action (immediate "apply") — only reached by the apply path."""
     monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
         tmp_dir=str(tmp_path), distribute_version="v2.0-distribute"))
     monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
@@ -1099,6 +1114,9 @@ def _run_distribute_cli(monkeypatch, tmp_path, argv):
     monkeypatch.setattr(base, "get_backend", lambda name: types.SimpleNamespace(
         batch_budgets=lambda run_cfg: types.SimpleNamespace(max_items=10, char_budget=1000)))
     monkeypatch.setattr(isa, "Path", _FakeTemplatePath)
+    monkeypatch.setattr("insta_save.stages.distribute.preview",
+                        preview or (lambda env, **kw: _empty_distribute_preview()))
+    monkeypatch.setattr("insta_save.helpers.tui.confirm_action", confirm or _make_confirm(["apply"]))
     isa.main(argv)
 
 
@@ -1138,8 +1156,10 @@ def test_distribute_apply_skips_prepare(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("insta_save.stages.distribute.apply",
                         lambda env, **kw: {"folded": 2, "skipped": 1, "misrouted": 1,
                                            "unknown": 0, "unverified": 0})
+    # --yes: the apply confirmation is covered separately below; sys.stdin isn't a tty
+    # under pytest, so without --yes this would hit the non-interactive refusal instead.
     _run_distribute_cli(monkeypatch, tmp_path,
-                        ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"])
     out = capsys.readouterr().out
     assert "2 folded in" in out
     assert "no link" not in out
@@ -1150,7 +1170,7 @@ def test_distribute_apply_reports_unverified(monkeypatch, tmp_path, capsys):
                         lambda env, **kw: {"folded": 2, "skipped": 0, "misrouted": 0,
                                            "unknown": 0, "unverified": 1})
     _run_distribute_cli(monkeypatch, tmp_path,
-                        ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"])
     out = capsys.readouterr().out
     assert "1 folded item(s) had no link in the applied page" in out
 
@@ -1200,7 +1220,8 @@ def test_distribute_apply_runtime_error_becomes_system_exit(monkeypatch, tmp_pat
                             RuntimeError("distribute.apply: 'Page B' changed since prepare")))
     with pytest.raises(SystemExit, match="changed since prepare"):
         _run_distribute_cli(monkeypatch, tmp_path,
-                            ["run", "--stage", "distribute", "--target", "Page B", "--apply"])
+                            ["run", "--stage", "distribute", "--target", "Page B",
+                             "--apply", "--yes"])
 
 
 def test_distribute_fill_terminal_backend_error_stops_cleanly(monkeypatch, tmp_path, capsys):
@@ -1213,3 +1234,182 @@ def test_distribute_fill_terminal_backend_error_stops_cleanly(monkeypatch, tmp_p
     out = capsys.readouterr().out
     assert "stopped" in out
     assert "access token has expired" in out
+
+
+# ---------------------------------------------------------------------------
+# distribute apply — confirmation prompt
+# ---------------------------------------------------------------------------
+
+
+def _stub_distribute_apply(monkeypatch, calls):
+    monkeypatch.setattr(
+        "insta_save.stages.distribute.apply",
+        lambda env, **kw: calls.append(1) or {"folded": 1, "skipped": 0, "misrouted": 0,
+                                              "unknown": 0, "unverified": 0},
+    )
+
+
+def test_distribute_apply_confirm_apply_calls_apply_once(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm(["apply"]),
+    )
+    assert calls == [1]
+    assert "1 folded in" in capsys.readouterr().out
+
+
+def test_distribute_apply_confirm_diff_then_apply_prints_diff_and_applies(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    review = types.SimpleNamespace(
+        sections=[], folded=[], unverified=[], dropped=[], unmentioned=[],
+        diff_text="THE-FULL-DIFF",
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        preview=lambda env, **kw: review,
+        confirm=_make_confirm(["diff", "apply"]),
+    )
+    out = capsys.readouterr().out
+    assert "THE-FULL-DIFF" in out
+    assert calls == [1]
+
+
+def test_distribute_apply_confirm_cancel_does_not_apply(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm(["cancel"]),
+    )
+    assert calls == []
+    assert "Cancelled — nothing written" in capsys.readouterr().out
+
+
+def test_distribute_apply_confirm_ctrl_c_does_not_apply(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm([None]),
+    )
+    assert calls == []
+    assert "Cancelled — nothing written" in capsys.readouterr().out
+
+
+def test_distribute_apply_non_interactive_without_yes_refuses(monkeypatch, tmp_path):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    with pytest.raises(SystemExit, match="refusing to write without confirmation"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+            confirm=lambda *a, **k: confirmed.append(1),
+        )
+    assert calls == [] and confirmed == []
+
+
+def test_distribute_apply_yes_applies_without_confirm_even_when_not_a_tty(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"],
+        confirm=lambda *a, **k: confirmed.append(1),
+    )
+    assert calls == [1] and confirmed == []
+    assert "1 folded in" in capsys.readouterr().out
+
+
+def test_distribute_stage_prints_preview_summary_before_applying(monkeypatch, tmp_path, capsys):
+    """The staging (non-apply) path prints the preview summary and states that nothing has
+    been written to the page yet."""
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 2)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: {"calls": 1, "folded": 2, "dropped": 0})
+    review = types.SimpleNamespace(
+        sections=[types.SimpleNamespace(heading="Workouts", action="replace", added=3, removed=1)],
+        folded=[], unverified=[], dropped=[], unmentioned=[("z", "Unmentioned")],
+        diff_text="",
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"],
+        preview=lambda env, **kw: review,
+    )
+    out = capsys.readouterr().out
+    assert "~ replace 'Workouts' (+3 -1)" in out
+    assert "Unmentioned" in out
+    assert "Nothing has been written to the page yet." in out
+    assert "--apply" in out
+
+
+# ---------------------------------------------------------------------------
+# _format_distribute_preview
+# ---------------------------------------------------------------------------
+
+
+def _preview(*, sections=(), folded=(), unverified=(), dropped=(), unmentioned=()):
+    return types.SimpleNamespace(
+        sections=list(sections),
+        folded=list(folded),
+        unverified=list(unverified),
+        dropped=list(dropped),
+        unmentioned=list(unmentioned),
+    )
+
+
+def test_format_distribute_preview_dropped_with_reason_prints_title_and_reason(capsys):
+    preview = _preview(dropped=[("a", "Dropped Title", "off topic")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Dropped Title — off topic" in out
+
+
+def test_format_distribute_preview_dropped_without_reason_has_no_suffix_or_none(capsys):
+    preview = _preview(dropped=[("a", "Dropped Title", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Dropped Title" in out
+    assert "Dropped Title —" not in out
+    assert "None" not in out
+
+
+def test_format_distribute_preview_lists_unverified_items_under_their_heading(capsys):
+    preview = _preview(unverified=[("a", "Unverified Title")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "folded but the link is missing from the page" in out
+    assert "Unverified Title" in out
+
+
+def test_format_distribute_preview_falls_back_to_source_id_when_title_is_none(capsys):
+    preview = _preview(unmentioned=[("src-id-123", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "src-id-123" in out
+    assert "None" not in out
+
+
+def test_format_distribute_preview_with_no_sections_prints_no_changes_line(capsys):
+    preview = _preview()
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "No page content changes" in out

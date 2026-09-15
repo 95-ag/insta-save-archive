@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
 from insta_save.config.tags import load_vocab, load_vocab_or_empty
 from insta_save.adapters.notion import ensure_schema
+from insta_save.helpers import tui
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
@@ -40,6 +42,47 @@ def _guard(load, *args, **kwargs):
 def _rel(p: str) -> str:
     """Return a relative form of an absolute log path for readable console output."""
     return os.path.relpath(str(p))
+
+def _distribute_label(source_id, title) -> str:
+    """Display text for an item preview line: the title, or the source_id when there is
+    none (never a placeholder — see data-integrity.md)."""
+    return title if title is not None else source_id
+
+
+def _format_distribute_preview(preview) -> str:
+    """Render an ApplyPreview compactly: one line per section change, then the item lists
+    a reviewer needs to check by hand (dropped, unmentioned, unverified). Folded-and-linked
+    items are only counted — the diff already shows what changed for them."""
+    lines = []
+    if preview.sections:
+        for section in preview.sections:
+            marker = "+ new" if section.action == "append" else "~ replace"
+            lines.append(f"  {marker} {section.heading!r} (+{section.added} -{section.removed})")
+    else:
+        lines.append("  No page content changes")
+
+    lines.append(f"  folded: {len(preview.folded)}")
+    if preview.dropped:
+        lines.append(f"  dropped ({len(preview.dropped)}):")
+        for source_id, title, reason in preview.dropped:
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"    - {_distribute_label(source_id, title)}{suffix}")
+    if preview.unmentioned:
+        lines.append(
+            f"  not mentioned, will be marked Distributed as a duplicate skip "
+            f"({len(preview.unmentioned)}):"
+        )
+        for source_id, title in preview.unmentioned:
+            lines.append(f"    - {_distribute_label(source_id, title)}")
+    if preview.unverified:
+        lines.append(
+            f"  folded but the link is missing from the page, will stay Routed "
+            f"({len(preview.unverified)}):"
+        )
+        for source_id, title in preview.unverified:
+            lines.append(f"    - {_distribute_label(source_id, title)}")
+    return "\n".join(lines)
+
 
 _STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
                 "Failed", "remaining")
@@ -96,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
     run.add_argument("--target", default=None,
                      help="distribute: the route_target page name to ingest into")
+    run.add_argument("--yes", action="store_true",
+                     help="skip the distribute apply confirmation")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -391,6 +436,42 @@ def dispatch_run(args) -> None:
 
         try:
             if args.apply:
+                review = distribute.preview(env, target=args.target)
+                print(_format_distribute_preview(review))
+
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage distribute --apply: refusing to write without "
+                        "confirmation in a non-interactive run — re-run in a terminal or "
+                        "pass --yes"
+                    )
+                else:
+                    proceed = False
+                    while True:
+                        choice = tui.confirm_action(
+                            f"Apply these changes to {args.target!r}?",
+                            [
+                                ("Apply these changes", "apply",
+                                 "write the section and item changes to the page"),
+                                ("Show the full diff", "diff",
+                                 "print the unified diff, then ask again"),
+                                ("Cancel — write nothing", "cancel",
+                                 "keep the staged files, write nothing"),
+                            ],
+                        )
+                        if choice == "diff":
+                            print(review.diff_text)
+                            continue
+                        proceed = choice == "apply"
+                        break
+
+                if not proceed:
+                    d = distribute.staging_dir(env, args.target)
+                    print(f"Cancelled — nothing written; staged files kept in {_rel(d)}.")
+                    return
+
                 counts = distribute.apply(env, target=args.target, version=version)
                 print(f"Distributed: {counts['folded']} folded in, {counts['skipped']} already "
                       f"covered, {counts['misrouted']} misrouted.")
@@ -412,9 +493,11 @@ def dispatch_run(args) -> None:
                 model=run_cfg.distribute.model,
                 template=Path("prompts/distribute_v2.0.txt").read_text(encoding="utf-8"))
             d = distribute.staging_dir(env, args.target)
+            print(_format_distribute_preview(distribute.preview(env, target=args.target)))
             print(f"Staged {n} items in {result['calls']} call(s) -> {_rel(d)}\n"
                   f"  Review {_rel(d / 'diff.txt')}, edit {_rel(d / 'proposed.md')} if needed, then:\n"
                   f"  isa run --stage distribute --target {args.target!r} --apply")
+            print("Nothing has been written to the page yet.")
             return
         except TerminalBackendError as exc:
             flush_logs()
