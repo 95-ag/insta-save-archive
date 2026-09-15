@@ -565,9 +565,14 @@ def fill(
 
 _SKIP_NOTE = "no new information — already covered on the page"
 
+# The markdown review shows these, and a divider carries no content, so a section holding only
+# these can be replaced without deleting anything the reviewer never saw.
+_SHOWABLE_TYPES = {"heading_2", "heading_3", "bulleted_list_item", "paragraph", "divider"}
+_REWRITTEN_TYPES = {"heading_2", "heading_3", "bulleted_list_item"}
+
 
 def _section_spans(blocks) -> dict:
-    """{heading_text: (heading_block_id, [content_block_ids])} for each H1 in the content region."""
+    """{heading_text: (heading_block_id, [content_blocks])} for each H1 in the content region."""
     spans, heading, content = {}, None, []
     for block in blocks:
         if block.get("type") == "heading_1":
@@ -575,10 +580,47 @@ def _section_spans(blocks) -> dict:
                 spans[heading[0]] = (heading[1], content)
             heading, content = (_heading_text(block), block["id"]), []
         elif heading is not None:
-            content.append(block["id"])
+            content.append(block)
     if heading is not None:
         spans[heading[0]] = (heading[1], content)
     return spans
+
+
+def _unshowable_kinds(content) -> list:
+    """What in a section the markdown review never showed: unrendered block types, and child
+    blocks (sub-bullets, toggle contents) that Notion deletes together with their parent."""
+    kinds = []
+    for block in content:
+        btype = block.get("type")
+        if btype not in _SHOWABLE_TYPES and btype not in kinds:
+            kinds.append(btype)
+    if any(block.get("has_children") for block in content):
+        kinds.append("has_children")
+    return kinds
+
+
+def _refuse_unshowable(blocks, ops) -> None:
+    spans = _section_spans(blocks)
+    problems = []
+    for op in (o for o in ops if o.action == "replace"):
+        kinds = _unshowable_kinds(spans[op.heading][1])
+        if kinds:
+            problems.append(
+                f"section {op.heading!r} holds blocks the review cannot show ({', '.join(kinds)})"
+            )
+    if problems:
+        raise RuntimeError(
+            f"distribute.apply: {'; '.join(problems)} — "
+            "edit it in Notion or leave it out of the proposal"
+        )
+
+
+def _is_rewritten(block) -> bool:
+    """Dividers and empty paragraphs are template spacing, kept in place on a replace."""
+    btype = block.get("type")
+    if btype == "paragraph":
+        return bool(blocks_to_markdown([block]).strip())
+    return btype in _REWRITTEN_TYPES
 
 
 def _empty_anchor_id(blocks):
@@ -588,18 +630,21 @@ def _empty_anchor_id(blocks):
     )
 
 
-def _write_sections(env, page_id, blocks, ops) -> None:
+def _write_sections(env, page_id, blocks, ops, *, empty_page) -> None:
     """Every content write, before any item write. Replaces run first, then appends against
     a freshly-read tail — a replace can move the page's last block, so the stale one is not
-    a safe anchor."""
+    a safe anchor.
+
+    Only a page with no content yet starts at its empty heading_1: on a filled page a stray
+    empty heading is not the anchor, and new sections go after the true page tail."""
     spans = _section_spans(blocks)
     for op in (o for o in ops if o.action == "replace"):
-        heading_id, content_ids = spans[op.heading]
+        heading_id, content = spans[op.heading]
         replace_section_blocks(
             env,
             page_id,
             after_block_id=heading_id,
-            delete_block_ids=content_ids,
+            delete_block_ids=[b["id"] for b in content if _is_rewritten(b)],
             blocks=markdown_to_blocks(op.body_markdown),
         )
 
@@ -607,7 +652,7 @@ def _write_sections(env, page_id, blocks, ops) -> None:
     if not appends:
         return
     fresh = _content_blocks(get_page_blocks(env, page_id))
-    anchor_id = _empty_anchor_id(fresh)
+    anchor_id = _empty_anchor_id(fresh) if empty_page else None
     tail = fresh[-1]["id"] if fresh else None
     for op in appends:
         body = markdown_to_blocks(op.body_markdown)
@@ -631,19 +676,29 @@ def _write_sections(env, page_id, blocks, ops) -> None:
         )
 
 
-def _write_items(env, page_id, items, proposal, version) -> dict:
+def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
     """Item state — ONLY after every section write succeeded. The relation goes first so an
-    interruption can never leave an item marked Distributed without its provenance link."""
+    interruption can never leave an item marked Distributed without its provenance link.
+
+    A relation makes every future prepare skip the item, so a folded item is linked only when
+    its link is on the applied body; otherwise it stays Routed for the next cycle."""
     by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
     folded = list(proposal.get("folded") or [])
     dropped = {d["source_id"]: d.get("reason") or "" for d in proposal.get("dropped") or []}
-    counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0}
+    counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 0}
 
     for sid in folded:
         item = by_sid.get(sid)
         if item is None:
             log.warning("distribute.apply: proposal folded unknown source_id %s — ignoring", sid)
             counts["unknown"] += 1
+            continue
+        ig_link = item.get("ig_link")
+        if ig_link is None or ig_link not in proposed_md:
+            log.warning(
+                "distribute.apply: folded %s but its link is not on the page — left Routed", sid
+            )
+            counts["unverified"] += 1
             continue
         set_knowledge_relation(env, item["page_id"], page_id)
         write_distributed(env, item["page_id"], version)
@@ -667,24 +722,59 @@ def _write_items(env, page_id, items, proposal, version) -> dict:
     return counts
 
 
+def _refuse_orphan_text(proposed_md) -> None:
+    """split_sections drops text ahead of the first heading, so a hand edit placed there
+    would silently never reach the page."""
+    lines = proposed_md.splitlines()
+    first = next((i for i, line in enumerate(lines) if line.startswith("# ")), len(lines))
+    if "\n".join(lines[:first]).strip():
+        raise RuntimeError(
+            "distribute.apply: proposed.md has text before its first heading — "
+            "it would be dropped; move it under a section"
+        )
+
+
+def _comparable_sections(md) -> list:
+    """Sections as the page renders them after a write: empty paragraphs and dividers leave
+    blank or no lines, and the anchor heading of an empty page renders as an empty section."""
+    return [
+        (heading, "\n".join(line for line in body.splitlines() if line.strip()))
+        for heading, body in split_sections(md)
+        if heading or body
+    ]
+
+
 def apply(env, *, target, version) -> dict:
     """Write the reviewed proposal to the page, then the item state. Aborts if the page moved
-    under the proposal. Returns {"folded", "skipped", "misrouted", "unknown"}."""
+    under the proposal — unless it already carries the proposal (a run that failed after its
+    section writes), in which case only the item state is written.
+
+    Returns {"folded", "skipped", "misrouted", "unknown", "unverified"}: unverified counts
+    folded items left Routed because their link is not on the applied body."""
     d = staging_dir(env, target)
+    if not (d / "batch.json").exists():
+        raise RuntimeError(f"distribute.apply: nothing staged for {target!r} — run prepare first")
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     proposal = json.loads((d / "proposal.json").read_text(encoding="utf-8"))
     staged_current = (d / "current.md").read_text(encoding="utf-8")
     proposed_md = (d / "proposed.md").read_text(encoding="utf-8")
+    _refuse_orphan_text(proposed_md)
 
     page_id = batch["page_id"]
     blocks = _content_blocks(get_page_blocks(env, page_id))
-    if blocks_to_markdown(blocks) != staged_current:
+    live_md = blocks_to_markdown(blocks)
+    if live_md == staged_current:
+        ops = plan_sections(staged_current, proposed_md)
+        _refuse_unshowable(blocks, ops)
+        _write_sections(env, page_id, blocks, ops, empty_page=_is_empty_page(staged_current))
+    elif _comparable_sections(live_md) == _comparable_sections(proposed_md):
+        log.info("distribute.apply: %s already carries the proposal — resuming item writes", target)
+    else:
         raise RuntimeError(
             f"distribute.apply: {target!r} changed since prepare — re-run prepare to restage"
         )
 
-    _write_sections(env, page_id, blocks, plan_sections(staged_current, proposed_md))
-    counts = _write_items(env, page_id, batch["items"], proposal, version)
+    counts = _write_items(env, page_id, batch["items"], proposal, proposed_md, version)
     for name in _STAGED_FILES:
         (d / name).unlink(missing_ok=True)
     log.info("distribute.apply: %s — %s", target, counts)

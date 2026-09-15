@@ -1,10 +1,13 @@
+import copy
 import json
+import re
 import types
 
 import pytest
 
 from insta_save.backends.base import TerminalBackendError
 from insta_save.config.routes import Routes
+from insta_save.markdown_blocks import blocks_to_markdown
 from insta_save.stages import distribute as dist
 
 TAGS = {"fitness-workouts", "mobility-posture"}
@@ -1024,7 +1027,7 @@ def test_apply_replaces_a_changed_section_and_links_folded_items(tmp_path, monke
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1043,7 +1046,7 @@ def test_apply_fills_the_empty_anchor_on_a_first_time_build(tmp_path, monkeypatc
         tmp_path,
         items=items,
         current_md="# ",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1076,7 +1079,7 @@ def test_apply_marks_an_unmentioned_item_distributed_with_a_skip_note(tmp_path, 
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1093,7 +1096,7 @@ def test_apply_writes_no_item_state_when_a_section_write_fails(tmp_path, monkeyp
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1114,7 +1117,7 @@ def test_apply_aborts_when_the_page_changed_since_prepare(tmp_path, monkeypatch)
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1130,10 +1133,344 @@ def test_apply_ignores_an_invented_source_id(tmp_path, monkeypatch):
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a", "ghost"], "dropped": []},
     )
     calls = {}
     _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
     counts = dist.apply(env, target="Page A", version="v")
     assert counts["unknown"] == 1 and counts["folded"] == 1
+
+
+def _read_block(bid, btype, text="", *, has_children=False):
+    body = {}
+    if btype != "divider":
+        spans = [{"plain_text": text, "annotations": {"bold": False}, "href": None}] if text else []
+        body = {"rich_text": spans}
+    return {"id": bid, "type": btype, "has_children": has_children, btype: body}
+
+
+def _to_read_shape(block, bid):
+    btype = block["type"]
+    spans = []
+    for span in block[btype]["rich_text"]:
+        text = span["text"]
+        spans.append(
+            {
+                "plain_text": text["content"],
+                "annotations": {"bold": bool((span.get("annotations") or {}).get("bold"))},
+                "href": (text.get("link") or {}).get("url"),
+            }
+        )
+    return {"id": bid, "type": btype, "has_children": False, btype: {"rich_text": spans}}
+
+
+class _FakePage:
+    """A live page's ordered top-level blocks, mutated the way the Notion adapter would."""
+
+    WRITES = {
+        "replace_section_blocks",
+        "set_heading_text",
+        "set_knowledge_relation",
+        "write_distributed",
+        "write_misrouted",
+    }
+
+    def __init__(self, blocks, *, fail_on_replace=False):
+        self.blocks = copy.deepcopy(blocks)
+        self.log = []
+        self.fail_on_replace = fail_on_replace
+        self._ids = 0
+
+    def patch(self, monkeypatch):
+        for name in ("get_page_blocks", *self.WRITES):
+            monkeypatch.setattr(dist, name, getattr(self, name))
+        return self
+
+    def writes(self):
+        return [entry for entry in self.log if entry[0] in self.WRITES]
+
+    def ids(self):
+        return [b["id"] for b in self.blocks]
+
+    def render(self):
+        return blocks_to_markdown(dist._content_blocks(self.blocks))
+
+    def get_page_blocks(self, env, pid):
+        self.log.append(("get_page_blocks", pid))
+        return copy.deepcopy(self.blocks)
+
+    def replace_section_blocks(self, env, pid, *, after_block_id, delete_block_ids, blocks):
+        self.log.append(("replace_section_blocks", after_block_id, list(delete_block_ids)))
+        if self.fail_on_replace:
+            raise RuntimeError("notion down")
+        self.blocks = [b for b in self.blocks if b["id"] not in delete_block_ids]
+        position = self.ids().index(after_block_id) + 1
+        last = after_block_id
+        for block in blocks:
+            self._ids += 1
+            last = f"new{self._ids}"
+            self.blocks.insert(position, _to_read_shape(block, last))
+            position += 1
+        return last
+
+    def set_heading_text(self, env, bid, text):
+        self.log.append(("set_heading_text", bid, text))
+        block = next(b for b in self.blocks if b["id"] == bid)
+        block["heading_1"]["rich_text"] = [
+            {"plain_text": text, "annotations": {"bold": False}, "href": None}
+        ]
+
+    def set_knowledge_relation(self, env, pid, kp):
+        self.log.append(("set_knowledge_relation", pid, kp))
+        return True
+
+    def write_distributed(self, env, pid, version, notes=None):
+        self.log.append(("write_distributed", pid, notes))
+
+    def write_misrouted(self, env, pid, reason, version):
+        self.log.append(("write_misrouted", pid, reason))
+
+
+def _stage_for(tmp_path, page, *, items, proposed_md, proposal):
+    return _staged(
+        tmp_path,
+        items=items,
+        current_md=page.render(),
+        proposed_md=proposed_md,
+        proposal=proposal,
+    )
+
+
+def test_apply_replaces_one_section_keeps_the_other_and_appends_last(tmp_path, monkeypatch):
+    page = _FakePage(
+        [
+            {"id": "toc", "type": "table_of_contents", "has_children": False},
+            _read_block("qa", "heading_2", "🔗 Quick Access"),
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "x old"),
+            _read_block("hy", "heading_1", "Y"),
+            _read_block("by", "bulleted_list_item", "y keep"),
+        ]
+    ).patch(monkeypatch)
+    proposed = "# X\n- x new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep\n# Z\n- z one"
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    dist.apply(env, target="Page A", version="v")
+    assert page.render() == proposed
+    assert {"toc", "qa", "hx", "hy", "by"} <= set(page.ids())
+    assert "bx" not in page.ids()
+
+
+def test_apply_first_time_build_fills_the_anchor_and_keeps_template_furniture(
+    tmp_path, monkeypatch
+):
+    page = _FakePage(
+        [
+            _read_block("anchor", "heading_1"),
+            _read_block("dv", "divider"),
+            _read_block("ep", "paragraph"),
+        ]
+    ).patch(monkeypatch)
+    proposed = "# S1\n- one\n🔗 [t-a](https://ig/a)\n# S2\n- two"
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    dist.apply(env, target="Page A", version="v")
+    assert page.blocks[0]["id"] == "anchor"
+    assert page.render().startswith("# S1\n- one\n🔗 [t-a](https://ig/a)\n# S2\n- two")
+    assert "dv" in page.ids() and "ep" in page.ids()
+    assert ("set_heading_text", "anchor", "S1") in page.log
+
+
+def test_apply_appends_after_the_page_tail_despite_a_stray_empty_heading(tmp_path, monkeypatch):
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "x"),
+            _read_block("stray", "heading_1"),
+            _read_block("hy", "heading_1", "Y"),
+            _read_block("by", "bulleted_list_item", "y"),
+        ]
+    ).patch(monkeypatch)
+    proposed = "# X\n- x\n# \n# Y\n- y\n# Z\n- z\n🔗 [t-a](https://ig/a)"
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    dist.apply(env, target="Page A", version="v")
+    assert page.render() == proposed
+    assert not any(entry[0] == "set_heading_text" for entry in page.log)
+
+
+@pytest.mark.parametrize(
+    "bad_block, rendered, kind",
+    [
+        (_read_block("ny", "numbered_list_item", "hidden"), "", "numbered_list_item"),
+        (
+            _read_block("cy", "bulleted_list_item", "parent", has_children=True),
+            "- parent",
+            "has_children",
+        ),
+    ],
+)
+def test_apply_refuses_to_replace_a_section_holding_unshowable_blocks(
+    tmp_path, monkeypatch, bad_block, rendered, kind
+):
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "x"),
+            _read_block("hy", "heading_1", "Y"),
+            bad_block,
+        ]
+    ).patch(monkeypatch)
+    assert page.render() == ("# X\n- x\n# Y\n" + rendered if rendered else "# X\n- x\n# Y")
+    env, d = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md="# X\n- x2\n🔗 [t-a](https://ig/a)\n# Y\n- y2",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    with pytest.raises(RuntimeError, match=rf"section 'Y' holds blocks .*{kind}") as exc:
+        dist.apply(env, target="Page A", version="v")
+    assert "'X'" not in str(exc.value)
+    assert page.writes() == []
+    assert (d / "batch.json").exists()
+
+
+def test_apply_replace_keeps_dividers_and_empty_paragraphs(tmp_path, monkeypatch):
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "x old"),
+            _read_block("px", "paragraph", "prose old"),
+            _read_block("dv", "divider"),
+            _read_block("ep", "paragraph"),
+        ]
+    ).patch(monkeypatch)
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md="# X\n- x new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    dist.apply(env, target="Page A", version="v")
+    assert ("replace_section_blocks", "hx", ["bx", "px"]) in page.log
+    assert "dv" in page.ids() and "ep" in page.ids()
+
+
+def test_apply_links_only_folded_items_whose_link_landed(tmp_path, monkeypatch):
+    page = _FakePage(
+        [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    ).patch(monkeypatch)
+    no_link = _item("c", ["fitness-workouts"])
+    no_link["ig_link"] = None
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"]), no_link]
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=items,
+        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a", "b", "c"], "dropped": []},
+    )
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts == {"folded": 1, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 2}
+    item_writes = [e for e in page.writes() if e[0] != "replace_section_blocks"]
+    assert item_writes == [
+        ("set_knowledge_relation", "p-a", "kp"),
+        ("write_distributed", "p-a", None),
+    ]
+
+
+def test_apply_resumes_item_writes_when_the_proposal_is_already_on_the_page(tmp_path, monkeypatch):
+    proposed = "# X\n- new\n🔗 [t-a](https://ig/a)\n# Z\n- z"
+    page = _FakePage(
+        [
+            _read_block("hx", "heading_1", "X"),
+            _read_block("bx", "bulleted_list_item", "new"),
+            _read_block("dv", "divider"),
+            _read_block("ep", "paragraph"),
+            _read_block("nx", "numbered_list_item", "invisible"),
+            _read_block("hz", "heading_1", "Z"),
+            _read_block("bz", "bulleted_list_item", "z"),
+        ]
+    ).patch(monkeypatch)
+    page.blocks.insert(
+        2, _to_read_shape(dist.markdown_to_blocks("🔗 [t-a](https://ig/a)")[0], "lk")
+    )
+    env, d = _staged(
+        tmp_path,
+        items=[_item("a", ["fitness-workouts"])],
+        current_md="# X\n- old",
+        proposed_md=proposed,
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    assert page.render() != "# X\n- old"
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["folded"] == 1
+    assert page.writes() == [
+        ("set_knowledge_relation", "p-a", "kp"),
+        ("write_distributed", "p-a", None),
+    ]
+    for name in ("batch.json", "current.md", "proposed.md", "proposal.json"):
+        assert not (d / name).exists()
+
+
+def test_apply_removes_staged_files_only_after_success(tmp_path, monkeypatch):
+    blocks = [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    staged = ("batch.json", "current.md", "proposed.md", "proposal.json")
+    kwargs = dict(
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+
+    failing = _FakePage(blocks, fail_on_replace=True).patch(monkeypatch)
+    env, d = _stage_for(tmp_path, failing, **kwargs)
+    with pytest.raises(RuntimeError, match="notion down"):
+        dist.apply(env, target="Page A", version="v")
+    assert all((d / name).exists() for name in staged)
+
+    _FakePage(blocks).patch(monkeypatch)
+    dist.apply(env, target="Page A", version="v")
+    assert not any((d / name).exists() for name in staged)
+
+
+def test_apply_refuses_when_nothing_is_staged(tmp_path, monkeypatch):
+    page = _FakePage([_read_block("hx", "heading_1", "X")]).patch(monkeypatch)
+    with pytest.raises(
+        RuntimeError, match=re.escape("distribute.apply: nothing staged for 'Page A'")
+    ):
+        dist.apply(_env(tmp_path), target="Page A", version="v")
+    assert page.writes() == []
+
+
+def test_apply_refuses_text_before_the_first_heading(tmp_path, monkeypatch):
+    page = _FakePage(
+        [_read_block("hx", "heading_1", "X"), _read_block("bx", "bulleted_list_item", "old")]
+    ).patch(monkeypatch)
+    env, _ = _stage_for(
+        tmp_path,
+        page,
+        items=[_item("a", ["fitness-workouts"])],
+        proposed_md="an orphan intro line\n# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    with pytest.raises(RuntimeError, match="before its first heading"):
+        dist.apply(env, target="Page A", version="v")
+    assert page.writes() == []
