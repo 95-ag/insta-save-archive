@@ -1,5 +1,8 @@
+import json
+
 import pytest
 
+from insta_save.config.routes import Routes
 from insta_save.stages import distribute as dist
 
 TAGS = {"fitness-workouts", "mobility-posture"}
@@ -222,3 +225,118 @@ def test_render_diff_shows_the_change_and_names_the_section():
 
 def test_render_diff_reports_no_change_when_the_proposal_is_empty():
     assert "no changes" in dist.render_diff("# One\n- a", "").lower()
+
+
+class _Env:
+    tmp_dir = None  # set per test
+    notion_token = "t"
+    notion_database_id = "db"
+    notion_knowledge_database_id = "kdb"
+
+
+class _Vocab:
+    content_types = CTYPES
+
+
+class _Budgets:
+    max_items = 10
+    char_budget = 10000
+
+
+def _env(tmp_path):
+    env = _Env()
+    env.tmp_dir = str(tmp_path)
+    return env
+
+
+def _h1(text, bid="h1"):
+    return {
+        "id": bid,
+        "type": "heading_1",
+        "heading_1": {"rich_text": [{"plain_text": text, "annotations": {"bold": False}}]},
+    }
+
+
+def _bullet(text, bid):
+    return {
+        "id": bid,
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": [{"plain_text": text, "annotations": {"bold": False}}]},
+    }
+
+
+def _patch_prepare(monkeypatch, *, items, blocks=(), distributed=None):
+    monkeypatch.setattr(dist, "get_knowledge_page", lambda env, name: "kp")
+    monkeypatch.setattr(dist, "query_routed_for_target", lambda env, target: list(items))
+    monkeypatch.setattr(dist, "get_page_blocks", lambda env, pid: list(blocks))
+
+    def _write_distributed(env, pid, version, notes=None):
+        # `distributed or []` breaks when the caller passes an empty list (falsy) as the
+        # sink to record into — it silently appends to a throwaway list instead. Guard on
+        # identity with the default instead.
+        if distributed is not None:
+            distributed.append(pid)
+
+    monkeypatch.setattr(dist, "write_distributed", _write_distributed)
+
+
+ROUTES = Routes(
+    by_tag=[("fitness-workouts", "Page A"), ("mobility-posture", "Page A"), ("web-dev", "Page C")]
+)
+
+
+def test_prepare_stages_pending_items(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    _patch_prepare(
+        monkeypatch,
+        items=[_item("a", ["fitness-workouts"])],
+        blocks=[_h1("Workouts"), _bullet("old", "b1")],
+    )
+    n = dist.prepare(
+        env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+    )
+    d = dist.staging_dir(env, "Page A")
+    assert n == 1
+    assert json.loads((d / "batch.json").read_text())["page_id"] == "kp"
+    assert (d / "current.md").read_text() == "# Workouts\n- old"
+
+
+def test_prepare_reconciles_already_related_items(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    done = _item("a", ["fitness-workouts"])
+    done["knowledge_base"] = ["kp"]
+    distributed = []
+    _patch_prepare(monkeypatch, items=[done], distributed=distributed)
+    assert (
+        dist.prepare(
+            env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+        )
+        == 0
+    )
+    assert distributed == ["p-a"]
+
+
+def test_prepare_returns_zero_when_nothing_is_pending(tmp_path, monkeypatch):
+    env = _env(tmp_path)
+    _patch_prepare(monkeypatch, items=[])
+    assert (
+        dist.prepare(
+            env, target="Page B", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+        )
+        == 0
+    )
+
+
+def test_content_blocks_starts_at_the_first_h1():
+    blocks = [
+        {"id": "toc", "type": "table_of_contents", "table_of_contents": {}},
+        {"id": "d", "type": "divider", "divider": {}},
+        _h1("Workouts"),
+        _bullet("a", "b1"),
+    ]
+    assert [b["id"] for b in dist._content_blocks(blocks)] == ["h1", "b1"]
+
+
+def test_content_blocks_refuses_when_quick_access_is_an_h1():
+    with pytest.raises(RuntimeError, match="Quick Access"):
+        dist._content_blocks([_h1("🔗 Quick Access")])

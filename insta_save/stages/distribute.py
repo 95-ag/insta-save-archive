@@ -11,8 +11,15 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
-from insta_save.markdown_blocks import split_sections
+from insta_save.adapters.notion import (
+    get_knowledge_page,
+    get_page_blocks,
+    query_routed_for_target,
+    write_distributed,
+)
+from insta_save.markdown_blocks import blocks_to_markdown, split_sections
 
 log = logging.getLogger(__name__)
 
@@ -222,3 +229,78 @@ def render_diff(current_md, proposed_md) -> str:
             )
         )
     return "\n\n".join(chunks) if chunks else "no changes proposed"
+
+
+_QUICK_ACCESS_MARKER = "Quick Access"
+
+
+def _slug(name) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-") or "page"
+
+
+def staging_dir(env, target) -> Path:
+    d = Path(env.tmp_dir) / "distribute" / _slug(target)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _heading_text(block) -> str:
+    return blocks_to_markdown([block]).lstrip("#").strip()
+
+
+def _content_blocks(blocks) -> list:
+    """The content region: everything from the page's FIRST heading_1 onward.
+
+    Above it sits template furniture (table of contents, Quick Access, dividers) that this
+    stage never reads or rewrites. Quick Access uses a lower heading level by convention;
+    if it ever becomes an H1 the anchor cannot be identified, so stop rather than guess."""
+    for index, block in enumerate(blocks or []):
+        if block.get("type") == "heading_1":
+            text = _heading_text(block)
+            if _QUICK_ACCESS_MARKER in text:
+                raise RuntimeError(
+                    f"distribute: the page's first heading_1 is the {text!r} template section — "
+                    "the content anchor cannot be identified; fix the page template first"
+                )
+            return list(blocks[index:])
+    return []
+
+
+def _routing_tags_for(routes, target) -> set:
+    """Tags whose routes.json target is this page — the bucketing axis. Derived from the
+    live routing config, so there is no second place to keep in sync."""
+    return {tag for tag, page in routes.by_tag if page == target}
+
+
+def prepare(env, *, target, routes, vocab, budgets, version) -> int:
+    """Stage one target page for fill. Writes nothing to the page.
+
+    Reconciles items already related to the page (proven folded in -> Distributed, no model
+    call), then stages the rest. Returns the number of items staged; 0 means nothing left."""
+    page_id = get_knowledge_page(env, target)
+    items = query_routed_for_target(env, target)
+
+    already = [i for i in items if page_id in i.get("knowledge_base", [])]
+    for item in already:
+        write_distributed(env, item["page_id"], version)
+    if already:
+        log.info(
+            "distribute.prepare: reconciled %d already-related items on %s", len(already), target
+        )
+
+    pending = [i for i in items if page_id not in i.get("knowledge_base", [])]
+    if not pending:
+        log.info("distribute.prepare: nothing pending for %s", target)
+        return 0
+
+    current_md = blocks_to_markdown(_content_blocks(get_page_blocks(env, page_id)))
+    d = staging_dir(env, target)
+    (d / "batch.json").write_text(
+        json.dumps(
+            {"target": target, "page_id": page_id, "items": pending}, ensure_ascii=False, indent=2
+        ),
+        encoding="utf-8",
+    )
+    (d / "current.md").write_text(current_md, encoding="utf-8")
+    log.info("distribute.prepare: staged %d items for %s", len(pending), target)
+    return len(pending)
