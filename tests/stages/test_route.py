@@ -1,3 +1,5 @@
+import pytest
+
 import insta_save.stages.route as route
 from insta_save.config.routes import Routes
 
@@ -313,6 +315,123 @@ def test_route_item_falls_back_to_tag_order_without_a_primary_topic(monkeypatch)
     assert written == {"p1": "WebDB"}
 
 
+# ---------------------------------------------------------------------------
+# Review fix round 1 (Fix 2): _route_item / run_route_stage track the same
+# decided-by-primary-vs-order breakdown as reroute.
+# ---------------------------------------------------------------------------
+
+def test_route_item_records_a_primary_decision_when_it_changes_the_destination(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    decided = {}
+    item = _item(tags=["web-dev", "ui-ux"])
+    item["primary_topic"] = "ui-ux"
+    assert route._route_item(None, item, _P4_ROUTES, _Cfg(), decided=decided) == "routed"
+    assert decided == {"primary": 1}
+
+
+def test_route_item_records_an_order_decision_without_a_primary_topic(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    decided = {}
+    item = _item(tags=["web-dev", "ui-ux"])
+    assert route._route_item(None, item, _P4_ROUTES, _Cfg(), decided=decided) == "routed"
+    assert decided == {"order": 1}
+
+
+def test_route_item_records_an_order_decision_when_primary_topic_agrees_with_tag_order(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    decided = {}
+    item = _item(tags=["web-dev"])
+    item["primary_topic"] = "web-dev"
+    assert route._route_item(None, item, _P4_ROUTES, _Cfg(), decided=decided) == "routed"
+    assert decided == {"order": 1}
+
+
+def test_route_item_dry_run_records_the_decision_without_writing(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
+    decided = {}
+    item = _item(tags=["web-dev", "ui-ux"])
+    item["primary_topic"] = "ui-ux"
+    assert route._route_item(None, item, _P4_ROUTES, _Cfg(), dry_run=True, decided=decided) == "routed"
+    assert decided == {"primary": 1}
+
+
+def test_route_item_unrouted_item_records_no_decision(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("should not write")))
+    decided = {}
+    assert route._route_item(None, _item(tags=["nope"]), _P4_ROUTES, _Cfg(), decided=decided) == "unrouted"
+    assert decided == {}
+
+
+def test_route_item_failed_write_records_no_decision(monkeypatch):
+    def _boom(*a):
+        raise RuntimeError("notion write failed")
+    monkeypatch.setattr(route, "write_route", _boom)
+    decided = {}
+    item = _item(tags=["web-dev"])
+    with pytest.raises(RuntimeError):
+        route._route_item(None, item, _P4_ROUTES, _Cfg(), decided=decided)
+    assert decided == {}
+
+
+def test_run_route_stage_returns_decided_by_counts(monkeypatch):
+    items = [
+        _item(pid="p1", tags=["web-dev", "ui-ux"]),
+        _item(pid="p2", tags=["web-dev"]),
+        _item(pid="p3", tags=["nope"]),
+    ]
+    items[0]["primary_topic"] = "ui-ux"
+
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        counts = {}
+        for it in items:
+            counter = fn(env, it, None)
+            counts[counter] = counts.get(counter, 0) + 1
+        counts.setdefault("failed", 0)
+        return counts
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+
+    r = route.run_route_stage(None, _P4_ROUTES, _Cfg(), None)
+    assert r["routed"] == 2 and r["unrouted"] == 1
+    assert r["decided_by"] == {"primary": 1, "order": 1}
+
+
+def test_run_route_stage_dry_run_reports_decided_by_without_writing(monkeypatch):
+    items = [_item(pid="p1", tags=["web-dev"])]
+
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        counts = {}
+        for it in items:
+            counter = fn(env, it, None)
+            counts[counter] = counts.get(counter, 0) + 1
+        counts.setdefault("failed", 0)
+        return counts
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    monkeypatch.setattr(route, "write_route",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
+
+    r = route.run_route_stage(None, _P4_ROUTES, _Cfg(), None, dry_run=True)
+    assert r["routed"] == 1
+    assert r["decided_by"] == {"primary": 0, "order": 1}
+
+
+def test_run_route_stage_reports_zero_decisions_when_nothing_routed(monkeypatch):
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        return {"failed": 0}
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    r = route.run_route_stage(None, _P4_ROUTES, _Cfg(), None)
+    assert r["decided_by"] == {"primary": 0, "order": 0}
+
+
 def test_reroute_item_moves_an_item_its_primary_topic_points_elsewhere(monkeypatch):
     written = {}
     monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
@@ -335,15 +454,31 @@ def test_reroute_item_records_an_order_decision_without_a_primary_rule(monkeypat
     assert decided == {"order": 1}
 
 
-def test_reroute_item_records_a_primary_decision_even_when_tag_order_agrees(monkeypatch):
-    """The primary topic decided it, so it is reported as such — even though plain tag
-    order would have picked the same target."""
+def test_reroute_item_records_an_order_decision_when_primary_topic_agrees_with_tag_order(monkeypatch):
+    """Review fix round 1: the primary topic has a by_tag rule, but it resolves to the
+    SAME target that plain tag order alone would have picked — the primary topic didn't
+    change anything, so it counts as order, not primary."""
     monkeypatch.setattr(route, "write_route", lambda *a: None)
     moves, decided = {}, {}
     item = _routed_item(tags=["web-dev"], route_target="OldDB")
     item["primary_topic"] = "web-dev"
     assert route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves, decided=decided) == "rerouted"
-    assert decided == {"primary": 1}
+    assert decided == {"order": 1}
+
+
+def test_reroute_item_failed_write_records_no_decision(monkeypatch):
+    """write_route raising must leave `decided` untouched — the runner counts the item as
+    failed, and a partial decision-count would double-report on a later successful retry."""
+    def _boom(*a):
+        raise RuntimeError("notion write failed")
+    monkeypatch.setattr(route, "write_route", _boom)
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev", "ui-ux"], route_target="WebDB")
+    item["primary_topic"] = "ui-ux"
+    with pytest.raises(RuntimeError):
+        route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves, decided=decided)
+    assert decided == {}
+    assert moves == {}
 
 
 def test_reroute_item_records_no_decision_for_unchanged_or_unrouted(monkeypatch):

@@ -497,6 +497,28 @@ def test_route_reroute_dry_run_marks_summary(monkeypatch, capsys):
     assert "(dry-run)" in capsys.readouterr().out
 
 
+def test_route_summary_prints_the_decided_by_breakdown_when_routed(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 2, "unrouted": 1, "failed": 0,
+                                         "decided_by": {"primary": 1, "order": 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic: 1" in out and "by rule order: 1" in out
+
+
+def test_route_summary_omits_the_decided_by_breakdown_when_nothing_routed(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 0, "unrouted": 3, "failed": 0,
+                                         "decided_by": {"primary": 0, "order": 0}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic" not in out
+
+
 def test_route_without_reroute_still_uses_route_stage(monkeypatch):
     """--reroute defaults to False; a plain route run must not call run_reroute_stage."""
     route_mod = _route_common(monkeypatch)

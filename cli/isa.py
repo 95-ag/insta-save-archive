@@ -123,6 +123,14 @@ def _format_rebuild_preview(preview) -> str:
     return "\n".join(lines)
 
 
+def _decided_by_line(decided: dict) -> str:
+    """Render the "how was the route decided" breakdown shared by the route and reroute
+    summaries: how many items' destinations were actually changed by the item's primary
+    topic versus decided by plain by_tag/collection/group order (review fix round 1)."""
+    return (f"  decided by primary topic: {decided.get('primary', 0)}, "
+            f"by rule order: {decided.get('order', 0)}")
+
+
 def _format_reroute_summary(r: dict, dry_run: bool) -> str:
     """Render a run_reroute_stage result: the headline counts, how the moved items' new
     targets were decided, then one line per old -> new move so a reviewer can confirm only
@@ -136,10 +144,7 @@ def _format_reroute_summary(r: dict, dry_run: bool) -> str:
     if r.get("failed", 0):
         headline += f", {r['failed']} failed"
     headline += f"{' (dry-run)' if dry_run else ''}."
-    decided = r.get("decided_by", {})
-    lines = [headline,
-             f"  decided by primary topic: {decided.get('primary', 0)}, "
-             f"by rule order: {decided.get('order', 0)}"]
+    lines = [headline, _decided_by_line(r.get("decided_by", {}))]
     moves = r.get("moves", {})
     for (old, new), count in sorted(moves.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")):
         lines.append(f"  {old or '(none)'} → {new or 'Tagged'} : {count}")
@@ -490,6 +495,8 @@ def dispatch_run(args) -> None:
                                 write_delay=0 if args.dry_run else env.notion_write_delay)
         print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
+        if r.get("routed", 0):
+            print(_decided_by_line(r.get("decided_by", {})))
         return
 
     if args.stage == "distribute":

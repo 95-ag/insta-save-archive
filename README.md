@@ -207,9 +207,12 @@ isa run --stage route --reroute --dry-run   # preview before/after counts, write
 
 `--reroute` only touches items still `Routed` — `Distributed`/`Misrouted` items (already folded in
 or flagged) are never re-evaluated. `route_target` is rewritten only when it actually changes; an
-item whose route resolves to none returns to `Tagged` with `route_target` cleared. `--dry-run` also
-reports how many of the changed routes were decided by the item's primary topic rather than plain
-tag order.
+item whose route resolves to none returns to `Tagged` with `route_target` cleared. `--reroute`
+prints a breakdown, in both a dry-run and a live run, of how many of the rerouted items'
+destinations were actually changed by the item's primary topic — as opposed to plain
+tag/collection/group order — counted only when the primary topic's target differs from what order
+alone would have picked; a plain `route` run prints the same breakdown once at least one item
+routes.
 
 ## Running
 
