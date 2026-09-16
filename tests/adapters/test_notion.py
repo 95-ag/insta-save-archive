@@ -378,6 +378,11 @@ def test_query_all_pages_paginates_and_returns_all(monkeypatch):
     assert "properties" in result[1]
 
 
+def test_schema_property_additions_includes_primary_topic():
+    add = notion._schema_property_additions({"tags": {}})
+    assert add["primary_topic"] == {"select": {}}
+
+
 def test_schema_additions_include_distribute_properties():
     add = notion._schema_property_additions({"tags": {}})
     assert add["distribute_notes"] == {"rich_text": {}}

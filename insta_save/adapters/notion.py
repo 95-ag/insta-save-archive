@@ -25,6 +25,7 @@ _V2_PROPERTIES = {
     "enrich_version": {"rich_text": {}},
     "distribute_notes": {"rich_text": {}},
     "distribute_version": {"rich_text": {}},
+    "primary_topic": {"select": {}},
 }
 _V2_STATUS_OPTIONS = ("Tagged", "Routed", "Distributed", "Misrouted")
 
@@ -140,7 +141,7 @@ def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> lis
             if isinstance(s, dict) and s.get("image")]
 
 
-def _enrich_props(title, summary, externals, tags, version) -> dict:
+def _enrich_props(title, summary, externals, tags, primary_topic, version) -> dict:
     """Build the Notion property payload for one enriched item. summary/externals
     use chunked rich_text (full length); title is truncated to one block."""
     props = {
@@ -153,6 +154,8 @@ def _enrich_props(title, summary, externals, tags, version) -> dict:
         props["externals"] = _rich_text_chunked(externals)
     if tags:
         props["tags"] = _multi_select(tags)
+    if primary_topic:
+        props["primary_topic"] = _select(primary_topic)
     return props
 
 
@@ -380,12 +383,14 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
 
 
 def write_enrichment(env: EnvConfig, page_id: str, fields: dict, version: str) -> None:
-    """Write one enriched item -> Tagged. fields: title, summary, externals, tags(list)."""
+    """Write one enriched item -> Tagged. fields: title, summary, externals, tags(list),
+    primary_topic (select; omitted when None)."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     props = _enrich_props(
         title=fields.get("title"), summary=fields.get("summary"),
-        externals=fields.get("externals"), tags=fields.get("tags") or [], version=version)
+        externals=fields.get("externals"), tags=fields.get("tags") or [],
+        primary_topic=fields.get("primary_topic"), version=version)
     try:
         client.pages.update(page_id=page_id, properties=props)
         log.info("notion: wrote enrichment %s for page %s", version, page_id)

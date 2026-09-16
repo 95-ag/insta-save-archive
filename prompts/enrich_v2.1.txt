@@ -35,11 +35,14 @@ For EACH post below, produce these fields:
 - content_type: choose EXACTLY ONE from the CONTENT-TYPE list below.
 - topics: pick 3-4 from GROUP TOPICS and 1-2 from CROSS-GROUP TOPICS (if applicable),
     up to 6 total — only values from the lists, do not invent.
+- primary_topic: the ONE topic from the topics you just picked for THIS post that names
+    what the post is mainly about. Must be exactly one of this post's own topics — never a
+    value outside that list, and never a topic that belongs to a different post.
 
 {vocab_block}
 
 Write the results to tmp/enrich/results.json as JSON Lines: ONE JSON object per LINE,
 no surrounding array, no code fences, no prose — nothing but the lines. One line per post:
-  {"page_id": "<exact page_id>", "source_id": "<exact source_id>", "title": "<title>", "summary": "<summary>", "externals": "<grouped externals or empty string>", "content_type": "<one content-type>", "topics": ["<topic>", ...]}
+  {"page_id": "<exact page_id>", "source_id": "<exact source_id>", "title": "<title>", "summary": "<summary>", "externals": "<grouped externals or empty string>", "content_type": "<one content-type>", "topics": ["<topic>", ...], "primary_topic": "<one topic from this post's topics above>"}
 Keep every string on a SINGLE line: escape internal quotes as \" and line breaks as \n.
 Include ALL posts below — one line each.

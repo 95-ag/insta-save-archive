@@ -122,6 +122,38 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     assert not (tmp_path / "enrich" / "batch.json").exists()
 
 
+def test_apply_forwards_validated_primary_topic(tmp_path, monkeypatch):
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S", "externals": "",
+         "content_type": "tool", "topics": ["seo", "ai"], "primary_topic": "seo"}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet", collections_cfg=_Cols())
+    assert written["p1"]["primary_topic"] == "seo"
+
+
+def test_apply_drops_primary_topic_not_among_this_items_topics(tmp_path, monkeypatch):
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S", "externals": "",
+         "content_type": "tool", "topics": ["seo"], "primary_topic": "ai"}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet", collections_cfg=_Cols())
+    assert written["p1"]["primary_topic"] is None
+
+
 def test_prepare_excludes_other_group(tmp_path, monkeypatch):
     # large cap so the cap never fires — only the group filter decides membership
     stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},

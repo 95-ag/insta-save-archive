@@ -191,7 +191,7 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
         else:
             topics_allowed = allowed_topics(vocab, group)
 
-        content_type, topics = enrich_schema.validate_item(
+        content_type, topics, primary_topic = enrich_schema.validate_item(
             item, vocab.content_types, topics_allowed)
         src_text = batch_source.get(page_id, "")
         summary, sum_removed = scrub_fabricated(item.get("summary"), src_text)
@@ -204,6 +204,7 @@ def apply(env, *, vocab, model, collections_cfg, progress=None) -> dict:
             "summary": summary,
             "externals": externals,
             "tags": enrich_schema.tags_for(content_type, topics),
+            "primary_topic": primary_topic,
         }
         try:
             write_enrichment(env, page_id, fields, version)
