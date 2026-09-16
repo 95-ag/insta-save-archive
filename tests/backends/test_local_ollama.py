@@ -60,3 +60,45 @@ def test_fill_resumes_skipping_done_items(tmp_path, monkeypatch):
     monkeypatch.setattr(loc, "_client", lambda: fake)
     r = loc.fill(env=_FakeEnv(tmp_path), run_cfg=_FakeRun(), enrich_dir=d)
     assert fake.calls == 1 and r.filled == 1  # p1 skipped, only p2 called
+
+
+def test_schema_declares_primary_topic_as_string_and_optional():
+    props = loc._RESULT_SCHEMA["properties"]
+    assert props.get("primary_topic") == {"type": "string"}
+    # optional: the model must be able to omit it when no topic fits (validated to None
+    # downstream) — existing fields' required-ness is unchanged.
+    assert "primary_topic" not in loc._RESULT_SCHEMA["required"]
+    assert loc._RESULT_SCHEMA["required"] == [
+        "page_id", "title", "summary", "content_type", "topics",
+    ]
+
+
+def test_fill_carries_primary_topic_through_to_results(tmp_path, monkeypatch):
+    d = _enrich_dir(tmp_path)
+    fake = _FakeOllama({
+        "p1": {"page_id": "p1", "source_id": "s1", "title": "T1", "summary": "S1",
+               "externals": "", "content_type": "tool", "topics": ["seo"],
+               "primary_topic": "seo"},
+        "p2": {"page_id": "p2", "source_id": "s2", "title": "T2", "summary": "S2",
+               "externals": "", "content_type": "tutorial", "topics": []},
+    })
+    monkeypatch.setattr(loc, "_client", lambda: fake)
+    r = loc.fill(env=_FakeEnv(tmp_path), run_cfg=_FakeRun(), enrich_dir=d)
+    assert r.filled == 2 and r.failed == 0
+    by = {x["page_id"]: x for x in json.loads((d / "results.json").read_text())}
+    assert by["p1"]["primary_topic"] == "seo"
+
+
+def test_fill_succeeds_when_model_omits_primary_topic(tmp_path, monkeypatch):
+    d = _enrich_dir(tmp_path)
+    fake = _FakeOllama({
+        "p1": {"page_id": "p1", "source_id": "s1", "title": "T1", "summary": "S1",
+               "externals": "", "content_type": "tool", "topics": []},
+        "p2": {"page_id": "p2", "source_id": "s2", "title": "T2", "summary": "S2",
+               "externals": "", "content_type": "tutorial", "topics": []},
+    })
+    monkeypatch.setattr(loc, "_client", lambda: fake)
+    r = loc.fill(env=_FakeEnv(tmp_path), run_cfg=_FakeRun(), enrich_dir=d)
+    assert r.filled == 2 and r.failed == 0
+    by = {x["page_id"]: x for x in json.loads((d / "results.json").read_text())}
+    assert by["p1"].get("primary_topic") is None
