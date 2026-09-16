@@ -862,3 +862,59 @@ def test_drain_marks_failed_only_what_the_last_partial_fill_still_missed(tmp_pat
     assert applied == ["p1", "p2", "p3"]
     assert failed == ["p4"]
     assert result["written"] == 3 and result["failed"] == 1
+
+
+def test_drain_failed_note_names_the_missing_items_when_the_last_retry_also_raises(
+        tmp_path, monkeypatch):
+    """Review round 1, Fix 3: the first attempt partially fills (leaving p3 missing), then
+    every retry of that lone missing item raises a transient exception. The items marked
+    Failed are the parse-missing ones (p3) — the note must say so, not just repeat the
+    unrelated exception text from the last attempt."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3)]
+
+    prep = iter([3, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    notes = []
+    monkeypatch.setattr(enrich, "mark_failed",
+                        lambda env, pid, note: (failed.append(pid), notes.append(note)))
+
+    calls = {"n": 0}
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+                good = [i for i in batch if i["page_id"] != "p3"]
+                (d / "results.json").write_text(
+                    json.dumps([{"page_id": i["page_id"]} for i in good]), encoding="utf-8")
+                return FillResult(filled=len(good), failed=1, unparsed=1)
+            raise ValueError("network hiccup")   # every retry of the lone missing item fails
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p2"]
+    assert failed == ["p3"]                     # only the parse-missing item is marked
+    assert "missing from the model reply" in notes[0]   # matches what's actually being marked
+    assert "network hiccup" in notes[0]                 # the last attempt's own failure too
+    assert result["written"] == 2 and result["failed"] == 1

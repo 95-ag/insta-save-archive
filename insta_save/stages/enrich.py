@@ -410,6 +410,7 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
             batch_written = 0
             batch_done = False
             missing_items = None     # set once a fill comes back short of the staged batch
+            missing_reason = None    # the "N item(s) missing" text tied to missing_items
             reason = "malformed model output"
             for attempt in range(1, _FILL_ATTEMPTS + 1):
                 run_control.checkpoint()
@@ -442,7 +443,8 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                     batch_done = True
                     break
                 missing_items = missing
-                reason = f"{len(missing)} item(s) missing from the model reply"
+                missing_reason = f"{len(missing)} item(s) missing from the model reply"
+                reason = missing_reason
                 if attempt < _FILL_ATTEMPTS:
                     sleep(_RETRY_BACKOFF_S * attempt)
                     stage_batch(env, group=group, items=missing, vocab=vocab,
@@ -454,7 +456,15 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                 # Attempts exhausted: mark ONLY what is still staged Failed (the whole batch
                 # after a run of transient failures, otherwise just the items that never came
                 # back) and advance the lane — the next prepare won't re-select Failed items.
-                n_failed = _mark_batch_failed(env, enrich_dir, reason=reason,
+                # The note must match what's being marked: a partial fill's missing_reason
+                # names the items above; if a LATER retry of just those items then raised
+                # (reason diverges from missing_reason), that failure is appended too, since
+                # it explains why the retry never recovered them.
+                if missing_items is not None and reason != missing_reason:
+                    fail_reason = f"{missing_reason} (retry also failed: {reason})"
+                else:
+                    fail_reason = missing_reason if missing_items is not None else reason
+                n_failed = _mark_batch_failed(env, enrich_dir, reason=fail_reason,
                                               items=missing_items)
                 lane_failed += n_failed
                 totals["failed"] = totals["failed"] + n_failed

@@ -28,7 +28,7 @@ def test_parse_results_reads_array(tmp_path):
 
 def test_parse_results_rejects_non_list(tmp_path):
     p = tmp_path / "r.json"
-    p.write_text('{"page_id": "p1"}', encoding="utf-8")
+    p.write_text('{"status": "error", "message": "batch failed"}', encoding="utf-8")
     with pytest.raises(ValueError):
         base.parse_results(p)
 
@@ -203,3 +203,18 @@ def test_parse_results_raises_on_unusable_content(tmp_path):
     p.write_text("the model explained itself instead of answering", encoding="utf-8")
     with pytest.raises(ValueError):
         base.parse_results(p)
+
+
+def test_parse_results_reads_single_object_file(tmp_path):
+    # a batch of 1: a conformant one-object results.json (e.g. an agent-filled backend
+    # under the v2.1 contract) must be accepted as a one-item list, not rejected as a
+    # non-list document.
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1", "title": "T"}', encoding="utf-8")
+    assert base.parse_results(p) == [{"page_id": "p1", "title": "T"}]
+
+
+def test_parse_results_reads_multiline_jsonl_file(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1"}\n{"page_id": "p2"}\n{"page_id": "p3"}\n', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2", "p3"]

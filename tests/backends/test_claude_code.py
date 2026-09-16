@@ -57,7 +57,7 @@ def test_parse_results_reads_array(tmp_path):
 
 def test_parse_results_rejects_non_list(tmp_path):
     p = tmp_path / "results.json"
-    p.write_text('{"page_id": "p1"}', encoding="utf-8")
+    p.write_text('{"status": "error", "message": "batch failed"}', encoding="utf-8")
     try:
         backend.parse_results(p)
         assert False, "expected ValueError"
