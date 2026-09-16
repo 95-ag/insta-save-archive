@@ -228,6 +228,7 @@ def _row(page: dict) -> dict:
     collections = [c["name"] for c in props.get("collection", {}).get("multi_select", [])]
     tags = [t["name"] for t in props.get("tags", {}).get("multi_select", [])]
     route_select = props.get("route_target", {}).get("select") or {}
+    primary_select = props.get("primary_topic", {}).get("select") or {}
     return {
         "page_id": page["id"],
         "source_id": sid_blocks[0]["text"]["content"] if sid_blocks else None,
@@ -237,12 +238,14 @@ def _row(page: dict) -> dict:
         "collections": collections,
         "tags": tags,
         "route_target": route_select.get("name"),
+        "primary_topic": primary_select.get("name"),
     }
 
 
 def query_by_status(env: EnvConfig, status: str) -> list[dict]:
     """Pages where status==status. Paginates.
-    Each row: {page_id, source_id, author, ig_link, type, collections, tags, route_target}."""
+    Each row: {page_id, source_id, author, ig_link, type, collections, tags, route_target,
+    primary_topic}."""
     validate_notion(env)
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_database_id)

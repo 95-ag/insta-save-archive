@@ -124,8 +124,9 @@ def _format_rebuild_preview(preview) -> str:
 
 
 def _format_reroute_summary(r: dict, dry_run: bool) -> str:
-    """Render a run_reroute_stage result: the headline counts, then one line per
-    old -> new move so a reviewer can confirm only the intended items shifted."""
+    """Render a run_reroute_stage result: the headline counts, how the moved items' new
+    targets were decided, then one line per old -> new move so a reviewer can confirm only
+    the intended items shifted."""
     headline = (
         f"Reroute: {r.get('rerouted', 0)} rerouted, {r.get('unrouted', 0)} back to Tagged "
         f"(no route), {r.get('unchanged', 0)} unchanged"
@@ -135,7 +136,10 @@ def _format_reroute_summary(r: dict, dry_run: bool) -> str:
     if r.get("failed", 0):
         headline += f", {r['failed']} failed"
     headline += f"{' (dry-run)' if dry_run else ''}."
-    lines = [headline]
+    decided = r.get("decided_by", {})
+    lines = [headline,
+             f"  decided by primary topic: {decided.get('primary', 0)}, "
+             f"by rule order: {decided.get('order', 0)}"]
     moves = r.get("moves", {})
     for (old, new), count in sorted(moves.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")):
         lines.append(f"  {old or '(none)'} → {new or 'Tagged'} : {count}")

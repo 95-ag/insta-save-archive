@@ -288,3 +288,141 @@ def test_run_reroute_stage_returns_counts_and_moves(monkeypatch):
     r = route.run_reroute_stage(None, routes, _Cfg(), None)
     assert r["rerouted"] == 1 and r["unchanged"] == 1 and r["unrouted"] == 1 and r["failed"] == 0
     assert r["moves"] == {("OldDB", "NewDB"): 1, ("OldDB", None): 1}
+
+
+# ---------------------------------------------------------------------------
+# P4: the item's primary topic decides the target when it has a by_tag rule
+# ---------------------------------------------------------------------------
+
+_P4_ROUTES = Routes(by_tag=[("web-dev", "WebDB"), ("ui-ux", "UiDB")])
+
+
+def test_route_item_routes_on_primary_topic_over_a_higher_ranked_tag(monkeypatch):
+    written = {}
+    monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
+    item = _item(tags=["web-dev", "ui-ux"])
+    item["primary_topic"] = "ui-ux"
+    assert route._route_item(None, item, _P4_ROUTES, _Cfg()) == "routed"
+    assert written == {"p1": "UiDB"}
+
+
+def test_route_item_falls_back_to_tag_order_without_a_primary_topic(monkeypatch):
+    written = {}
+    monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
+    assert route._route_item(None, _item(tags=["web-dev", "ui-ux"]), _P4_ROUTES, _Cfg()) == "routed"
+    assert written == {"p1": "WebDB"}
+
+
+def test_reroute_item_moves_an_item_its_primary_topic_points_elsewhere(monkeypatch):
+    written = {}
+    monkeypatch.setattr(route, "write_route", lambda env, page_id, target: written.update({page_id: target}))
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev", "ui-ux"], route_target="WebDB")
+    item["primary_topic"] = "ui-ux"
+    assert route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves, decided=decided) == "rerouted"
+    assert written == {"p1": "UiDB"}
+    assert moves == {("WebDB", "UiDB"): 1}
+    assert decided == {"primary": 1}
+
+
+def test_reroute_item_records_an_order_decision_without_a_primary_rule(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev"], route_target="OldDB")
+    item["primary_topic"] = "unmapped-topic"
+    assert route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves, decided=decided) == "rerouted"
+    assert moves == {("OldDB", "WebDB"): 1}
+    assert decided == {"order": 1}
+
+
+def test_reroute_item_records_a_primary_decision_even_when_tag_order_agrees(monkeypatch):
+    """The primary topic decided it, so it is reported as such — even though plain tag
+    order would have picked the same target."""
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev"], route_target="OldDB")
+    item["primary_topic"] = "web-dev"
+    assert route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves, decided=decided) == "rerouted"
+    assert decided == {"primary": 1}
+
+
+def test_reroute_item_records_no_decision_for_unchanged_or_unrouted(monkeypatch):
+    monkeypatch.setattr(route, "write_unroute", lambda *a: None)
+    decided = {}
+    unchanged = _routed_item(pid="p1", tags=["web-dev"], route_target="WebDB")
+    assert route._reroute_item(None, unchanged, _P4_ROUTES, _Cfg(), {}, decided=decided) == "unchanged"
+    lost = _routed_item(pid="p2", tags=["x"], route_target="WebDB")
+    assert route._reroute_item(None, lost, _P4_ROUTES, _Cfg(), {}, decided=decided) == "unrouted"
+    assert decided == {}
+
+
+def test_reroute_item_dry_run_records_the_decision_without_writing(monkeypatch):
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("dry-run wrote")))
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev", "ui-ux"], route_target="WebDB")
+    item["primary_topic"] = "ui-ux"
+    assert route._reroute_item(None, item, _P4_ROUTES, _Cfg(), moves,
+                               decided=decided, dry_run=True) == "rerouted"
+    assert moves == {("WebDB", "UiDB"): 1} and decided == {"primary": 1}
+
+
+def test_reroute_item_guarded_does_not_record_a_decision_for_a_stale_skip(monkeypatch):
+    """The guard previews the decision before re-reading the live status — that preview
+    must not leak into the reported counts when the write is then skipped."""
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Distributed")
+    monkeypatch.setattr(route, "write_route", lambda *a: (_ for _ in ()).throw(AssertionError("should not write")))
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev"], route_target="OldDB")
+    item["primary_topic"] = "web-dev"
+    assert route._reroute_item_guarded(None, item, _P4_ROUTES, _Cfg(), moves,
+                                       decided=decided) == "skipped_stale"
+    assert moves == {} and decided == {}
+
+
+def test_reroute_item_guarded_records_the_decision_once_when_it_writes(monkeypatch):
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Routed")
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    moves, decided = {}, {}
+    item = _routed_item(tags=["web-dev", "ui-ux"], route_target="WebDB")
+    item["primary_topic"] = "ui-ux"
+    assert route._reroute_item_guarded(None, item, _P4_ROUTES, _Cfg(), moves,
+                                       decided=decided) == "rerouted"
+    assert decided == {"primary": 1}
+
+
+def test_run_reroute_stage_returns_decided_by_counts(monkeypatch):
+    items = [
+        _routed_item(pid="p1", tags=["web-dev", "ui-ux"], route_target="WebDB"),  # primary → UiDB
+        _routed_item(pid="p2", tags=["web-dev", "ui-ux"], route_target="OldDB"),  # order → WebDB
+        _routed_item(pid="p3", tags=["web-dev"], route_target="WebDB"),           # unchanged
+    ]
+    items[0]["primary_topic"] = "ui-ux"
+
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        counts = {}
+        for it in items:
+            counter = fn(env, it, None)
+            counts[counter] = counts.get(counter, 0) + 1
+        counts.setdefault("failed", 0)
+        return counts
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    monkeypatch.setattr(route, "write_route", lambda *a: None)
+    monkeypatch.setattr(route, "get_item_status", lambda env, page_id: "Routed")
+
+    r = route.run_reroute_stage(None, _P4_ROUTES, _Cfg(), None)
+    assert r["rerouted"] == 2 and r["unchanged"] == 1
+    assert r["decided_by"] == {"primary": 1, "order": 1}
+
+
+def test_run_reroute_stage_reports_zero_decisions_when_nothing_moves(monkeypatch):
+    def _fake_runner(env, status, fn, progress, *, limit=None, group=None,
+                     collections_cfg=None, stage_key=None, bar_label=None,
+                     write_delay=0.0, delay_on=None):
+        return {"failed": 0}
+
+    monkeypatch.setattr(route, "run_priority_stage", _fake_runner)
+    r = route.run_reroute_stage(None, _P4_ROUTES, _Cfg(), None)
+    assert r["decided_by"] == {"primary": 0, "order": 0}

@@ -1,5 +1,5 @@
-"""Optional routing map: tag > collection > group -> route_target. Deterministic,
-no model. Missing/absent file => routing disabled (route_for always None)."""
+"""Optional routing map: primary topic > tag > collection > group -> route_target.
+Deterministic, no model. Missing/absent file => routing disabled (route_for always None)."""
 
 import json
 from dataclasses import dataclass, field
@@ -16,7 +16,25 @@ class Routes:
     by_collection: dict[str, str] = field(default_factory=dict)
     by_group: dict[str, str] = field(default_factory=dict)
 
-    def route_for(self, tags: list[str], collections: list[str], groups: list[str]) -> str | None:
+    def target_for_primary_topic(self, primary_topic: str | None) -> str | None:
+        """The by_tag target for an item's primary topic, or None when it has no primary
+        topic or the topic carries no rule. Callers re-use it to report HOW a route was
+        decided; route_for applies it as the first precedence step."""
+        if not primary_topic:
+            return None
+        for tag, target in self.by_tag:
+            if tag == primary_topic:
+                return target
+        return None
+
+    def route_for(self, tags: list[str], collections: list[str], groups: list[str],
+                  *, primary_topic: str | None = None) -> str | None:
+        # A primary topic with a rule outranks every tag the item also carries: a multi-tag
+        # item's tag combination is shared with items about something else, so static by_tag
+        # order alone sends that whole population to one page (ARCHITECTURE §7).
+        primary_target = self.target_for_primary_topic(primary_topic)
+        if primary_target is not None:
+            return primary_target
         for tag, target in self.by_tag:      # config order = priority, not the item's tag order
             if tag in tags:
                 return target

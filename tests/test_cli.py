@@ -1805,3 +1805,29 @@ def test_format_distribute_preview_with_no_sections_prints_no_changes_line(capsy
     print(isa._format_distribute_preview(preview))
     out = capsys.readouterr().out
     assert "No page content changes" in out
+
+
+def test_route_reroute_summary_prints_the_decided_by_breakdown(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 3, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {("Old", "New"): 3},
+                                         "decided_by": {"primary": 2, "order": 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic: 2" in out
+    assert "by rule order: 1" in out
+
+
+def test_route_reroute_dry_run_also_prints_the_decided_by_breakdown(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {("Old", "New"): 1},
+                                         "decided_by": {"primary": 1, "order": 0}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute", "--dry-run"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "(dry-run)" in out
+    assert "decided by primary topic: 1" in out and "by rule order: 0" in out

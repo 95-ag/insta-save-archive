@@ -394,3 +394,15 @@ def test_status_additions_include_distributed_and_misrouted():
     names = [o["name"] for o in notion._status_option_additions(existing)]
     assert "Distributed" in names and "Misrouted" in names
     assert set(existing) <= set(names)
+
+
+def test_row_includes_primary_topic():
+    page = {"id": "p7", "properties": {
+        "primary_topic": {"select": {"name": "ui-ux"}},
+    }}
+    assert notion._row(page)["primary_topic"] == "ui-ux"
+
+
+def test_row_primary_topic_none_when_absent():
+    page = {"id": "p8", "properties": {}}
+    assert notion._row(page)["primary_topic"] is None
