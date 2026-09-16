@@ -749,3 +749,116 @@ def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkey
     assert "github.com/helloianneo/x" not in f["summary"]
     assert "github.com/helloianneo/x" not in f["externals"]
     assert "Xiaohei" in f["summary"]
+
+
+def test_drain_retries_only_the_items_a_partial_fill_missed(tmp_path, monkeypatch):
+    """A partial fill must cost only the items it missed.
+
+    The model returns 2 of 3 items; those 2 are applied, the retry prompt carries ONLY
+    the missing item, and after the attempts are exhausted only that item is Failed."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3)]
+
+    prep = iter([3, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    prompts = []
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            prompts.append((d / "prompt.txt").read_text(encoding="utf-8"))
+            batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+            good = [i for i in batch if i["page_id"] != "p2"]   # p2's line is always malformed
+            (d / "results.json").write_text(
+                json.dumps([{"page_id": i["page_id"]} for i in good]), encoding="utf-8")
+            return FillResult(filled=len(good), failed=len(batch) - len(good),
+                              unparsed=len(batch) - len(good))
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p3"]              # the parsed items landed on the first pass
+    assert len(prompts) == enrich._FILL_ATTEMPTS
+    assert "s2" in prompts[1]                   # retry prompt carries ONLY the missing item
+    assert "s1" not in prompts[1] and "s3" not in prompts[1]
+    assert failed == ["p2"]                     # p1/p3 were NOT marked Failed
+    assert result["written"] == 2 and result["failed"] == 1
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def _applier(enrich_dir, applied):
+    """Stand-in for apply(): records what results.json held and mimics the real cleanup —
+    tmp files are removed once a batch is written cleanly, so a retry must not depend on
+    batch.json still being there."""
+    def _apply(*a, **k):
+        results = json.loads((enrich_dir / "results.json").read_text(encoding="utf-8"))
+        applied.extend(r["page_id"] for r in results)
+        if results:
+            for name in ("batch.json", "prompt.txt", "results.json"):
+                (enrich_dir / name).unlink(missing_ok=True)
+        return {"written": len(results), "failed": 0}
+    return _apply
+
+
+def test_drain_marks_failed_only_what_the_last_partial_fill_still_missed(tmp_path, monkeypatch):
+    """The model answers only the first item of every batch, so each attempt writes some
+    and misses some — including the last one, after which apply has cleaned tmp away.
+    Only the item that never came back may be marked Failed."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3, 4)]
+
+    prep = iter([4, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+            (d / "results.json").write_text(
+                json.dumps([{"page_id": batch[0]["page_id"]}]), encoding="utf-8")
+            return FillResult(filled=1, failed=len(batch) - 1, unparsed=len(batch) - 1)
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p2", "p3"]
+    assert failed == ["p4"]
+    assert result["written"] == 3 and result["failed"] == 1

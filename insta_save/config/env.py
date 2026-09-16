@@ -58,7 +58,7 @@ def load_env() -> EnvConfig:
         notion_database_id=os.getenv("NOTION_DATABASE_ID", "").strip(),
         tmp_dir=os.getenv("TMP_DIR", "tmp").strip(),
         extract_version=os.getenv("EXTRACT_VERSION", "v2.0-base-tuned").strip(),
-        enrich_version=os.getenv("ENRICH_VERSION", "v2.0-enrich").strip(),
+        enrich_version=os.getenv("ENRICH_VERSION", "v2.1-enrich").strip(),
         notion_write_delay=_env_float("NOTION_WRITE_DELAY", 0.4),
         extract_delay_min=extract_delay_min,
         extract_delay_max=extract_delay_max,

@@ -59,13 +59,13 @@ def test_delay_min_exceeding_max_raises(monkeypatch):
 def test_enrich_version_default(monkeypatch):
     _set(monkeypatch)
     cfg = envcfg.load_env()
-    assert cfg.enrich_version == "v2.0-enrich"
+    assert cfg.enrich_version == "v2.1-enrich"
 
 
 def test_enrich_version_override(monkeypatch):
-    _set(monkeypatch, ENRICH_VERSION="v2.1-enrich")
+    _set(monkeypatch, ENRICH_VERSION="v9.9-custom")
     cfg = envcfg.load_env()
-    assert cfg.enrich_version == "v2.1-enrich"
+    assert cfg.enrich_version == "v9.9-custom"
 
 
 def test_load_env_reads_knowledge_database_id(monkeypatch):

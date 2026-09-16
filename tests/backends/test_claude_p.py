@@ -291,3 +291,32 @@ def test_run_claude_p_rejects_an_unknown_output_mode():
     import pytest
     with pytest.raises(ValueError):
         claude_p._run_claude_p("P", "claude-sonnet", output="bogus")
+
+
+def test_fill_keeps_good_jsonl_lines_and_reports_the_unparsed_one(tmp_path, monkeypatch, caplog):
+    # v2.1 contract: one JSON object per line. A single malformed line must cost only its
+    # own item — the other three still land in results.json.
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "caption": "c"} for n in (1, 2, 3, 4)]
+    (d / "batch.json").write_text(json.dumps({"group": "G", "items": items}), encoding="utf-8")
+    (d / "prompt.txt").write_text("ENRICH PROMPT", encoding="utf-8")
+
+    def _line(page_id):
+        return json.dumps({"page_id": page_id, "source_id": "WRONG", "title": "t",
+                           "summary": "s", "externals": "", "content_type": "tutorial",
+                           "topics": ["x"]})
+
+    reply = "\n".join([_line("p1"),
+                       '{"page_id": "p2", "summary": "he said "no" here"}',
+                       _line("p3"), _line("p4")])
+    monkeypatch.setattr(claude_p, "_run_claude_p", lambda prompt, model, add_dirs=None: reply)
+
+    with caplog.at_level("WARNING"):
+        res = claude_p.fill(_Env(tmp_path), _Run(), d)
+
+    out = json.loads((d / "results.json").read_text(encoding="utf-8"))
+    assert [r["page_id"] for r in out] == ["p1", "p3", "p4"]
+    assert out[0]["source_id"] == "s1"          # identity still comes from the batch
+    assert res.filled == 3 and res.failed == 1 and res.unparsed == 1
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("unparsed" in m.lower() and "1" in m for m in warnings), warnings

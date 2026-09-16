@@ -10,9 +10,14 @@ AUTOMATED True  -> fill() produces results.json in-process (local/api).
 AUTOMATED False -> fill() is agent-filled; returns FillResult(external=True) (claude-code/cowork)."""
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+log = logging.getLogger(__name__)
+
+_NO_DOCUMENT = object()   # sentinel: the file is not a single JSON document (None is valid JSON)
 
 
 class TerminalBackendError(Exception):
@@ -57,10 +62,13 @@ class Budgets:
 @dataclass(frozen=True)
 class FillResult:
     """external=True -> an agent must fill results.json (no in-process work done).
-    Otherwise filled/failed count what fill() wrote."""
+    Otherwise filled/failed count what fill() wrote. unparsed counts reply lines the
+    JSON-Lines parser could not read — the drain retries exactly those items instead of
+    condemning the whole batch."""
     external: bool = False
     filled: int = 0
     failed: int = 0
+    unparsed: int = 0
 
 
 class Backend(Protocol):
@@ -137,12 +145,55 @@ def normalize_results(parsed, batch_items) -> list[dict]:
     return kept
 
 
+def parse_results_jsonl(text: str) -> tuple[list[dict], list[str]]:
+    """Parse JSON-Lines model output (enrich v2.1): one result object per line.
+
+    Returns (items, bad_lines). A line that will not parse is COLLECTED, never raised —
+    one unescaped quote must cost its own item only, not the whole batch. Blank lines and
+    stray ``` fence lines are ignored; a line holding a whole JSON array contributes its
+    objects (a model that ignored the line-delimited contract is still usable)."""
+    items: list[dict] = []
+    bad_lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("```"):
+            continue
+        try:
+            value = json.loads(line, strict=False)  # tolerate raw control chars
+        except json.JSONDecodeError:
+            bad_lines.append(raw)
+            continue
+        if isinstance(value, dict):
+            items.append(value)
+        elif isinstance(value, list) and all(isinstance(v, dict) for v in value):
+            items.extend(value)
+        else:
+            bad_lines.append(raw)
+    return items, bad_lines
+
+
 def parse_results(path) -> list[dict]:
-    """Read results.json (a JSON array). Raises ValueError if not an array."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError(f"results.json must be a JSON array, got {type(data).__name__}")
-    return data
+    """Read results.json — a JSON array, or JSON Lines (one object per line).
+
+    A whole-file JSON document is decided first: that is what every automated backend
+    writes, and a non-array document must keep raising as it always has. JSON Lines is
+    the fallback, for an agent-filled backend that followed the v2.1 line-delimited
+    contract. Raises ValueError when neither shape yields results."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        document = _NO_DOCUMENT
+    if document is not _NO_DOCUMENT:
+        if not isinstance(document, list):
+            raise ValueError(f"results.json must be a JSON array, got {type(document).__name__}")
+        return document
+    items, bad_lines = parse_results_jsonl(text)
+    if not items:
+        raise ValueError(f"results.json is neither a JSON array nor JSON Lines: {text[:200]!r}")
+    if bad_lines:
+        log.warning("parse_results: %d unparsed line(s) in %s", len(bad_lines), path)
+    return items
 
 
 def get_backend(name: str):

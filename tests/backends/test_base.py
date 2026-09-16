@@ -130,3 +130,76 @@ def test_parse_results_array_tolerates_raw_control_chars():
 def test_parse_results_object_tolerates_raw_control_chars():
     out = base.parse_results_object('{"content_type": {"tool": "a\tb"}}')
     assert out["content_type"]["tool"] == "a\tb"
+
+
+# ---------------------------------------------------------------------------
+# JSON Lines results contract (enrich v2.1)
+# ---------------------------------------------------------------------------
+
+def test_parse_results_jsonl_parses_every_good_line():
+    text = ('{"page_id": "p1", "title": "a"}\n'
+            '{"page_id": "p2", "title": "b"}\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_keeps_good_lines_and_returns_bad_ones():
+    # the live failure mode: one unescaped quote in one summary. Under the array contract
+    # that one line killed all 15 items; here the other lines must survive.
+    text = ('{"page_id": "p1", "summary": "fine"}\n'
+            '{"page_id": "p2", "summary": "he said "no" here"}\n'
+            '{"page_id": "p3", "summary": "also fine"}\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p3"]
+    assert len(bad) == 1 and "p2" in bad[0]
+
+
+def test_parse_results_jsonl_ignores_blank_lines_and_fences():
+    text = ('```json\n'
+            '\n'
+            '{"page_id": "p1"}\n'
+            '   \n'
+            '{"page_id": "p2"}\n'
+            '```\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_takes_objects_from_a_single_line_array():
+    # a model that ignores the line-delimited contract and emits the whole array on one
+    # line must still be usable — the objects are taken, not reported as a bad line.
+    items, bad = base.parse_results_jsonl('[{"page_id": "p1"}, {"page_id": "p2"}]')
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_never_raises_on_garbage():
+    items, bad = base.parse_results_jsonl("not json at all\nnor this")
+    assert items == []
+    assert bad == ["not json at all", "nor this"]
+
+
+def test_parse_results_jsonl_tolerates_raw_control_chars():
+    items, bad = base.parse_results_jsonl('{"page_id": "p1", "summary": "a\tb"}')
+    assert items[0]["summary"] == "a\tb" and bad == []
+
+
+def test_parse_results_reads_jsonl_file(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1"}\n{"page_id": "p2"}\n', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2"]
+
+
+def test_parse_results_still_reads_a_single_line_array(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('[{"page_id": "p1"}, {"page_id": "p2"}]', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2"]
+
+
+def test_parse_results_raises_on_unusable_content(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text("the model explained itself instead of answering", encoding="utf-8")
+    with pytest.raises(ValueError):
+        base.parse_results(p)

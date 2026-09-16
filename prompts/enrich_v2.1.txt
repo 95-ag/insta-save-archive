@@ -38,14 +38,8 @@ For EACH post below, produce these fields:
 
 {vocab_block}
 
-Write the results as a JSON array to tmp/enrich/results.json. One object per post:
-  {
-    "page_id": "<exact page_id>",
-    "source_id": "<exact source_id>",
-    "title": "<title>",
-    "summary": "<summary>",
-    "externals": "<grouped externals or empty string>",
-    "content_type": "<one content-type>",
-    "topics": ["<topic>", ...]
-  }
-Include ALL posts below — one result object each.
+Write the results to tmp/enrich/results.json as JSON Lines: ONE JSON object per LINE,
+no surrounding array, no code fences, no prose — nothing but the lines. One line per post:
+  {"page_id": "<exact page_id>", "source_id": "<exact source_id>", "title": "<title>", "summary": "<summary>", "externals": "<grouped externals or empty string>", "content_type": "<one content-type>", "topics": ["<topic>", ...]}
+Keep every string on a SINGLE line: escape internal quotes as \" and line breaks as \n.
+Include ALL posts below — one line each.

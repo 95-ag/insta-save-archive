@@ -268,11 +268,11 @@ def dispatch_run(args) -> None:
         statuses = ["Extracted"]
         if args.lane == "vision":
             kinds = {"Carousel", "Post"}
-            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
+            template = Path("prompts/enrich_vision_v2.1.txt").read_text(encoding="utf-8")
             image_budget = budgets.image_token_budget
         else:
             kinds = {"Reel", "IGTV"}
-            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+            template = Path("prompts/enrich_v2.1.txt").read_text(encoding="utf-8")
             image_budget = None
 
         if backend.AUTOMATED:

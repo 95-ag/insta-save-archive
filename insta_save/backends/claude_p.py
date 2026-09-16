@@ -2,7 +2,7 @@
 """Headless `claude -p` enrich backend (AUTOMATED). Uses Claude Max via the claude CLI —
 no API key. fill() reads tmp/enrich/{batch.json,prompt.txt}, runs `claude -p --output-format
 json` with the prompt on STDIN (enrich prompts exceed argv limits), parses the envelope's
-`result` text into the results array, writes results.json. Mirrors api_anthropic's fill shape.
+`result` text as JSON Lines, writes results.json. Mirrors api_anthropic's fill shape.
 
 Spike-confirmed (2026-06-18): envelope text key is `result`; no fences in practice; claude -p
 reads slide images by file path so the vision lane works with the same IMAGES:-path prompt
@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from insta_save.backends.base import (Budgets, FillResult, parse_results_array,
+from insta_save.backends.base import (Budgets, FillResult, parse_results_jsonl,
                                        parse_results_object, normalize_results)
 
 log = logging.getLogger(__name__)
@@ -127,8 +127,16 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     add_dirs = sorted({os.path.dirname(p)
                        for it in items for p in (it.get("slide_images") or [])}) or None
     text = _run_claude_p(prompt, run_cfg.enrich.model, add_dirs=add_dirs)
-    results = normalize_results(parse_results_array(text), items)
+    # v2.1 contract: one JSON object per reply line. A line the model mangled costs only
+    # its own item — the rest are written and the caller retries just the missing ones.
+    parsed, bad_lines = parse_results_jsonl(text)
+    results = normalize_results(parsed, items)
+    # results.json stays a JSON ARRAY on disk so apply() is unchanged.
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
+    if bad_lines:
+        log.warning("claude-p fill: %d unparsed reply line(s) — first: %s",
+                    len(bad_lines), bad_lines[0][:200])
     log.info("claude-p fill: %d filled, %d failed", len(results), max(len(items) - len(results), 0))
-    return FillResult(filled=len(results), failed=max(len(items) - len(results), 0))
+    return FillResult(filled=len(results), failed=max(len(items) - len(results), 0),
+                      unparsed=len(bad_lines))
