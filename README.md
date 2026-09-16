@@ -120,6 +120,7 @@ the URL. Schema properties are created automatically on first write.
 | `IG_USERNAME` | Instagram handle (no `@`) |
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
+| `ENRICH_VERSION` | optional; overrides the default enrich prompt version (`v2.1-enrich`) |
 | `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
 | `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.1-distribute`) |
 
@@ -180,9 +181,21 @@ Per-group + cross-group tags with one-line definitions. Built during **calibrati
 }
 ```
 
+Enrichment also names one **primary topic** per item — the single topic, drawn from that item's own
+`topics`, naming what the item is mainly about. It must be one of the item's own topics; if the
+model's answer doesn't validate, `primary_topic` is left empty rather than guessed. It exists to
+help routing (below) decide an item whose tags point at more than one page.
+
 ### `routes.json` — optional routing *(committed example)*
 
-Maps `tag > collection > group → route_target` (tag wins, then collection, then group default). Omit or empty to leave items at `Tagged`.
+Maps `tag > collection > group → route_target` (tag wins, then collection, then group default) —
+**unless the item's primary topic has its own `by_tag` rule**, in which case that rule wins
+outright, ahead of ordinary tag order. This matters for an item whose tags point at more than one
+page: a static priority list always resolves that tag combination to the same page regardless of
+which item it is, but the primary topic reflects what *this* item is actually about, so it can win
+over a higher-ranked tag the item also happens to carry. An item with no primary topic, or one not
+covered by `by_tag`, falls back to plain tag order. Omit or empty `routes.json` to leave items at
+`Tagged`.
 
 Routing only evaluates items still at `Tagged` — editing `routes.json` doesn't retroactively move
 items already `Routed`. To re-evaluate those against the current file:
@@ -194,7 +207,9 @@ isa run --stage route --reroute --dry-run   # preview before/after counts, write
 
 `--reroute` only touches items still `Routed` — `Distributed`/`Misrouted` items (already folded in
 or flagged) are never re-evaluated. `route_target` is rewritten only when it actually changes; an
-item whose route resolves to none returns to `Tagged` with `route_target` cleared.
+item whose route resolves to none returns to `Tagged` with `route_target` cleared. `--dry-run` also
+reports how many of the changed routes were decided by the item's primary topic rather than plain
+tag order.
 
 ## Running
 
@@ -222,7 +237,7 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --rebuild             # distribute only: reset a page to its template + its items to Tagged; mutually exclusive with --apply
           --reroute             # route only: re-evaluate already-Routed items against the current routes.json
           --yes                 # distribute --apply/--rebuild only: skip the confirmation prompt
-          --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts)
+          --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts, split by primary-topic vs order)
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
 Omit `--stage` to run the whole mode end-to-end. **Preflight** runs before any run (backend
@@ -345,6 +360,7 @@ Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 ## Failures, guardrails, backup
 
 - **Failure triage:** `isa status` lists per-group `Failed` + remaining. `Failed` items keep partial data + `failure_notes`. Retry: `isa status --retry-failed`, then re-run the stage.
+- **Enrich retries per item, not per batch:** the model returns tagging results as one JSON object per line; a line that doesn't parse is retried on its own, smaller batch, and only an item still unparsable after retries is marked `Failed` — a single bad reply never fails its whole batch.
 - **No-content:** on the first full batch, investigate *why* an item has no transcript/OCR/caption (extraction bug? over-aggressive VAD? carousel scope?) before trusting the deterministic branch.
 - **Guardrails:** set `guardrails.max_spend_usd` / `max_items_per_run` in `run.json`; the run stops before exceeding them.
 - **Backup:** `isa backup` before any bulk re-run; `isa backup --restore-check` periodically (a backup never restored isn't a backup).
