@@ -157,3 +157,131 @@ def test_merge_sections_leaves_untouched_sections_byte_identical():
 def test_merge_sections_rejects_duplicate_current_headings():
     with pytest.raises(ValueError, match="duplicate section heading 'One'"):
         mb.merge_sections("# One\n- a\n# One\n- b", "# One\n- replaced")
+
+
+def _read_span(content, *, annotations=None, href=None):
+    span = {"plain_text": content}
+    if annotations:
+        span["annotations"] = annotations
+    if href:
+        span["href"] = href
+    return span
+
+
+def test_read_rich_emits_italic_code_and_strikethrough():
+    spans = [
+        _read_span("i", annotations={"italic": True}),
+        _read_span("c", annotations={"code": True}),
+        _read_span("s", annotations={"strikethrough": True}),
+    ]
+    assert mb._read_rich(spans) == "*i*`c`~~s~~"
+
+
+def test_read_rich_nests_code_inside_bold_so_the_writer_can_parse_it_back():
+    spans = [_read_span("x", annotations={"bold": True, "code": True})]
+    read = mb._read_rich(spans)
+    assert read == "**`x`**"
+    assert mb._write_rich(read) == [
+        {"type": "text", "text": {"content": "x"}, "annotations": {"bold": True, "code": True}}
+    ]
+
+
+def test_read_rich_merges_a_styled_run_split_across_spans():
+    """_split_span cuts a long run at the 2000-unit cap; wrapping each piece on its own would
+    read back as `**a****b**` and change what the model is shown."""
+    spans = [
+        _read_span("a", annotations={"bold": True}),
+        _read_span("b", annotations={"bold": True}),
+    ]
+    assert mb._read_rich(spans) == "**ab**"
+
+
+def test_read_rich_merges_across_an_empty_span_between_two_styled_ones():
+    spans = [
+        _read_span("a", annotations={"bold": True}),
+        _read_span(""),
+        _read_span("b", annotations={"bold": True}),
+    ]
+    assert mb._read_rich(spans) == "**ab**"
+
+
+def test_read_rich_keeps_differently_styled_neighbours_apart():
+    spans = [
+        _read_span("a", annotations={"bold": True}),
+        _read_span("b", annotations={"italic": True}),
+    ]
+    assert mb._read_rich(spans) == "**a***b*"
+
+
+def test_read_rich_merges_a_split_link_run():
+    spans = [
+        _read_span("lab", href="https://x/1"),
+        _read_span("el", href="https://x/1"),
+    ]
+    assert mb._read_rich(spans) == "[label](https://x/1)"
+
+
+def test_write_rich_makes_a_bold_wrapped_link_a_bold_link():
+    """A bolded link used to leave literal `**` stranded around the label on the page."""
+    spans = mb._write_rich("see **[title](https://x/1)** now")
+    assert spans == [
+        {"type": "text", "text": {"content": "see "}},
+        {
+            "type": "text",
+            "text": {"content": "title", "link": {"url": "https://x/1"}},
+            "annotations": {"bold": True},
+        },
+        {"type": "text", "text": {"content": " now"}},
+    ]
+    assert "**" not in "".join(s["text"]["content"] for s in spans)
+
+
+def test_write_rich_still_reads_a_bare_link():
+    assert mb._write_rich("[t](https://x/1)") == [
+        {"type": "text", "text": {"content": "t", "link": {"url": "https://x/1"}}}
+    ]
+
+
+def test_write_plain_combines_nested_marks_into_one_span():
+    assert mb._write_plain("~~*x*~~") == [
+        {
+            "type": "text",
+            "text": {"content": "x"},
+            "annotations": {"strikethrough": True, "italic": True},
+        }
+    ]
+
+
+def test_write_plain_leaves_code_content_literal():
+    """Backticks make their content literal, so `*x*` inside code stays text, not italic."""
+    assert mb._write_plain("`*x*`") == [
+        {"type": "text", "text": {"content": "*x*"}, "annotations": {"code": True}}
+    ]
+
+
+def test_inline_marks_round_trip_through_a_read_then_write():
+    original = [
+        _read_span("plain "),
+        _read_span("b", annotations={"bold": True}),
+        _read_span("i", annotations={"italic": True}),
+        _read_span("s", annotations={"strikethrough": True}),
+        _read_span("c", annotations={"code": True}),
+    ]
+    rewritten = mb._write_rich(mb._read_rich(original))
+    assert [s["text"]["content"] for s in rewritten] == ["plain ", "b", "i", "s", "c"]
+    assert [s.get("annotations") for s in rewritten] == [
+        None,
+        {"bold": True},
+        {"italic": True},
+        {"strikethrough": True},
+        {"code": True},
+    ]
+
+
+def test_indented_bullets_reports_only_indented_list_lines():
+    md = "# S\n- top\n  - nested\n\t- tabbed\n  not a bullet\n- another top"
+    assert mb.indented_bullets(md) == ["  - nested", "\t- tabbed"]
+
+
+def test_indented_bullets_is_empty_for_flat_markdown():
+    assert mb.indented_bullets("# S\n- one\n- two") == []

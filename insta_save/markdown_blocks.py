@@ -7,25 +7,55 @@ Blocks that carry no text (table_of_contents, divider, images) render as nothing
 template furniture that lives above the content region and is never rewritten."""
 
 import re
+from itertools import groupby
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
-_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+# A bold-wrapped link is matched before a bare one so the `**` become an annotation instead
+# of literal asterisks in the label's surroundings.
+_BOLD_LINK_RE = re.compile(r"\*\*\[([^\]]+)\]\((https?://[^)]+)\)\*\*")
+_INLINE_LINK_RE = re.compile(f"{_BOLD_LINK_RE.pattern}|{_LINK_RE.pattern}")
+# Inline marks, longest delimiter first so `**` never loses to `*`. Group names are Notion
+# annotation keys, which is what lets the writer set them without a lookup table.
+_MARK_RE = re.compile(
+    r"\*\*(?P<bold>[^*]+)\*\*|~~(?P<strikethrough>[^~]+)~~|`(?P<code>[^`]+)`|\*(?P<italic>[^*]+)\*"
+)
+# Read-side wrappers, innermost first: code sits inside emphasis, so bold+code reads as
+# **`x`** — the shape _MARK_RE parses back.
+_MARK_WRAPPERS = (("code", "`"), ("strikethrough", "~~"), ("italic", "*"), ("bold", "**"))
 _HEADING_PREFIX = {"heading_1": "#", "heading_2": "##", "heading_3": "###"}
 
 
+def _span_content(span) -> str:
+    """Read spans carry `plain_text`; constructed ones carry `text.content` (the shapes
+    differ), so fall back to the write shape."""
+    text = span.get("plain_text")
+    if text is None:
+        text = (span.get("text") or {}).get("content", "")
+    return text
+
+
+def _span_style(span) -> tuple:
+    """The rendered identity of a span: which marks it carries and where it links. Two spans
+    sharing this render as one run, so they can be merged before wrapping."""
+    annotations = span.get("annotations") or {}
+    href = span.get("href") or ((span.get("text") or {}).get("link") or {}).get("url")
+    return tuple(bool(annotations.get(name)) for name, _ in _MARK_WRAPPERS), href
+
+
 def _read_rich(spans) -> str:
-    """Retrieved rich_text -> markdown. Read spans carry `plain_text`; constructed ones
-    carry `text.content` (the shapes differ), so fall back to the write shape."""
+    """Retrieved rich_text -> markdown.
+
+    Adjacent spans of the same style are merged before wrapping: Notion (and _split_span, at
+    the 2000-unit cap) can break one styled run into several spans, and wrapping each
+    separately would read back as `**a****b**` instead of `**ab**`. Empty spans are dropped
+    first so one sitting between two styled spans cannot break their merge."""
     out = []
-    for span in spans or []:
-        text = span.get("plain_text")
-        if text is None:
-            text = (span.get("text") or {}).get("content", "")
-        if not text:
-            continue
-        if (span.get("annotations") or {}).get("bold"):
-            text = f"**{text}**"
-        href = span.get("href") or ((span.get("text") or {}).get("link") or {}).get("url")
+    non_empty = [span for span in spans or [] if _span_content(span)]
+    for (marks, href), group in groupby(non_empty, key=_span_style):
+        text = "".join(_span_content(span) for span in group)
+        for (_, delimiter), present in zip(_MARK_WRAPPERS, marks):
+            if present:
+                text = f"{delimiter}{text}{delimiter}"
         if href:
             text = f"[{text}]({href})"
         out.append(text)
@@ -68,33 +98,53 @@ def _split_span(span, limit=_SPAN_UNIT_LIMIT) -> list:
     return [{**span, "text": {**span["text"], "content": piece}} for piece in pieces]
 
 
-def _write_plain(text) -> list:
-    """Plain markdown (bold only) -> write-shape rich_text spans."""
+def _marked_span(content, annotations) -> dict:
+    span = {"type": "text", "text": {"content": content}}
+    if annotations:
+        span["annotations"] = dict(annotations)
+    return span
+
+
+def _write_plain(text, annotations=None) -> list:
+    """Inline markdown -> write-shape rich_text spans, the inverse of _read_rich's wrapping.
+
+    Recurses into each mark's content so nested marks combine into one span's annotations
+    (**`x`** -> bold + code). Code is terminal: backticks make their content literal, so its
+    inner text is never re-parsed."""
+    base = annotations or {}
     spans, pos = [], 0
-    for m in _BOLD_RE.finditer(text):
+    for m in _MARK_RE.finditer(text):
         if m.start() > pos:
-            spans.append({"type": "text", "text": {"content": text[pos : m.start()]}})
-        spans.append(
-            {
-                "type": "text",
-                "text": {"content": m.group(1)},
-                "annotations": {"bold": True},
-            }
-        )
+            spans.append(_marked_span(text[pos : m.start()], base))
+        mark = m.lastgroup
+        inner = m.group(mark)
+        marked = {**base, mark: True}
+        spans += [_marked_span(inner, marked)] if mark == "code" else _write_plain(inner, marked)
         pos = m.end()
     if pos < len(text):
-        spans.append({"type": "text", "text": {"content": text[pos:]}})
+        spans.append(_marked_span(text[pos:], base))
     return [s for s in spans if s["text"]["content"]]
 
 
 def _write_rich(text) -> list:
-    """Inline markdown -> write-shape rich_text. Links take precedence over bold inside
-    a label, matching the pilot: a bolded link label is not a shape we emit."""
+    """Inline markdown -> write-shape rich_text. A link wins over marks *inside* its label,
+    but a link wrapped in `**` becomes a bold link rather than leaving literal asterisks
+    stranded around it."""
     spans, pos = [], 0
-    for m in _LINK_RE.finditer(text):
+    for m in _INLINE_LINK_RE.finditer(text):
         if m.start() > pos:
             spans += _write_plain(text[pos : m.start()])
-        spans.append({"type": "text", "text": {"content": m.group(1), "link": {"url": m.group(2)}}})
+        bold_label, bold_url, label, url = m.groups()
+        if bold_label is not None:
+            spans.append(
+                {
+                    "type": "text",
+                    "text": {"content": bold_label, "link": {"url": bold_url}},
+                    "annotations": {"bold": True},
+                }
+            )
+        else:
+            spans.append({"type": "text", "text": {"content": label, "link": {"url": url}}})
         pos = m.end()
     if pos < len(text):
         spans += _write_plain(text[pos:])
@@ -123,6 +173,19 @@ def markdown_to_blocks(md) -> list:
         else:
             blocks.append(_block("paragraph", line))
     return blocks
+
+
+def indented_bullets(md) -> list:
+    """Bullet lines carrying leading indentation.
+
+    markdown_to_blocks flattens them — Notion nesting is not something this stage writes — so
+    the structure a nested list implies is lost on the way in. Returning the lines lets the
+    review say so before an apply, instead of the page quietly coming out flat."""
+    return [
+        line
+        for line in (md or "").splitlines()
+        if line[:1] in (" ", "\t") and line.lstrip().startswith("- ")
+    ]
 
 
 def split_sections(md) -> list:

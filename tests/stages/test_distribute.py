@@ -602,6 +602,19 @@ def test_render_buckets_omits_none_fields():
     assert "None" not in out
 
 
+def test_render_diff_warns_that_indented_bullets_will_land_flat():
+    """The diff shows nesting the page cannot hold, so the review has to say so up front."""
+    diff = dist.render_diff("# S\n- old", "# S\n- top\n  - nested")
+    assert "will land FLAT on the page" in diff
+    assert "  - nested" in diff
+    assert diff.index("will land FLAT") < diff.index("@@")
+
+
+def test_render_diff_has_no_flattening_note_for_flat_markdown():
+    diff = dist.render_diff("# S\n- old", "# S\n- new")
+    assert "FLAT" not in diff
+
+
 def test_prompt_rule_7_covers_only_added_or_changed_entries():
     from pathlib import Path
 
@@ -782,7 +795,6 @@ def test_fill_retries_a_reply_with_an_unknown_folded_id(tmp_path, monkeypatch):
     )
     assert out["calls"] == 1 and out["folded"] == 1
     assert len(calls) == 2
-
 
 
 def test_fill_retries_a_reply_that_folds_an_item_without_its_link(tmp_path, monkeypatch):

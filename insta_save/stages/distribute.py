@@ -33,6 +33,7 @@ from insta_save.backends.base import TerminalBackendError, is_terminal_error
 from insta_save.backends.sanitize import scrub_fabricated
 from insta_save.markdown_blocks import (
     blocks_to_markdown,
+    indented_bullets,
     markdown_to_blocks,
     merge_sections,
     split_sections,
@@ -234,7 +235,11 @@ def plan_sections(current_md, proposed_md) -> list:
 
 def render_diff(current_md, proposed_md) -> str:
     """Per-section unified diff, before vs proposed. The review surface: untouched
-    sections never appear, so a first-time build reads as all-additions."""
+    sections never appear, so a first-time build reads as all-additions.
+
+    A nested bullet is shown nested here but lands flat on the page, so the diff is prefixed
+    with a note naming those lines — otherwise the review shows structure the write cannot
+    keep."""
     current = dict(split_sections(current_md))
     chunks = []
     for op in plan_sections(current_md, proposed_md):
@@ -250,7 +255,16 @@ def render_diff(current_md, proposed_md) -> str:
                 )
             )
         )
-    return "\n\n".join(chunks) if chunks else "no changes proposed"
+    diff = "\n\n".join(chunks) if chunks else "no changes proposed"
+    nested = indented_bullets(proposed_md)
+    if nested:
+        warning = [
+            f"NOTE: {len(nested)} indented bullet(s) below will land FLAT on the page — "
+            "Notion nesting is not written by this stage:",
+            *(f"  {line}" for line in nested),
+        ]
+        diff = "\n".join(warning) + "\n\n" + diff
+    return diff
 
 
 _QUICK_ACCESS_MARKER = "Quick Access"
