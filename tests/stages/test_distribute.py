@@ -2471,3 +2471,39 @@ def test_rebuild_reraises_fresh_read_template_error_with_rebuild_wording(tmp_pat
     assert page.page_writes() == []
     # items were already reset before the fresh re-read that then failed
     assert page.items["folded"]["status"] == "Tagged"
+
+
+def test_read_only_sections_names_a_section_holding_unshowable_blocks():
+    blocks = [
+        _h1("Curated", "h-a"),
+        {"id": "t1", "type": "toggle", "toggle": {"rich_text": []}, "has_children": True},
+        _h1("Plain", "h-b"),
+        _bullet("a", "b1"),
+    ]
+    assert dist.read_only_sections(blocks) == ["Curated"]
+
+
+def test_read_only_sections_is_empty_when_every_section_is_showable():
+    blocks = [_h1("Plain", "h-a"), _bullet("a", "b1"), _h1("Other", "h-b"), _bullet("b", "b2")]
+    assert dist.read_only_sections(blocks) == []
+
+
+def test_prepare_records_read_only_sections_in_the_batch(tmp_path, monkeypatch):
+    """fill reads batch.json, not blocks — current.md has already lost the block types, so the
+    detection has to happen here, where prepare still holds the raw blocks."""
+    env = _env(tmp_path)
+    _patch_prepare(
+        monkeypatch,
+        items=[_item("a", ["fitness-workouts"])],
+        blocks=[
+            _h1("Curated", "h-a"),
+            {"id": "t1", "type": "table", "table": {}},
+            _h1("Plain", "h-b"),
+            _bullet("old", "b1"),
+        ],
+    )
+    dist.prepare(
+        env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=_Budgets(), version="v"
+    )
+    batch = json.loads((dist.staging_dir(env, "Page A") / "batch.json").read_text())
+    assert batch["read_only_sections"] == ["Curated"]

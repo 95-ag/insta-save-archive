@@ -348,16 +348,32 @@ def prepare(env, *, target, routes, vocab, budgets, version) -> int:
         log.info("distribute.prepare: nothing pending for %s", target)
         return 0
 
-    current_md = blocks_to_markdown(_content_blocks(get_page_blocks(env, page_id)))
+    blocks = get_page_blocks(env, page_id)
+    current_md = blocks_to_markdown(_content_blocks(blocks))
+    read_only = read_only_sections(blocks)
     d = staging_dir(env, target)
     (d / "batch.json").write_text(
         json.dumps(
-            {"target": target, "page_id": page_id, "items": pending}, ensure_ascii=False, indent=2
+            {
+                "target": target,
+                "page_id": page_id,
+                "items": pending,
+                "read_only_sections": read_only,
+            },
+            ensure_ascii=False,
+            indent=2,
         ),
         encoding="utf-8",
     )
     (d / "current.md").write_text(current_md, encoding="utf-8")
     log.info("distribute.prepare: staged %d items for %s", len(pending), target)
+    if read_only:
+        log.info(
+            "distribute.prepare: %s has %d read-only section(s) the model must not rewrite: %s",
+            target,
+            len(read_only),
+            ", ".join(read_only),
+        )
     return len(pending)
 
 
@@ -651,6 +667,17 @@ def _unshowable_kinds(content) -> list:
     if any(block.get("has_children") for block in content):
         kinds.append("has_children")
     return kinds
+
+
+def read_only_sections(blocks) -> list:
+    """Headings whose section holds blocks the markdown round-trip cannot represent, in page
+    order. Rewriting such a section would delete what blocks_to_markdown never rendered, so the
+    prompt names them and the model appends a new section instead of reusing them."""
+    return [
+        heading
+        for heading, (_, content) in _section_spans(blocks).items()
+        if _unshowable_kinds(content)
+    ]
 
 
 def _refuse_unshowable(blocks, ops) -> None:
