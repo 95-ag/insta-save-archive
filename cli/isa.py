@@ -51,8 +51,8 @@ def _distribute_label(source_id, title) -> str:
 
 def _format_distribute_preview(preview) -> str:
     """Render an ApplyPreview compactly: one line per section change, then the item lists
-    a reviewer needs to check by hand (dropped, unmentioned, unverified). Folded-and-linked
-    items are only counted — the diff already shows what changed for them."""
+    a reviewer needs to check by hand (dropped, skipped, unaccounted, unverified).
+    Folded-and-linked items are only counted — the diff already shows what changed."""
     lines = []
     if preview.sections:
         for section in preview.sections:
@@ -67,9 +67,17 @@ def _format_distribute_preview(preview) -> str:
         for source_id, title, reason in preview.dropped:
             suffix = f" — {reason}" if reason else ""
             lines.append(f"    - {_distribute_label(source_id, title)}{suffix}")
+    if preview.skipped:
+        lines.append(
+            f"  skipped as already covered, will be marked Distributed "
+            f"({len(preview.skipped)}):"
+        )
+        for source_id, title, reason in preview.skipped:
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"    - {_distribute_label(source_id, title)}{suffix}")
     if preview.unmentioned:
         lines.append(
-            f"  not mentioned, will be marked Distributed as a duplicate skip "
+            f"  ⚠ accounted for in NO list — content is not on the page, will stay Routed "
             f"({len(preview.unmentioned)}):"
         )
         for source_id, title in preview.unmentioned:
@@ -619,6 +627,9 @@ def dispatch_run(args) -> None:
                 counts = distribute.apply(env, target=args.target, version=version)
                 print(f"Distributed: {counts['folded']} folded in, {counts['skipped']} already "
                       f"covered, {counts['misrouted']} misrouted.")
+                if counts.get("unaccounted", 0):
+                    print(f"  {counts['unaccounted']} item(s) appeared in no trailer list and "
+                          f"were left Routed for the next run — see the log.")
                 if counts.get("unverified", 0):
                     print(f"  {counts['unverified']} folded item(s) had no link in the applied "
                           f"page and were left Routed — see the log.")

@@ -268,7 +268,7 @@ def test_consolidate_returns_the_reply_unstripped(monkeypatch):
     assert out.endswith("```")
     assert "Do NOT write any files" in sent["input"]
     assert "no markdown code fences" not in sent["input"]
-    _, folded, _ = parse_proposal(out)
+    _, folded, _, _ = parse_proposal(out)
     assert folded == ["a"]
 
 

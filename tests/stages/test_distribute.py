@@ -128,7 +128,7 @@ PROPOSAL = """# Workouts
 
 
 def test_parse_proposal_splits_body_from_the_json_trailer():
-    body, folded, dropped = dist.parse_proposal(PROPOSAL)
+    body, folded, dropped, _ = dist.parse_proposal(PROPOSAL)
     assert body == "# Workouts\n- cue one"
     assert folded == ["abc"]
     assert dropped == [{"source_id": "xyz", "reason": "meal prep"}]
@@ -136,19 +136,19 @@ def test_parse_proposal_splits_body_from_the_json_trailer():
 
 def test_parse_proposal_uses_the_last_fenced_block():
     text = '```python\ncode\n```\n# Sec\n\n```json\n{"folded": ["a"]}\n```'
-    body, folded, _ = dist.parse_proposal(text)
+    body, folded, _, _ = dist.parse_proposal(text)
     assert "# Sec" in body and folded == ["a"]
 
 
 def test_parse_proposal_tolerates_raw_control_chars():
     text = '# Sec\n\n```json\n{"folded": ["a"], "dropped": [{"source_id": "b", "reason": "x\ty"}]}\n```'
-    _, _, dropped = dist.parse_proposal(text)
+    _, _, dropped, _ = dist.parse_proposal(text)
     assert dropped[0]["reason"] == "x\ty"
 
 
 def test_parse_proposal_defaults_missing_keys_to_empty():
-    body, folded, dropped = dist.parse_proposal("# Sec\n\n```json\n{}\n```")
-    assert folded == [] and dropped == []
+    body, folded, dropped, skipped = dist.parse_proposal("# Sec\n\n```json\n{}\n```")
+    assert folded == [] and dropped == [] and skipped == []
 
 
 def test_parse_proposal_raises_without_a_trailer():
@@ -177,6 +177,11 @@ def _trailer(payload):
         '{"dropped": [{"reason": "missing id"}]}',
         '{"dropped": [{"source_id": 7, "reason": "x"}]}',
         '{"dropped": [{"source_id": "b", "reason": 5}]}',
+        '{"skipped": "xyz"}',
+        '{"skipped": ["not-a-dict"]}',
+        '{"skipped": [{"reason": "missing id"}]}',
+        '{"skipped": [{"source_id": 7, "reason": "x"}]}',
+        '{"skipped": [{"source_id": "b", "reason": 5}]}',
     ],
 )
 def test_parse_proposal_rejects_a_wrong_shaped_trailer(payload):
@@ -185,24 +190,28 @@ def test_parse_proposal_rejects_a_wrong_shaped_trailer(payload):
 
 
 def test_parse_proposal_treats_null_lists_as_empty():
-    _, folded, dropped = dist.parse_proposal(_trailer('{"folded": null, "dropped": null}'))
-    assert folded == [] and dropped == []
+    _, folded, dropped, skipped = dist.parse_proposal(
+        _trailer('{"folded": null, "dropped": null, "skipped": null}')
+    )
+    assert folded == [] and dropped == [] and skipped == []
 
 
 def test_parse_proposal_leaves_a_missing_reason_none():
-    _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b"}]}'))
+    _, _, dropped, _ = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b"}]}'))
     assert dropped == [{"source_id": "b", "reason": None}]
 
 
 def test_parse_proposal_leaves_a_null_reason_none():
-    _, _, dropped = dist.parse_proposal(
+    _, _, dropped, _ = dist.parse_proposal(
         _trailer('{"dropped": [{"source_id": "b", "reason": null}]}')
     )
     assert dropped == [{"source_id": "b", "reason": None}]
 
 
 def test_parse_proposal_keeps_an_empty_string_reason_as_given():
-    _, _, dropped = dist.parse_proposal(_trailer('{"dropped": [{"source_id": "b", "reason": ""}]}'))
+    _, _, dropped, _ = dist.parse_proposal(
+        _trailer('{"dropped": [{"source_id": "b", "reason": ""}]}')
+    )
     assert dropped == [{"source_id": "b", "reason": ""}]
 
 
@@ -433,7 +442,7 @@ def test_fill_stages_the_proposal_and_diff(tmp_path, monkeypatch):
         template=TEMPLATE,
         call=lambda prompt, model: reply,
     )
-    assert out == {"calls": 1, "folded": 1, "dropped": 0}
+    assert out == {"calls": 1, "folded": 1, "dropped": 0, "skipped": 0}
     assert (d / "proposed.md").read_text() == "# Workouts\n- new"
     assert json.loads((d / "proposal.json").read_text())["folded"] == ["a"]
     assert "+- new" in (d / "diff.txt").read_text()
@@ -1109,7 +1118,9 @@ def test_apply_passes_a_missing_drop_reason_through_as_none(tmp_path, monkeypatc
     assert calls["misrouted"] == [("p-a", None)]
 
 
-def test_apply_marks_an_unmentioned_item_distributed_with_a_skip_note(tmp_path, monkeypatch):
+def test_apply_leaves_an_item_in_no_trailer_list_routed(tmp_path, monkeypatch):
+    """An item the model never accounted for must not be marked done: its content is not on
+    the page, so marking it Distributed would strand it with no relation and no next run."""
     items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
     env, _ = _staged(
         tmp_path,
@@ -1121,9 +1132,47 @@ def test_apply_marks_an_unmentioned_item_distributed_with_a_skip_note(tmp_path, 
     calls = {}
     _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
     counts = dist.apply(env, target="Page A", version="v")
-    assert counts["skipped"] == 1
-    assert ("p-b", "no new information — already covered on the page") in calls["distributed"]
+    assert counts["unaccounted"] == 1 and counts["skipped"] == 0
+    assert [page_id for page_id, _ in calls["distributed"]] == ["p-a"]
     assert calls["relations"] == ["p-a"]
+
+
+def test_apply_marks_a_skipped_item_distributed_with_its_stated_reason(tmp_path, monkeypatch):
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={
+            "folded": ["a"],
+            "dropped": [],
+            "skipped": [{"source_id": "b", "reason": "same cue as the entry above"}],
+        },
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    counts = dist.apply(env, target="Page A", version="v")
+    assert counts["skipped"] == 1 and counts["unaccounted"] == 0
+    assert ("p-b", "same cue as the entry above") in calls["distributed"]
+    assert calls["relations"] == ["p-a"]
+
+
+def test_apply_falls_back_to_the_skip_note_when_a_skipped_item_gives_no_reason(
+    tmp_path, monkeypatch
+):
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
+    env, _ = _staged(
+        tmp_path,
+        items=items,
+        current_md="# Workouts\n- old",
+        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": [], "skipped": [{"source_id": "b"}]},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("Workouts"), _bullet("old", "b1")], calls=calls)
+    dist.apply(env, target="Page A", version="v")
+    assert ("p-b", "no new information — already covered on the page") in calls["distributed"]
 
 
 def test_apply_writes_no_item_state_when_a_section_write_fails(tmp_path, monkeypatch):
@@ -1425,7 +1474,14 @@ def test_apply_links_only_folded_items_whose_link_landed(tmp_path, monkeypatch):
         proposal={"folded": ["a", "b", "c"], "dropped": []},
     )
     counts = dist.apply(env, target="Page A", version="v")
-    assert counts == {"folded": 1, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 2}
+    assert counts == {
+        "folded": 1,
+        "skipped": 0,
+        "misrouted": 0,
+        "unknown": 0,
+        "unverified": 2,
+        "unaccounted": 0,
+    }
     item_writes = [e for e in page.writes() if e[0] != "replace_section_blocks"]
     assert item_writes == [
         ("set_knowledge_relation", "p-a", "kp"),
@@ -1625,7 +1681,14 @@ def test_apply_does_not_verify_a_folded_item_whose_link_is_only_a_url_prefix(tmp
         proposal={"folded": ["a"], "dropped": []},
     )
     counts = dist.apply(env, target="Page A", version="v")
-    assert counts == {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 1}
+    assert counts == {
+        "folded": 0,
+        "skipped": 0,
+        "misrouted": 0,
+        "unknown": 0,
+        "unverified": 1,
+        "unaccounted": 0,
+    }
     writes = page.writes()
     assert len(writes) == 1 and writes[0][0] == "replace_section_blocks"
 

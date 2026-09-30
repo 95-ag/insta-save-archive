@@ -140,10 +140,32 @@ def chunk_buckets(buckets, *, max_items, char_budget) -> list:
 _FENCE_RE = re.compile(r"```\s*json\s*\n(.*?)\n```", re.S)
 
 
+def _id_reason_list(raw, field) -> list:
+    """Validate a trailer list of {source_id, reason} objects. `dropped` and `skipped` share
+    the shape: an id the model accounts for, plus its stated reason (None when it gave none —
+    never invented, see data-integrity.md)."""
+    if raw is None:
+        return []
+    if not (isinstance(raw, list) and all(isinstance(d, dict) for d in raw)):
+        raise ValueError(f"distribute proposal: {field!r} must be a list of objects")
+    entries = []
+    for entry in raw:
+        source_id = entry.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError(
+                f"distribute proposal: {field!r} entries need a non-empty source_id string"
+            )
+        reason = entry.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError(f"distribute proposal: {field!r} reason must be a string")
+        entries.append({"source_id": source_id, "reason": reason})
+    return entries
+
+
 def _validate_trailer(meta) -> tuple:
-    """Validate a parsed trailer's shape, returning (folded, dropped). Raises ValueError
-    on any mismatch so the caller retries rather than propagating a wrong id list —
-    folded/dropped ids drive item relations and status writes downstream."""
+    """Validate a parsed trailer's shape, returning (folded, dropped, skipped). Raises
+    ValueError on any mismatch so the caller retries rather than propagating a wrong id list —
+    these ids drive item relations and status writes downstream."""
     if not isinstance(meta, dict):
         raise ValueError("distribute proposal: trailer must be a JSON object")
 
@@ -155,29 +177,14 @@ def _validate_trailer(meta) -> tuple:
     else:
         raise ValueError("distribute proposal: 'folded' must be a list of source ids")
 
-    raw_dropped = meta.get("dropped")
-    if raw_dropped is None:
-        dropped = []
-    elif isinstance(raw_dropped, list) and all(isinstance(d, dict) for d in raw_dropped):
-        dropped = []
-        for entry in raw_dropped:
-            source_id = entry.get("source_id")
-            if not isinstance(source_id, str) or not source_id:
-                raise ValueError(
-                    "distribute proposal: 'dropped' entries need a non-empty source_id string"
-                )
-            reason = entry.get("reason")
-            if reason is not None and not isinstance(reason, str):
-                raise ValueError("distribute proposal: 'dropped' reason must be a string")
-            dropped.append({"source_id": source_id, "reason": reason})
-    else:
-        raise ValueError("distribute proposal: 'dropped' must be a list of objects")
-
-    return folded, dropped
+    # A proposal staged before 'skipped' existed still parses: absent -> [].
+    return folded, _id_reason_list(meta.get("dropped"), "dropped"), _id_reason_list(
+        meta.get("skipped"), "skipped"
+    )
 
 
 def parse_proposal(text) -> tuple:
-    """(body_markdown, folded_source_ids, dropped) from a fill response.
+    """(body_markdown, folded_source_ids, dropped, skipped) from a fill response.
 
     The LAST fenced block is the JSON trailer; everything before it is the page body.
     strict=False tolerates the raw control characters the model emits inside JSON strings.
@@ -192,8 +199,8 @@ def parse_proposal(text) -> tuple:
     except json.JSONDecodeError as exc:
         raise ValueError(f"distribute proposal: malformed JSON trailer — {exc}") from exc
     body = text[: trailer.start()].rstrip()
-    folded, dropped = _validate_trailer(meta)
-    return body, folded, dropped
+    folded, dropped, skipped = _validate_trailer(meta)
+    return body, folded, dropped, skipped
 
 
 @dataclass(frozen=True)
@@ -396,7 +403,7 @@ def render_prompt(template, *, target, current_md, buckets) -> str:
     )
 
 
-def _check_reply(body, folded, dropped, known_ids) -> None:
+def _check_reply(body, folded, dropped, skipped, known_ids) -> None:
     """Validate a parsed proposal against the chunk it was generated for. Raises ValueError
     (never a terminal-error marker word — see _TERMINAL_ERROR_MARKERS) from inside
     _fill_chunk's retried region, so a bad reply is retried rather than propagated: folded/
@@ -408,24 +415,23 @@ def _check_reply(body, folded, dropped, known_ids) -> None:
     on) or unclaimed text ahead of the first heading (when folded ids say something WAS
     folded in) must fail loud instead of vanishing."""
     dropped_ids = [entry["source_id"] for entry in dropped]
+    skipped_ids = [entry["source_id"] for entry in skipped]
 
-    for source_id in folded + dropped_ids:
+    for source_id in folded + dropped_ids + skipped_ids:
         if source_id not in known_ids:
             raise ValueError(f"distribute reply: id {source_id!r} is not in this batch")
 
-    fold_seen, drop_seen = set(), set()
-    for source_id in folded:
-        if source_id in fold_seen:
-            raise ValueError(f"distribute reply: duplicate folded id {source_id!r}")
-        fold_seen.add(source_id)
-    for source_id in dropped_ids:
-        if source_id in drop_seen:
-            raise ValueError(f"distribute reply: duplicate dropped id {source_id!r}")
-        drop_seen.add(source_id)
-
-    both = fold_seen & drop_seen
-    if both:
-        raise ValueError(f"distribute reply: id(s) {sorted(both)} are both folded and dropped")
+    seen = {}
+    for field, ids in (("folded", folded), ("dropped", dropped_ids), ("skipped", skipped_ids)):
+        for source_id in ids:
+            if source_id in seen:
+                raise ValueError(
+                    f"distribute reply: id {source_id!r} appears in both "
+                    f"{seen[source_id]!r} and {field!r}"
+                    if seen[source_id] != field
+                    else f"distribute reply: duplicate {field} id {source_id!r}"
+                )
+            seen[source_id] = field
 
     sections = split_sections(body)
     if any(not heading for heading, _ in sections):
@@ -452,9 +458,9 @@ def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
     last = None
     for attempt in range(1, _FILL_ATTEMPTS + 1):
         try:
-            body, folded, dropped = parse_proposal(call(prompt, model))
-            _check_reply(body, folded, dropped, known_ids)
-            return body, folded, dropped
+            body, folded, dropped, skipped = parse_proposal(call(prompt, model))
+            _check_reply(body, folded, dropped, skipped, known_ids)
+            return body, folded, dropped, skipped
         except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
             if is_terminal_error(exc):
                 raise TerminalBackendError(
@@ -527,7 +533,7 @@ def fill(
     )
     chunks = chunk_buckets(buckets, max_items=budgets.max_items, char_budget=budgets.char_budget)
 
-    running, folded, dropped, prompts = current_md, [], [], []
+    running, folded, dropped, skipped, prompts = current_md, [], [], [], []
     for index, chunk in enumerate(chunks, start=1):
         known_ids = {
             item.get("source_id")
@@ -537,7 +543,7 @@ def fill(
         }
         prompt = render_prompt(template, target=target, current_md=running, buckets=chunk)
         prompts.append(prompt)
-        body, chunk_folded, chunk_dropped = _fill_chunk(
+        body, chunk_folded, chunk_dropped, chunk_skipped = _fill_chunk(
             prompt,
             model,
             call=call,
@@ -547,6 +553,7 @@ def fill(
         )
         folded += chunk_folded
         dropped += chunk_dropped
+        skipped += chunk_skipped
         # Scrub THIS chunk's reply before merging: scrubbing the final merged body would
         # run scrub_fabricated's tidy regexes over sections the model never touched.
         body = _scrub(body, batch["items"], running)
@@ -558,13 +565,24 @@ def fill(
     (d / "prompt.txt").write_text("\n\n=== NEXT CALL ===\n\n".join(prompts), encoding="utf-8")
     (d / "proposed.md").write_text(proposed_md, encoding="utf-8")
     (d / "proposal.json").write_text(
-        json.dumps({"folded": folded, "dropped": dropped}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"folded": folded, "dropped": dropped, "skipped": skipped},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     (d / "diff.txt").write_text(render_diff(current_md, proposed_md), encoding="utf-8")
-    return {"calls": len(chunks), "folded": len(folded), "dropped": len(dropped)}
+    return {
+        "calls": len(chunks),
+        "folded": len(folded),
+        "dropped": len(dropped),
+        "skipped": len(skipped),
+    }
 
 
+# Fallback note for an item the model reports as skipped without giving a reason — it
+# restates what 'skipped' means, and never invents a specific one (data-integrity.md).
 _SKIP_NOTE = "no new information — already covered on the page"
 
 # The markdown review shows these, and a divider carries no content, so a section holding only
@@ -689,7 +707,8 @@ class _Classification:
     linked: list  # items folded in with `](ig_link)` present on the applied body
     unverified: list  # items folded but whose link never landed — left Routed
     dropped: list  # (item, reason) dropped as off-topic
-    unmentioned: list  # items neither folded nor dropped — skipped as a duplicate
+    skipped: list  # (item, reason) the model states are already covered on the page
+    unmentioned: list  # items the model accounted for in NO list — left Routed, never marked
     unknown_folded: list  # source_ids folded but absent from this batch
     unknown_dropped: list  # source_ids dropped but absent from this batch
 
@@ -702,6 +721,7 @@ def _classify_items(items, proposal, proposed_md) -> _Classification:
     by_sid = {i["source_id"]: i for i in items if i.get("source_id")}
     folded = list(proposal.get("folded") or [])
     dropped_map = {d["source_id"]: d.get("reason") for d in proposal.get("dropped") or []}
+    skipped_map = {d["source_id"]: d.get("reason") for d in proposal.get("skipped") or []}
 
     linked, unverified, unknown_folded = [], [], []
     for sid in folded:
@@ -723,11 +743,21 @@ def _classify_items(items, proposal, proposed_md) -> _Classification:
             continue
         dropped.append((item, reason))
 
-    handled = set(folded) | set(dropped_map)
+    # A skipped id absent from the batch needs no separate bucket: it is the same
+    # "model named an id we did not send" error unknown_dropped already reports.
+    skipped = []
+    for sid, reason in skipped_map.items():
+        item = by_sid.get(sid)
+        if item is None:
+            unknown_dropped.append(sid)
+            continue
+        skipped.append((item, reason))
+
+    handled = set(folded) | set(dropped_map) | set(skipped_map)
     unmentioned = [item for sid, item in by_sid.items() if sid not in handled]
 
     return _Classification(
-        linked, unverified, dropped, unmentioned, unknown_folded, unknown_dropped
+        linked, unverified, dropped, skipped, unmentioned, unknown_folded, unknown_dropped
     )
 
 
@@ -738,7 +768,14 @@ def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
     A relation makes every future prepare skip the item, so a folded item is linked only when
     its link is on the applied body; otherwise it stays Routed for the next cycle."""
     c = _classify_items(items, proposal, proposed_md)
-    counts = {"folded": 0, "skipped": 0, "misrouted": 0, "unknown": 0, "unverified": 0}
+    counts = {
+        "folded": 0,
+        "skipped": 0,
+        "misrouted": 0,
+        "unknown": 0,
+        "unverified": 0,
+        "unaccounted": 0,
+    }
 
     # Log every unknown-id / unverified-id warning before any item write, right after
     # classification — a later linked/dropped write that raises must never lose them.
@@ -766,9 +803,18 @@ def _write_items(env, page_id, items, proposal, proposed_md, version) -> dict:
         write_misrouted(env, item["page_id"], reason, version)
         counts["misrouted"] += 1
 
-    for item in c.unmentioned:
-        write_distributed(env, item["page_id"], version, notes=_SKIP_NOTE)
+    for item, reason in c.skipped:
+        write_distributed(env, item["page_id"], version, notes=reason or _SKIP_NOTE)
         counts["skipped"] += 1
+
+    # An item in none of the three lists was never accounted for. Marking it Distributed
+    # would strand it: no relation, content not on the page, and never proposed again.
+    for item in c.unmentioned:
+        log.warning(
+            "distribute.apply: %s appears in no trailer list — left Routed for the next run",
+            item["source_id"],
+        )
+        counts["unaccounted"] += 1
     return counts
 
 
@@ -867,12 +913,13 @@ class ApplyPreview:
     alone — makes no Notion calls. Item tuples never fabricate a display value: `title` is
     `None` when the source item has none (data-integrity.md) and the CLI falls back to the
     source_id for display. `folded`/`unverified`/`unmentioned` carry `(source_id, title)`;
-    `dropped` carries `(source_id, title, reason)`."""
+    `dropped` and `skipped` carry `(source_id, title, reason)`."""
 
     sections: list
     folded: list
     unverified: list
     dropped: list
+    skipped: list
     unmentioned: list
     diff_text: str
 
@@ -910,6 +957,7 @@ def preview(env, *, target) -> ApplyPreview:
         folded=[(item["source_id"], item.get("title")) for item in c.linked],
         unverified=[(item["source_id"], item.get("title")) for item in c.unverified],
         dropped=[(item["source_id"], item.get("title"), reason) for item, reason in c.dropped],
+        skipped=[(item["source_id"], item.get("title"), reason) for item, reason in c.skipped],
         unmentioned=[(item["source_id"], item.get("title")) for item in c.unmentioned],
         diff_text=render_diff(staged.current_md, staged.proposed_md),
     )
@@ -920,8 +968,9 @@ def apply(env, *, target, version) -> dict:
     under the proposal — unless it already carries the proposal (a run that failed after its
     section writes), in which case only the item state is written.
 
-    Returns {"folded", "skipped", "misrouted", "unknown", "unverified"}: unverified counts
-    folded items left Routed because their link is not on the applied body."""
+    Returns {"folded", "skipped", "misrouted", "unknown", "unverified", "unaccounted"}:
+    unverified counts folded items left Routed because their link is not on the applied body;
+    unaccounted counts items the trailer named in no list, also left Routed."""
     staged = _load_staged(env, target)
     d = staged.dir
     batch, proposal = staged.batch, staged.proposal

@@ -1212,10 +1212,11 @@ class _FakeTemplatePath:
         return "TEMPLATE"
 
 
-def _empty_distribute_preview():
-    return types.SimpleNamespace(
-        sections=[], folded=[], unverified=[], dropped=[], unmentioned=[], diff_text=""
+def _empty_distribute_preview(**overrides):
+    fields = dict(
+        sections=[], folded=[], unverified=[], dropped=[], skipped=[], unmentioned=[], diff_text=""
     )
+    return types.SimpleNamespace(**{**fields, **overrides})
 
 
 def _default_rebuild_preview():
@@ -1433,7 +1434,7 @@ def test_distribute_apply_confirm_diff_then_apply_prints_diff_and_applies(
     _stub_distribute_apply(monkeypatch, calls)
     monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     review = types.SimpleNamespace(
-        sections=[], folded=[], unverified=[], dropped=[], unmentioned=[],
+        sections=[], folded=[], unverified=[], dropped=[], skipped=[], unmentioned=[],
         diff_text="THE-FULL-DIFF",
     )
     _run_distribute_cli(
@@ -1511,7 +1512,8 @@ def test_distribute_stage_prints_preview_summary_before_applying(monkeypatch, tm
                         lambda env, **kw: {"calls": 1, "folded": 2, "dropped": 0})
     review = types.SimpleNamespace(
         sections=[types.SimpleNamespace(heading="Workouts", action="replace", added=3, removed=1)],
-        folded=[], unverified=[], dropped=[], unmentioned=[("z", "Unmentioned")],
+        folded=[], unverified=[], dropped=[], skipped=[],
+        unmentioned=[("z", "Unmentioned")],
         diff_text="",
     )
     _run_distribute_cli(
@@ -1787,12 +1789,13 @@ def test_format_rebuild_preview_omits_heading_line_when_already_clear(capsys):
 # ---------------------------------------------------------------------------
 
 
-def _preview(*, sections=(), folded=(), unverified=(), dropped=(), unmentioned=()):
+def _preview(*, sections=(), folded=(), unverified=(), dropped=(), skipped=(), unmentioned=()):
     return types.SimpleNamespace(
         sections=list(sections),
         folded=list(folded),
         unverified=list(unverified),
         dropped=list(dropped),
+        skipped=list(skipped),
         unmentioned=list(unmentioned),
     )
 
@@ -1827,6 +1830,30 @@ def test_format_distribute_preview_falls_back_to_source_id_when_title_is_none(ca
     out = capsys.readouterr().out
     assert "src-id-123" in out
     assert "None" not in out
+
+
+def test_format_distribute_preview_warns_that_an_unaccounted_item_stays_routed(capsys):
+    preview = _preview(unmentioned=[("a", "Forgotten Title")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "accounted for in NO list" in out and "will stay Routed" in out
+    assert "Forgotten Title" in out
+
+
+def test_format_distribute_preview_prints_a_skipped_item_with_its_reason(capsys):
+    preview = _preview(skipped=[("a", "Skipped Title", "already covered above")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "skipped as already covered" in out
+    assert "Skipped Title — already covered above" in out
+
+
+def test_format_distribute_preview_skipped_without_reason_has_no_dash_or_none(capsys):
+    preview = _preview(skipped=[("a", "Skipped Title", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Skipped Title" in out
+    assert "Skipped Title —" not in out and "None" not in out
 
 
 def test_format_distribute_preview_with_no_sections_prints_no_changes_line(capsys):
