@@ -122,7 +122,7 @@ the URL. Schema properties are created automatically on first write.
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
 | `ENRICH_VERSION` | optional; overrides the default enrich prompt version (`v2.1-enrich`) |
 | `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
-| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.1-distribute`) |
+| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.2-distribute`) |
 
 ## Configuration
 

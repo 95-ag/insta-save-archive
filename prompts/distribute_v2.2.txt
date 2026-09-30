@@ -1,0 +1,66 @@
+You are folding saved Instagram items into ONE existing Notion knowledge page titled
+"{page_name}". Return the page sections you changed, as Markdown.
+
+THE PAGE'S EXISTING TOP-LEVEL SECTIONS:
+{sections}
+
+HEADING NUMBERING: {numbering}
+
+CURRENT PAGE CONTENT:
+{current}
+
+ITEMS TO FOLD IN — pre-grouped into buckets. Each is [source_id] «title» (url) + its summary:
+
+{buckets}
+
+RULES
+1. Return ONLY the top-level sections you actually changed. A section you did not change must
+   NOT appear in your output. Never rename an existing section heading — the heading text is
+   how your output is matched back onto the page.
+2. Top-level sections are few and broad, but NOT one. Aim for 3 to 6 `#` sections on the page in
+   total, counting existing ones. Reuse an existing `#` heading whenever an item fits under it.
+   - If the page has no sections yet, or few, and you are folding in many items, you MUST create
+     several `#` sections covering the distinct areas in the batch. Putting every item under a
+     single `#` heading is wrong, however many `##` topics sit inside it.
+   - If a group of items does not fit any section you have written, CREATE a section for it.
+     Never leave items out because there is nowhere to put them, and never report an item as
+     folded when its information is not actually in your output.
+   Every `##` topic should group several related items or ideas; do not create a topic heading
+   for a single tip. An item that is a single tip or a small addition becomes a bullet under the
+   closest existing topic. Prefer merging related new items into one topic over giving each its own.
+3. Markdown levels map to the page: `#` = top-level section, `##` = topic, `###` = a large or
+   unique sub-topic. Use `###` only where it earns its place. Never write a table of contents.
+4. MERGE an item into an existing entry when it covers the same thing, rather than appending a
+   near-duplicate. Reproduce the whole section you are changing, including the parts you kept.
+5. DROP any item that is not about this page's subject. Do not fold it in anywhere. Record it in
+   the dropped list with a short reason.
+6. An item whose information is already fully present adds nothing: leave the page as it is and
+   record it in the `skipped` list with the reason it is already covered. Do not list it as folded.
+7. Prefer bulleted lists for steps, cues and sequences over dense paragraphs. Bullets are FLAT —
+   never indent or nest a list item under another, because the page cannot hold nesting and an
+   indented bullet is flattened on the way in. Break a would-be sub-list into its own `##` topic
+   or fold the detail into the parent bullet's sentence.
+8. End every entry you add or change with its source link(s). Link text is the item's EXACT
+   TITLE, never the word "watch". Join multiple with ` · `. Do not write a "Sources:" label.
+   - REFERENCE (the summary already conveys it): `🔗 [exact title](url)`
+   - MUST-WATCH (a technique you must SEE performed): `🎬 **Watch:** [exact title](url)`
+   Judge must-watch per item from what the item is, not from whether it has a transcript.
+   If an item has no title, use its source_id as the link text. If an item has no url, cite it without a link.
+9. Do not invent facts, URLs, version numbers or tool names beyond what the summaries say.
+10. After the sections, output ONE fenced json block, and nothing after it:
+
+```json
+{"folded": ["source_id", "..."],
+ "dropped": [{"source_id": "...", "reason": "..."}],
+ "skipped": [{"source_id": "...", "reason": "..."}]}
+```
+
+`folded` lists every item whose information is now present in the page, including items merged
+into an existing entry. Listing an item as folded REQUIRES its source link (rule 8) to appear in
+your output — a reply that folds an item without its link is rejected.
+`dropped` is items that are not about this page's subject (rule 5). `skipped` is items already
+fully covered (rule 6).
+
+EVERY source_id given to you must appear in exactly ONE of the three lists — never in two, and
+never in none. An item you leave out of all three is treated as not yet handled and comes back
+in a later run.
