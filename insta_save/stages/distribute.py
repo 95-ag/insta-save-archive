@@ -525,7 +525,30 @@ def _check_reply(body, folded, dropped, skipped, links_by_id, read_only=()) -> N
         )
 
 
-def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id, read_only=()):
+_HREF_RE = re.compile(r"\]\((https?://[^)]+)\)")
+
+
+def _dropped_links(running_md, body) -> list:
+    """Source links the reply removed from a section that already had them.
+
+    fill chains chunks: each reply is merged into the running body, so a later chunk that
+    rewrites a section an earlier chunk created replaces it wholesale. Per-chunk validation
+    cannot see that — the link was in the EARLIER chunk's body — so the loss only surfaced at
+    apply, where the items were left Routed and had to be paid for again (2 of 17 on one live
+    page, 1 of 47 on another). Sections the reply does not return are untouched and ignored."""
+    current = dict(split_sections(running_md))
+    missing = []
+    for heading, proposed in split_sections(body):
+        before = current.get(heading)
+        if before is None:
+            continue
+        missing += [
+            href for href in _HREF_RE.findall(before) if href not in set(_HREF_RE.findall(proposed))
+        ]
+    return missing
+
+
+def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id, read_only=(), running_md=""):
     """One consolidation call, parsed and validated. Retries transient failures AND a
     malformed or wrong-shaped proposal (claude-p is non-deterministic and usually succeeds
     on retry). A terminal error — auth expiry, usage limit — raises immediately; retrying
@@ -535,6 +558,13 @@ def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id, read_only=())
         try:
             body, folded, dropped, skipped = parse_proposal(call(prompt, model))
             _check_reply(body, folded, dropped, skipped, links_by_id, read_only)
+            lost = _dropped_links(running_md, body)
+            if lost:
+                raise ValueError(
+                    f"distribute reply: rewriting a section dropped source link(s) "
+                    f"{sorted(set(lost))} that were already on it — reproduce the whole section, "
+                    f"including the entries you are keeping"
+                )
             return body, folded, dropped, skipped
         except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
             if is_terminal_error(exc):
@@ -631,6 +661,7 @@ def fill(
             label=f"{target} call {index}/{len(chunks)}",
             links_by_id=links_by_id,
             read_only=read_only,
+            running_md=running,
         )
         folded += chunk_folded
         dropped += chunk_dropped

@@ -2578,3 +2578,48 @@ def test_prompt_tells_the_model_to_add_a_new_section_instead():
 
     text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "Fold those items into a NEW `#` section instead." in text
+
+
+def test_dropped_links_reports_a_link_a_rewrite_removed():
+    running = "# S\n- one\n🔗 [t-a](https://ig/a)\n- two\n🔗 [t-b](https://ig/b)"
+    body = "# S\n- one\n🔗 [t-a](https://ig/a)\n- rewritten"
+    assert dist._dropped_links(running, body) == ["https://ig/b"]
+
+
+def test_dropped_links_is_empty_when_a_rewrite_keeps_every_link():
+    running = "# S\n- one\n🔗 [t-a](https://ig/a)"
+    body = "# S\n- one\n🔗 [t-a](https://ig/a)\n- added\n🔗 [t-b](https://ig/b)"
+    assert dist._dropped_links(running, body) == []
+
+
+def test_dropped_links_ignores_a_section_the_reply_does_not_touch():
+    running = "# S\n🔗 [t-a](https://ig/a)\n# Other\n🔗 [t-b](https://ig/b)"
+    body = "# S\n🔗 [t-a](https://ig/a)"
+    assert dist._dropped_links(running, body) == []
+
+
+def test_fill_retries_a_later_chunk_that_drops_an_earlier_chunk_s_links(tmp_path, monkeypatch):
+    """Chunk 2 rewriting a section chunk 1 created used to pass per-chunk validation and lose
+    the links in the merge — 2 of 17 items on AI/ML Engg, 1 of 47 on Claude Code."""
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["mobility-posture"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+            # drops a's link while rewriting the section chunk 1 created
+            '# W\n- b only\n🔗 [t-b](https://ig/b)\n\n```json\n{"folded": ["b"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n- b\n🔗 [t-b](https://ig/b)\n\n```json\n{"folded": ["b"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    budgets = types.SimpleNamespace(max_items=1, char_budget=10000)
+    dist.fill(env, target="Page A", routes=ROUTES, vocab=_Vocab(), budgets=budgets,
+              model="m", template=TEMPLATE, call=_call, sleep=lambda s: None)
+    proposed = (d / "proposed.md").read_text()
+    assert len(calls) == 3
+    assert "https://ig/a" in proposed and "https://ig/b" in proposed
