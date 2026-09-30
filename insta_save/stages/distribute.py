@@ -383,11 +383,20 @@ _RETRY_BACKOFF_S = 2.0
 
 def _numbering_hint(current_md) -> str:
     """Mirror the page's own heading convention. Some knowledge pages number their headings
-    (`1 Foundations`, `2.3 …`) and some do not; a mismatch reads as a different author."""
+    (`1 Foundations`, `2.3 …`) and some do not; a mismatch reads as a different author. On a
+    numbered page, name the NEXT number: an appended section has no neighbour to copy from."""
+    numbers = []
     for heading, _ in split_sections(current_md):
         if heading and heading[0].isdigit():
-            return "this page numbers its headings — mirror the same scheme"
-    return "this page does not number its headings — do not add numbers"
+            leading = heading.split()[0].split(".")[0]
+            if leading.isdigit():
+                numbers.append(int(leading))
+    if not numbers:
+        return "this page does not number its headings — do not add numbers"
+    return (
+        f"this page numbers its headings — mirror the same scheme; "
+        f"the next top-level number is {max(numbers) + 1}"
+    )
 
 
 def _is_empty_page(current_md) -> bool:
@@ -396,9 +405,18 @@ def _is_empty_page(current_md) -> bool:
     return not any(heading or body for heading, body in split_sections(current_md))
 
 
-def _section_list(current_md) -> str:
-    headings = [h for h, _ in split_sections(current_md) if h]
-    return "\n".join(f"- {h}" for h in headings) or "(none — this page has no sections yet)"
+def _section_list(current_md, read_only=()) -> str:
+    """The page's section headings for the prompt. A read-only heading is marked inline: the
+    model has to be told which sections it must not return, since nothing in the markdown it
+    is shown reveals that those sections hold blocks the write cannot reproduce."""
+    marked = set(read_only)
+    lines = []
+    for heading, _ in split_sections(current_md):
+        if not heading:
+            continue
+        suffix = "  [READ-ONLY — hand-made; never return this section]" if heading in marked else ""
+        lines.append(f"- {heading}{suffix}")
+    return "\n".join(lines) or "(none — this page has no sections yet)"
 
 
 def _render_buckets(buckets) -> str:
@@ -421,19 +439,19 @@ def _render_buckets(buckets) -> str:
     return "\n".join(lines)
 
 
-def render_prompt(template, *, target, current_md, buckets) -> str:
+def render_prompt(template, *, target, current_md, buckets, read_only=()) -> str:
     """Substitute with str.replace, never str.format — the template contains literal JSON braces."""
     current = "(empty — this page has no content yet)" if _is_empty_page(current_md) else current_md
     return (
         template.replace("{page_name}", target)
         .replace("{numbering}", _numbering_hint(current_md))
-        .replace("{sections}", _section_list(current_md))
+        .replace("{sections}", _section_list(current_md, read_only))
         .replace("{current}", current)
         .replace("{buckets}", _render_buckets(buckets))
     )
 
 
-def _check_reply(body, folded, dropped, skipped, links_by_id) -> None:
+def _check_reply(body, folded, dropped, skipped, links_by_id, read_only=()) -> None:
     """Validate a parsed proposal against the chunk it was generated for. Raises ValueError
     (never a terminal-error marker word — see _TERMINAL_ERROR_MARKERS) from inside
     _fill_chunk's retried region, so a bad reply is retried rather than propagated: folded/
@@ -446,7 +464,9 @@ def _check_reply(body, folded, dropped, skipped, links_by_id) -> None:
     folded in) must fail loud instead of vanishing.
 
     `links_by_id` maps every id in the chunk to its ig_link (None when it has none), so a
-    claim of folding can be checked against the body rather than trusted."""
+    claim of folding can be checked against the body rather than trusted. `read_only` names the
+    page's hand-made sections: returning one is caught here so the model retries, rather than at
+    apply, where _refuse_unshowable would abort a run the reviewer had already confirmed."""
     dropped_ids = [entry["source_id"] for entry in dropped]
     skipped_ids = [entry["source_id"] for entry in skipped]
 
@@ -476,6 +496,13 @@ def _check_reply(body, folded, dropped, skipped, links_by_id) -> None:
     if len(headings) != len(set(headings)):
         raise ValueError("distribute reply: repeated section heading in the reply")
 
+    rewritten = [heading for heading in headings if heading in set(read_only)]
+    if rewritten:
+        raise ValueError(
+            f"distribute reply: section(s) {sorted(rewritten)} are read-only — they hold blocks "
+            f"the page write cannot reproduce; add a new section instead of returning them"
+        )
+
     if folded:
         lines = body.splitlines()
         first_heading = next(i for i, line in enumerate(lines) if line.startswith("# "))
@@ -498,7 +525,7 @@ def _check_reply(body, folded, dropped, skipped, links_by_id) -> None:
         )
 
 
-def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id):
+def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id, read_only=()):
     """One consolidation call, parsed and validated. Retries transient failures AND a
     malformed or wrong-shaped proposal (claude-p is non-deterministic and usually succeeds
     on retry). A terminal error — auth expiry, usage limit — raises immediately; retrying
@@ -507,7 +534,7 @@ def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id):
     for attempt in range(1, _FILL_ATTEMPTS + 1):
         try:
             body, folded, dropped, skipped = parse_proposal(call(prompt, model))
-            _check_reply(body, folded, dropped, skipped, links_by_id)
+            _check_reply(body, folded, dropped, skipped, links_by_id, read_only)
             return body, folded, dropped, skipped
         except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
             if is_terminal_error(exc):
@@ -571,6 +598,9 @@ def fill(
     d = staging_dir(env, target)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     current_md = (d / "current.md").read_text(encoding="utf-8")
+    # Fixed for the whole run: it describes the ORIGINAL page, so a section the model itself
+    # adds in one chunk stays revisable by the next.
+    read_only = batch.get("read_only_sections") or []
 
     buckets = bucket_items(
         batch["items"],
@@ -589,7 +619,9 @@ def fill(
             for item in bucket.items
             if item.get("source_id") is not None
         }
-        prompt = render_prompt(template, target=target, current_md=running, buckets=chunk)
+        prompt = render_prompt(
+            template, target=target, current_md=running, buckets=chunk, read_only=read_only
+        )
         prompts.append(prompt)
         body, chunk_folded, chunk_dropped, chunk_skipped = _fill_chunk(
             prompt,
@@ -598,6 +630,7 @@ def fill(
             sleep=sleep,
             label=f"{target} call {index}/{len(chunks)}",
             links_by_id=links_by_id,
+            read_only=read_only,
         )
         folded += chunk_folded
         dropped += chunk_dropped

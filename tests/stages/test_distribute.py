@@ -418,11 +418,19 @@ TEMPLATE = (
 )
 
 
-def _fill_env(tmp_path, monkeypatch, items, current_md):
+def _fill_env(tmp_path, monkeypatch, items, current_md, read_only=()):
     env = _env(tmp_path)
     d = dist.staging_dir(env, "Page A")
     (d / "batch.json").write_text(
-        json.dumps({"target": "Page A", "page_id": "kp", "items": items}), encoding="utf-8"
+        json.dumps(
+            {
+                "target": "Page A",
+                "page_id": "kp",
+                "items": items,
+                "read_only_sections": list(read_only),
+            }
+        ),
+        encoding="utf-8",
     )
     (d / "current.md").write_text(current_md, encoding="utf-8")
     return env, d
@@ -2507,3 +2515,51 @@ def test_prepare_records_read_only_sections_in_the_batch(tmp_path, monkeypatch):
     )
     batch = json.loads((dist.staging_dir(env, "Page A") / "batch.json").read_text())
     assert batch["read_only_sections"] == ["Curated"]
+
+
+def test_section_list_marks_a_read_only_heading():
+    out = dist._section_list("# Curated\n- a\n# Plain\n- b", read_only=["Curated"])
+    assert "- Curated  [READ-ONLY — hand-made; never return this section]" in out
+    assert "- Plain" in out and "Plain  [READ-ONLY" not in out
+
+
+def test_numbering_hint_names_the_next_number_on_a_numbered_page():
+    """Four of the six append-only pages number their headings, so an appended section needs
+    the next number or it reads as a different author."""
+    hint = dist._numbering_hint("# 1 Fonts\n- a\n# 2 Colour\n- b")
+    assert "mirror" in hint and "3" in hint
+
+
+def test_numbering_hint_still_says_not_to_number_an_unnumbered_page():
+    assert "do not add numbers" in dist._numbering_hint("# Fonts\n- a")
+
+
+def test_fill_retries_a_reply_that_rewrites_a_read_only_section(tmp_path, monkeypatch):
+    """Without this the run reaches the confirm prompt and only then dies at
+    _refuse_unshowable, after the reviewer has already read a diff that cannot be applied."""
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "# Curated\n- old", read_only=["Curated"])
+    replies = iter(
+        [
+            '# Curated\n- rewritten\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+            '# New\n- added\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert len(calls) == 2 and out["folded"] == 1
