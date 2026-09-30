@@ -121,6 +121,7 @@ def _patch_prepare_path(monkeypatch, prepare_return):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -151,6 +152,7 @@ def test_enrich_apply_calls_stage(monkeypatch):
     calls = {}
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -263,6 +265,7 @@ def test_enrich_vision_lane_rejects_non_vision_backend(monkeypatch):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     args = isa.build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--group", "G", "--lane", "vision"])
     with pytest.raises(SystemExit) as e:
@@ -278,6 +281,7 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
     env = types.SimpleNamespace(tmp_dir="tmp")
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -313,6 +317,7 @@ def test_enrich_automated_backend_stops_on_no_progress(monkeypatch, capsys):
     env = types.SimpleNamespace(tmp_dir="tmp")
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -345,6 +350,7 @@ def test_enrich_status_prints_remaining(monkeypatch, capsys):
     from insta_save.backends import cowork
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(cowork, "status", lambda env, cols, group: 7)
     args = isa.build_parser().parse_args(
@@ -990,6 +996,7 @@ def test_enrich_both_prepare_and_apply_raises(monkeypatch):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     args = isa.build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--apply", "--group", "Hustling"])
     with pytest.raises(SystemExit) as exc_info:
@@ -1853,3 +1860,35 @@ def test_route_reroute_dry_run_also_prints_the_decided_by_breakdown(monkeypatch,
     out = capsys.readouterr().out
     assert "(dry-run)" in out
     assert "decided by primary topic: 1" in out and "by rule order: 0" in out
+
+
+def test_enrich_ensure_schema_runs_before_the_drain(monkeypatch, tmp_path):
+    """enrich writes primary_topic, so ensure_schema must run before any page update — a DB
+    predating that property otherwise fails every batch with a ValidationError."""
+    order = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir=str(tmp_path)))
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: order.append("schema"))
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+
+    monkeypatch.setattr(
+        base,
+        "get_backend",
+        lambda name: types.SimpleNamespace(
+            NAME="local",
+            AUTOMATED=True,
+            VISION_CAPABLE=False,
+            batch_budgets=lambda run_cfg: types.SimpleNamespace(
+                max_items=15, char_budget=80000, image_token_budget=None
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "insta_save.stages.enrich.drain_enrich_group",
+        lambda *a, **kw: order.append("drain") or {"lanes": {"text": {"stop_reason": "drained"}}},
+    )
+    isa.main(["run", "--stage", "enrich", "--group", "Hustle", "--lane", "text"])
+    assert order == ["schema", "drain"]

@@ -256,6 +256,9 @@ def dispatch_run(args) -> None:
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
         env = _guard(_load_env)
         run_cfg = _guard(_load_run)
+        # enrich writes primary_topic, so it needs the same schema guarantee as every other
+        # write stage — without it a DB predating the property fails the whole page update.
+        ensure_schema(env)
         backend = base.get_backend(run_cfg.enrich.backend)
         budgets = backend.batch_budgets(run_cfg)
 
