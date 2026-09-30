@@ -431,7 +431,7 @@ def _fill_env(tmp_path, monkeypatch, items, current_md):
 def test_fill_stages_the_proposal_and_diff(tmp_path, monkeypatch):
     items = [_item("a", ["fitness-workouts"])]
     env, d = _fill_env(tmp_path, monkeypatch, items, "# Workouts\n- old")
-    reply = '# Workouts\n- new\n\n```json\n{"folded": ["a"]}\n```'
+    reply = '# Workouts\n- new\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```'
     out = dist.fill(
         env,
         target="Page A",
@@ -443,7 +443,7 @@ def test_fill_stages_the_proposal_and_diff(tmp_path, monkeypatch):
         call=lambda prompt, model: reply,
     )
     assert out == {"calls": 1, "folded": 1, "dropped": 0, "skipped": 0}
-    assert (d / "proposed.md").read_text() == "# Workouts\n- new"
+    assert (d / "proposed.md").read_text() == "# Workouts\n- new\n🔗 [t-a](https://ig/a)"
     assert json.loads((d / "proposal.json").read_text())["folded"] == ["a"]
     assert "+- new" in (d / "diff.txt").read_text()
 
@@ -453,8 +453,8 @@ def test_fill_chains_over_budget_calls_on_the_merged_body(tmp_path, monkeypatch)
     env, d = _fill_env(tmp_path, monkeypatch, items, "")
     seen = []
     replies = [
-        '# Workouts\n- a\n\n```json\n{"folded": ["a"]}\n```',
-        '# Mobility\n- b\n\n```json\n{"folded": ["b"]}\n```',
+        '# Workouts\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+        '# Mobility\n- b\n🔗 [t-b](https://ig/b)\n\n```json\n{"folded": ["b"]}\n```',
     ]
 
     def _call(prompt, model):
@@ -474,13 +474,20 @@ def test_fill_chains_over_budget_calls_on_the_merged_body(tmp_path, monkeypatch)
     )
     assert out["calls"] == 2
     assert "- a" in seen[1]  # the second call sees the first call's merged body
-    assert (d / "proposed.md").read_text() == "# Workouts\n- a\n# Mobility\n- b"
+    assert (d / "proposed.md").read_text() == (
+        "# Workouts\n- a\n🔗 [t-a](https://ig/a)\n# Mobility\n- b\n🔗 [t-b](https://ig/b)"
+    )
 
 
 def test_fill_retries_a_malformed_proposal(tmp_path, monkeypatch):
     items = [_item("a", ["fitness-workouts"])]
     env, _ = _fill_env(tmp_path, monkeypatch, items, "")
-    replies = iter(["no trailer here", '# W\n- a\n\n```json\n{"folded": ["a"]}\n```'])
+    replies = iter(
+        [
+            "no trailer here",
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
     out = dist.fill(
         env,
         target="Page A",
@@ -519,7 +526,10 @@ def test_fill_stops_immediately_on_a_terminal_backend_error(tmp_path, monkeypatc
 def test_fill_scrubs_a_fabricated_url(tmp_path, monkeypatch):
     items = [_item("a", ["fitness-workouts"])]
     env, d = _fill_env(tmp_path, monkeypatch, items, "")
-    reply = '# W\n- see https://invented.example.com now\n\n```json\n{"folded": ["a"]}\n```'
+    reply = (
+        "# W\n- see https://invented.example.com now\n🔗 [t-a](https://ig/a)"
+        '\n\n```json\n{"folded": ["a"]}\n```'
+    )
     dist.fill(
         env,
         target="Page A",
@@ -619,7 +629,7 @@ def test_fill_leaves_an_untouched_section_byte_identical(tmp_path, monkeypatch):
     items = [_item("a", ["fitness-workouts"])]
     current_md = "# Workouts\n- old\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
     env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
-    reply = '# Workouts\n- new\n\n```json\n{"folded": ["a"]}\n```'
+    reply = '# Workouts\n- new\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```'
     dist.fill(
         env,
         target="Page A",
@@ -640,7 +650,8 @@ def test_fill_leaves_an_echoed_untouched_section_byte_identical(tmp_path, monkey
     current_md = "# Workouts\n- old\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
     env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
     reply = (
-        "# Workouts\n- new\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
+        "# Workouts\n- new\n🔗 [t-a](https://ig/a)"
+        "\n# Other\n- call useEffect() on mount\n- ratio 3 : 1"
         '\n\n```json\n{"folded": ["a"]}\n```'
     )
     dist.fill(
@@ -666,7 +677,7 @@ def test_fill_scrub_leaves_unrelated_lines_in_the_same_section_byte_identical(
     env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
     reply = (
         "# Main\n- call useEffect() on mount\n- ratio 3 : 1"
-        "\n- see https://invented.example.com now"
+        "\n- see https://invented.example.com now\n🔗 [t-a](https://ig/a)"
         '\n\n```json\n{"folded": ["a"]}\n```'
     )
     dist.fill(
@@ -692,7 +703,7 @@ def test_fill_scrub_leaves_an_untouched_section_byte_identical_despite_a_scrub_e
     current_md = "# Main\n- a\n# Other\n- keep() this"
     env, d = _fill_env(tmp_path, monkeypatch, items, current_md)
     reply = (
-        "# Main\n- a\n- see https://invented.example.com now"
+        "# Main\n- a\n- see https://invented.example.com now\n🔗 [t-a](https://ig/a)"
         "\n# Other\n- keep() this"
         '\n\n```json\n{"folded": ["a"]}\n```'
     )
@@ -717,7 +728,7 @@ def test_fill_retries_a_reply_with_an_unknown_folded_id(tmp_path, monkeypatch):
     replies = iter(
         [
             '# W\n- a\n\n```json\n{"folded": ["zzz"]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -741,13 +752,73 @@ def test_fill_retries_a_reply_with_an_unknown_folded_id(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+
+def test_fill_retries_a_reply_that_folds_an_item_without_its_link(tmp_path, monkeypatch):
+    """A claim of folding is worth only as much as the link that proves it. Seen live: the
+    trailer listed 28 of 29 items folded while 6 of their links were absent, so that content
+    never reached the page and nothing failed."""
+    items = [_item("a", ["fitness-workouts"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+        ]
+    )
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return next(replies)
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert len(calls) == 2 and out["folded"] == 1
+    assert "🔗 [t-a](https://ig/a)" in (d / "proposed.md").read_text()
+
+
+def test_fill_accepts_a_folded_item_that_has_no_link_to_cite(tmp_path, monkeypatch):
+    """Prompt rule 8 allows citing an item with no url, so a linkless item cannot be held to
+    a link check — it must not send an otherwise-valid reply into a retry loop."""
+    item = _item("a", ["fitness-workouts"])
+    item["ig_link"] = None
+    env, _ = _fill_env(tmp_path, monkeypatch, [item], "")
+    calls = []
+
+    def _call(p, m):
+        calls.append(1)
+        return '# W\n- a\n\n```json\n{"folded": ["a"]}\n```'
+
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=_Budgets(),
+        model="m",
+        template=TEMPLATE,
+        call=_call,
+        sleep=lambda s: None,
+    )
+    assert len(calls) == 1 and out["folded"] == 1
+
+
 def test_fill_retries_a_reply_with_a_duplicate_folded_id(tmp_path, monkeypatch):
     items = [_item("a", ["fitness-workouts"])]
     env, _ = _fill_env(tmp_path, monkeypatch, items, "")
     replies = iter(
         [
             '# W\n- a\n\n```json\n{"folded": ["a", "a"]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -777,7 +848,7 @@ def test_fill_retries_a_reply_with_an_unknown_dropped_id(tmp_path, monkeypatch):
     replies = iter(
         [
             '# W\n- a\n\n```json\n{"dropped": [{"source_id": "zzz", "reason": "x"}]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -808,7 +879,7 @@ def test_fill_retries_a_reply_with_a_duplicate_dropped_id(tmp_path, monkeypatch)
         [
             '# W\n- a\n\n```json\n{"dropped": ['
             '{"source_id": "a", "reason": "x"}, {"source_id": "a", "reason": "y"}]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -839,7 +910,7 @@ def test_fill_retries_a_reply_with_an_id_both_folded_and_dropped(tmp_path, monke
         [
             '# W\n- a\n\n```json\n{"folded": ["a"], '
             '"dropped": [{"source_id": "a", "reason": "x"}]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -869,7 +940,7 @@ def test_fill_retries_a_reply_with_folded_items_but_no_section(tmp_path, monkeyp
     replies = iter(
         [
             'no heading here\n\n```json\n{"folded": ["a"]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -899,7 +970,7 @@ def test_fill_retries_a_reply_with_a_repeated_heading(tmp_path, monkeypatch):
     replies = iter(
         [
             '# W\n- a\n# W\n- b\n\n```json\n{"folded": ["a"]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -929,7 +1000,7 @@ def test_fill_retries_a_reply_with_content_lost_before_the_first_heading(tmp_pat
     replies = iter(
         [
             '## topic\n- stuff\n# X\n- y\n\n```json\n{"folded": ["a"]}\n```',
-            '# X\n- y\n\n```json\n{"folded": ["a"]}\n```',
+            '# X\n- y\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []
@@ -959,7 +1030,7 @@ def test_fill_retries_a_reply_with_an_empty_heading(tmp_path, monkeypatch):
     replies = iter(
         [
             '# \n- stray\n\n```json\n{"folded": ["a"]}\n```',
-            '# W\n- a\n\n```json\n{"folded": ["a"]}\n```',
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
         ]
     )
     calls = []

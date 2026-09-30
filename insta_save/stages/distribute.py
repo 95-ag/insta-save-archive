@@ -403,7 +403,7 @@ def render_prompt(template, *, target, current_md, buckets) -> str:
     )
 
 
-def _check_reply(body, folded, dropped, skipped, known_ids) -> None:
+def _check_reply(body, folded, dropped, skipped, links_by_id) -> None:
     """Validate a parsed proposal against the chunk it was generated for. Raises ValueError
     (never a terminal-error marker word — see _TERMINAL_ERROR_MARKERS) from inside
     _fill_chunk's retried region, so a bad reply is retried rather than propagated: folded/
@@ -413,12 +413,15 @@ def _check_reply(body, folded, dropped, skipped, known_ids) -> None:
     Also rejects a reply shape that would silently lose content: split_sections drops
     everything before the first heading, so an empty heading (content with no name to join
     on) or unclaimed text ahead of the first heading (when folded ids say something WAS
-    folded in) must fail loud instead of vanishing."""
+    folded in) must fail loud instead of vanishing.
+
+    `links_by_id` maps every id in the chunk to its ig_link (None when it has none), so a
+    claim of folding can be checked against the body rather than trusted."""
     dropped_ids = [entry["source_id"] for entry in dropped]
     skipped_ids = [entry["source_id"] for entry in skipped]
 
     for source_id in folded + dropped_ids + skipped_ids:
-        if source_id not in known_ids:
+        if source_id not in links_by_id:
             raise ValueError(f"distribute reply: id {source_id!r} is not in this batch")
 
     seen = {}
@@ -449,8 +452,23 @@ def _check_reply(body, folded, dropped, skipped, known_ids) -> None:
         if "\n".join(lines[:first_heading]).strip():
             raise ValueError("distribute reply: content before the first heading would be dropped")
 
+    # A claim of folding is only worth as much as the link that proves it. Without this the
+    # model can list an id it never wrote about: apply then leaves the item Routed, but the
+    # content is silently absent from the page (seen live — 6 of 29 items on a real page).
+    # An item with no ig_link is exempt: rule 8 lets the model cite it without a link.
+    missing = [
+        source_id
+        for source_id in folded
+        if links_by_id.get(source_id) and f"]({links_by_id[source_id]})" not in body
+    ]
+    if missing:
+        raise ValueError(
+            f"distribute reply: folded id(s) {sorted(missing)} have no source link in the "
+            f"body — every folded item must end its entry with its own link"
+        )
 
-def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
+
+def _fill_chunk(prompt, model, *, call, sleep, label, links_by_id):
     """One consolidation call, parsed and validated. Retries transient failures AND a
     malformed or wrong-shaped proposal (claude-p is non-deterministic and usually succeeds
     on retry). A terminal error — auth expiry, usage limit — raises immediately; retrying
@@ -459,7 +477,7 @@ def _fill_chunk(prompt, model, *, call, sleep, label, known_ids):
     for attempt in range(1, _FILL_ATTEMPTS + 1):
         try:
             body, folded, dropped, skipped = parse_proposal(call(prompt, model))
-            _check_reply(body, folded, dropped, skipped, known_ids)
+            _check_reply(body, folded, dropped, skipped, links_by_id)
             return body, folded, dropped, skipped
         except Exception as exc:  # noqa: BLE001 — classify, then retry or stop
             if is_terminal_error(exc):
@@ -535,8 +553,8 @@ def fill(
 
     running, folded, dropped, skipped, prompts = current_md, [], [], [], []
     for index, chunk in enumerate(chunks, start=1):
-        known_ids = {
-            item.get("source_id")
+        links_by_id = {
+            item["source_id"]: item.get("ig_link")
             for bucket in chunk
             for item in bucket.items
             if item.get("source_id") is not None
@@ -549,7 +567,7 @@ def fill(
             call=call,
             sleep=sleep,
             label=f"{target} call {index}/{len(chunks)}",
-            known_ids=known_ids,
+            links_by_id=links_by_id,
         )
         folded += chunk_folded
         dropped += chunk_dropped
