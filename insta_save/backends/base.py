@@ -145,31 +145,75 @@ def normalize_results(parsed, batch_items) -> list[dict]:
     return kept
 
 
-def parse_results_jsonl(text: str) -> tuple[list[dict], list[str]]:
-    """Parse JSON-Lines model output (enrich v2.1): one result object per line.
+def _scan_json_depth(line: str, depth: int, in_string: bool, escaped: bool) -> tuple:
+    """Advance a brace/bracket depth scan across one line, ignoring delimiters inside
+    strings. Returns the state after the line: (depth, in_string, escaped)."""
+    for char in line:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+    return depth, in_string, escaped
 
-    Returns (items, bad_lines). A line that will not parse is COLLECTED, never raised —
+
+def parse_results_jsonl(text: str) -> tuple[list[dict], list[str]]:
+    """Parse JSON-Lines model output (enrich v2.1): one result object per reply line.
+
+    Returns (items, bad_chunks). A value that will not parse is COLLECTED, never raised —
     one unescaped quote must cost its own item only, not the whole batch. Blank lines and
-    stray ``` fence lines are ignored; a line holding a whole JSON array contributes its
-    objects (a model that ignored the line-delimited contract is still usable)."""
+    stray ``` fence lines between values are ignored; a value holding a whole JSON array
+    contributes its objects (a model that ignored the line-delimited contract is usable).
+
+    Physical lines are NOT trusted as value boundaries. A summary containing a literal
+    newline, or a pretty-printed object, spans several lines, and splitting on them cut the
+    value into an unterminated string plus a meaningless remainder — BOTH counted bad, so
+    one newline cost two failures and the item had to be retried (measured live: 27 bad
+    lines from a 15-item batch). Lines are instead accumulated until the brace/bracket depth
+    returns to zero outside a string, and that whole chunk is parsed."""
     items: list[dict] = []
-    bad_lines: list[str] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("```"):
-            continue
+    bad_chunks: list[str] = []
+    buffer: list[str] = []
+    depth, in_string, escaped = 0, False, False
+
+    def _flush(chunk: str) -> None:
         try:
-            value = json.loads(line, strict=False)  # tolerate raw control chars
+            value = json.loads(chunk, strict=False)  # tolerate raw control chars
         except json.JSONDecodeError:
-            bad_lines.append(raw)
-            continue
+            bad_chunks.append(chunk)
+            return
         if isinstance(value, dict):
             items.append(value)
         elif isinstance(value, list) and all(isinstance(v, dict) for v in value):
             items.extend(value)
         else:
-            bad_lines.append(raw)
-    return items, bad_lines
+            bad_chunks.append(chunk)
+
+    for raw in text.splitlines():
+        if not buffer:
+            stripped = raw.strip()
+            # Only skip furniture BETWEEN values; inside one, every line is content.
+            if not stripped or stripped.startswith("```"):
+                continue
+        buffer.append(raw)
+        depth, in_string, escaped = _scan_json_depth(raw, depth, in_string, escaped)
+        if depth <= 0 and not in_string:
+            # Rejoin with the newline that split them, which strict=False accepts inside
+            # a string and JSON ignores outside one.
+            _flush("\n".join(buffer))
+            buffer, depth, in_string, escaped = [], 0, False, False
+
+    if buffer:  # unterminated at end of reply — still report it rather than dropping it
+        _flush("\n".join(buffer))
+    return items, bad_chunks
 
 
 def parse_results(path) -> list[dict]:

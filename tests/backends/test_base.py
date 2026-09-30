@@ -218,3 +218,65 @@ def test_parse_results_reads_multiline_jsonl_file(tmp_path):
     p = tmp_path / "results.json"
     p.write_text('{"page_id": "p1"}\n{"page_id": "p2"}\n{"page_id": "p3"}\n', encoding="utf-8")
     assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2", "p3"]
+
+
+def test_parse_results_jsonl_reassembles_a_value_split_by_an_embedded_newline():
+    """The live failure: a summary containing a literal newline split the object into an
+    unterminated string plus a remainder, and BOTH counted bad — one newline cost two
+    failures and forced a retry of the item."""
+    text = '{"page_id": "p1", "summary": "first line\nsecond line"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == []
+    assert items == [{"page_id": "p1", "summary": "first line\nsecond line"}]
+
+
+def test_parse_results_jsonl_reassembles_a_pretty_printed_object():
+    text = '{\n  "page_id": "p1",\n  "summary": "s"\n}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and items == [{"page_id": "p1", "summary": "s"}]
+
+
+def test_parse_results_jsonl_keeps_multi_line_values_separate():
+    text = '{"page_id": "p1", "summary": "a\nb"}\n{"page_id": "p2", "summary": "c\nd"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == []
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_reassembles_a_multi_line_array():
+    text = '[\n  {"page_id": "p1"},\n  {"page_id": "p2"}\n]'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_does_not_let_a_brace_in_a_string_open_a_chunk():
+    text = '{"page_id": "p1", "summary": "use {braces} here"}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_does_not_let_an_escaped_quote_end_a_string():
+    text = '{"page_id": "p1", "summary": "he said \\"hi\\" loudly"}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_one_bad_value_does_not_swallow_the_next():
+    """A malformed value must cost only itself — the following good object still parses."""
+    text = '{"page_id": "p1", BROKEN}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p2"]
+    assert len(bad) == 1
+
+
+def test_parse_results_jsonl_reports_an_unterminated_value_at_the_end():
+    text = '{"page_id": "p1"}\n{"page_id": "p2", "summary": "never closed'
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1"]
+    assert len(bad) == 1 and "never closed" in bad[0]
+
+
+def test_parse_results_jsonl_ignores_a_fence_between_values_not_inside_one():
+    text = '```json\n{"page_id": "p1", "summary": "a\nb"}\n```\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
