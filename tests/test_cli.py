@@ -1255,7 +1255,7 @@ def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=No
     and `rebuild` override the default stubs for the `--rebuild` path (a preview with one item
     and one block to delete, and matching counts) — only reached with `--rebuild`."""
     monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
-        tmp_dir=str(tmp_path), distribute_version="v2.2-distribute"))
+        tmp_dir=str(tmp_path), distribute_version="v2.3-distribute"))
     monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
         distribute=types.SimpleNamespace(backend="claude-p", model="m")))
     monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
@@ -1312,7 +1312,7 @@ def test_distribute_fill_reads_the_v2_1_template(monkeypatch, tmp_path):
     monkeypatch.setattr("insta_save.stages.distribute.fill",
                         lambda env, **kw: {"calls": 1, "folded": 1, "dropped": 0})
     _run_distribute_cli(monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"])
-    assert "prompts/distribute_v2.2.txt" in _FakeTemplatePath.seen_paths
+    assert "prompts/distribute_v2.3.txt" in _FakeTemplatePath.seen_paths
 
 
 def test_distribute_apply_skips_prepare(monkeypatch, tmp_path, capsys):
@@ -1353,7 +1353,7 @@ def test_distribute_ensure_schema_runs_before_prepare(monkeypatch, tmp_path):
     (distribute_notes/distribute_version, Distributed/Misrouted) must exist first."""
     order = []
     monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
-        tmp_dir=str(tmp_path), distribute_version="v2.2-distribute"))
+        tmp_dir=str(tmp_path), distribute_version="v2.3-distribute"))
     monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
         distribute=types.SimpleNamespace(backend="claude-p", model="m")))
     monkeypatch.setattr(isa, "ensure_schema", lambda env: order.append("schema"))

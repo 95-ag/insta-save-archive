@@ -626,14 +626,14 @@ def test_render_diff_has_no_flattening_note_for_flat_markdown():
 def test_prompt_rule_7_covers_only_added_or_changed_entries():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "every entry you add or change" in text
 
 
 def test_prompt_rule_7_explains_a_missing_title_or_url():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "use its source_id as the link text" in text
     assert "cite it without a link" in text
 
@@ -641,7 +641,7 @@ def test_prompt_rule_7_explains_a_missing_title_or_url():
 def test_prompt_guides_toward_few_broad_sections():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "few and broad" in text
     assert "single tip" in text
 
@@ -650,7 +650,7 @@ def test_prompt_sets_a_section_floor_not_only_a_ceiling():
     """A live run put 29 items under ONE heading while obeying the old "few and broad" rule."""
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "but NOT one" in text
     assert "single `#` heading is wrong" in text
 
@@ -658,7 +658,7 @@ def test_prompt_sets_a_section_floor_not_only_a_ceiling():
 def test_prompt_tells_the_model_to_create_a_section_rather_than_claim_a_fold():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "CREATE a section for it" in text
     assert "never report an item as" in text
 
@@ -666,14 +666,14 @@ def test_prompt_tells_the_model_to_create_a_section_rather_than_claim_a_fold():
 def test_prompt_requires_flat_bullets():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert "Bullets are FLAT" in text
 
 
 def test_prompt_requires_every_id_in_exactly_one_trailer_list():
     from pathlib import Path
 
-    text = Path("prompts/distribute_v2.2.txt").read_text(encoding="utf-8")
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
     assert '"skipped"' in text
     assert "exactly ONE of the three lists" in text
 
@@ -2563,3 +2563,18 @@ def test_fill_retries_a_reply_that_rewrites_a_read_only_section(tmp_path, monkey
         sleep=lambda s: None,
     )
     assert len(calls) == 2 and out["folded"] == 1
+
+
+def test_prompt_forbids_returning_a_read_only_section():
+    from pathlib import Path
+
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
+    assert "READ-ONLY" in text
+    assert "never return that section" in text
+
+
+def test_prompt_tells_the_model_to_add_a_new_section_instead():
+    from pathlib import Path
+
+    text = Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8")
+    assert "Fold those items into a NEW `#` section instead." in text

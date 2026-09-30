@@ -75,4 +75,4 @@ def test_load_env_reads_knowledge_database_id(monkeypatch):
 
 def test_load_env_distribute_version_defaults(monkeypatch):
     _set(monkeypatch)
-    assert envcfg.load_env().distribute_version == "v2.2-distribute"
+    assert envcfg.load_env().distribute_version == "v2.3-distribute"
