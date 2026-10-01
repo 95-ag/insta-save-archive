@@ -138,7 +138,7 @@ def chunk_buckets(buckets, *, max_items, char_budget) -> list:
     return chunks
 
 
-_FENCE_RE = re.compile(r"```\s*json\s*\n(.*?)\n```", re.S)
+_FENCE_RE = re.compile(r"```\s*json\s*\n(.*?)\n```", re.S | re.I)
 
 
 def _id_reason_list(raw, field) -> list:
@@ -605,8 +605,13 @@ def _scrub(body_md, items, current_md) -> str:
     for line in body_md.splitlines():
         cleaned, removed = scrub_fabricated(line, source)
         if removed:
-            cleaned_lines.append(cleaned.rstrip())
             removed_all += removed
+            # A line that was only a fabricated URL scrubs down to a bare bullet, which would be
+            # written to the page as debris. Drop a scrubbed line with no word characters left.
+            # (A line still holding a dangling `[label]` whose target was removed survives — the
+            # wrapper is scrub_fabricated's to strip, which is shared with enrich. See tasks.md.)
+            if re.search(r"\w", cleaned):
+                cleaned_lines.append(cleaned.rstrip())
         else:
             cleaned_lines.append(line)
     if not removed_all:

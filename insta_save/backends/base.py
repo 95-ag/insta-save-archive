@@ -79,30 +79,6 @@ class Backend(Protocol):
     def fill(self, env, run_cfg, enrich_dir) -> FillResult: ...
 
 
-def parse_results_array(text: str) -> list:
-    """Strip a leading/trailing ```json fence if present, then json.loads.
-    Raise ValueError if the result is not a list."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-    try:
-        data = json.loads(stripped, strict=False)  # tolerate raw control chars in model strings
-    except json.JSONDecodeError:
-        # model wrapped the array in prose — pull out the outermost [...]
-        start, end = stripped.find("["), stripped.rfind("]")
-        if start == -1 or end <= start:
-            raise ValueError(f"no JSON array found in model output: {stripped[:200]!r}")
-        data = json.loads(stripped[start:end + 1], strict=False)
-    if not isinstance(data, list):
-        raise ValueError(f"expected a JSON array, got {type(data).__name__}")
-    return data
-
-
 def parse_results_object(text: str) -> dict:
     """Extract a single JSON object from model output, tolerating a ```json fence and/or
     surrounding prose (e.g. a `claude -p` reply that explains before/after the object).

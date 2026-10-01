@@ -506,6 +506,8 @@ def dispatch_run(args) -> None:
                                 write_delay=0 if args.dry_run else env.notion_write_delay)
         print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
+        # Suppressed when nothing routed: the breakdown would be all zeros. Pinned by
+        # test_route_summary_omits_the_decided_by_breakdown_when_nothing_routed.
         if r.get("routed", 0):
             print(_decided_by_line(r.get("decided_by", {})))
         return

@@ -2679,3 +2679,20 @@ def test_fill_still_raises_when_the_very_first_chunk_exhausts_its_retries(tmp_pa
             call=lambda p, m: "unparseable",
             sleep=lambda s: None,
         )
+
+
+def test_scrub_drops_a_line_left_with_no_words_after_removal():
+    """A line that was only a fabricated bare URL becomes `-` once scrubbed, and that bullet would
+    be written to the page. Drop the line rather than emit debris."""
+    body = "# S\n- real entry\n- https://invented.example.com/a\n- another real entry"
+    out = dist._scrub(body, [{"title": "t", "summary": "s", "ig_link": "https://ig/a"}], "")
+    assert "invented.example.com" not in out
+    assert [l for l in out.splitlines() if not l.strip(" -🔗")] == []
+    assert "- real entry" in out and "- another real entry" in out
+
+
+def test_scrub_keeps_a_line_that_still_has_words_after_removal():
+    body = "# S\n- use the tool at https://invented.example.com for this"
+    out = dist._scrub(body, [{"title": "t", "summary": "s", "ig_link": "https://ig/a"}], "")
+    assert "invented.example.com" not in out
+    assert "use the tool at" in out
