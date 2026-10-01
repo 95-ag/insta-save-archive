@@ -950,3 +950,72 @@ def test_drain_failed_note_names_the_missing_items_when_the_last_retry_also_rais
     assert "missing from the model reply" in notes[0]   # matches what's actually being marked
     assert "network hiccup" in notes[0]                 # the last attempt's own failure too
     assert result["written"] == 2 and result["failed"] == 1
+
+
+def _vision_env(monkeypatch, tmp_path, slide_paths):
+    """A one-item Carousel batch whose recorded slide paths are `slide_paths`."""
+    from insta_save.config.collections import CollectionsConfig
+
+    cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
+    stubs = [{"page_id": "k1", "type": "Carousel", "collections": ["c"]}]
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
+    monkeypatch.setattr(
+        enrich,
+        "get_page_content",
+        lambda env, pid: {
+            "page_id": pid,
+            "source_id": pid,
+            "type": "Carousel",
+            "author": "a",
+            "caption": "c",
+            "slide_images": list(slide_paths),
+            "transcript": None,
+            "ocr_text": "o",
+            "transcript_language": "en",
+        },
+    )
+
+    class _Env:
+        tmp_dir = str(tmp_path)
+
+    vocab_g = Vocab(
+        content_types=["tool"],
+        cross_group_topics=["ai"],
+        _group_topics={"G": ["seo"]},
+        definitions={"tool": "x", "ai": "y", "seo": "z"},
+    )
+    return _Env(), cfg, vocab_g
+
+
+def _run_vision_prepare(env, cfg, vocab_g):
+    return enrich.prepare(
+        env,
+        group="G",
+        collections_cfg=cfg,
+        vocab=vocab_g,
+        char_budget=10**9,
+        max_items=None,
+        statuses=["Extracted"],
+        prompt_template="H {vocab_block} E",
+        kinds={"Carousel", "Post"},
+        image_token_budget=10**9,
+    )
+
+
+def test_prepare_warns_when_a_vision_item_s_slide_images_are_missing(monkeypatch, tmp_path, caplog):
+    """Notion keeps the slide PATHS but tmp/slides is transient. After a cleanup the vision lane
+    silently degraded to caption+OCR — 59 items were tagged blind before anyone noticed."""
+    env, cfg, vocab_g = _vision_env(monkeypatch, tmp_path, ["/nope/slide1.jpg", "/nope/slide2.jpg"])
+    with caplog.at_level("WARNING"):
+        assert _run_vision_prepare(env, cfg, vocab_g) == 1  # still staged, never skipped
+    assert "slide image" in caplog.text
+    assert "1" in caplog.text
+
+
+def test_prepare_is_quiet_when_the_slide_images_are_present(monkeypatch, tmp_path, caplog):
+    slide = tmp_path / "slide1.jpg"
+    slide.write_bytes(b"x")
+    env, cfg, vocab_g = _vision_env(monkeypatch, tmp_path, [str(slide)])
+    with caplog.at_level("WARNING"):
+        assert _run_vision_prepare(env, cfg, vocab_g) == 1
+    assert "slide image" not in caplog.text
