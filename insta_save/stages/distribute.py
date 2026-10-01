@@ -642,6 +642,7 @@ def fill(
     chunks = chunk_buckets(buckets, max_items=budgets.max_items, char_budget=budgets.char_budget)
 
     running, folded, dropped, skipped, prompts = current_md, [], [], [], []
+    chunks_done = failed_chunks = 0
     for index, chunk in enumerate(chunks, start=1):
         links_by_id = {
             item["source_id"]: item.get("ig_link")
@@ -653,16 +654,35 @@ def fill(
             template, target=target, current_md=running, buckets=chunk, read_only=read_only
         )
         prompts.append(prompt)
-        body, chunk_folded, chunk_dropped, chunk_skipped = _fill_chunk(
-            prompt,
-            model,
-            call=call,
-            sleep=sleep,
-            label=f"{target} call {index}/{len(chunks)}",
-            links_by_id=links_by_id,
-            read_only=read_only,
-            running_md=running,
-        )
+        try:
+            body, chunk_folded, chunk_dropped, chunk_skipped = _fill_chunk(
+                prompt,
+                model,
+                call=call,
+                sleep=sleep,
+                label=f"{target} call {index}/{len(chunks)}",
+                links_by_id=links_by_id,
+                read_only=read_only,
+                running_md=running,
+            )
+        except RuntimeError as exc:
+            # A chunk that exhausts its retries used to abort the whole target, throwing away
+            # every earlier chunk's work — a 6-call page lost 5 good calls to its last one.
+            # Keep what succeeded: the failed chunk's items appear in no trailer list, so apply
+            # leaves them Routed and a later run picks them up. With nothing staged yet there is
+            # no partial result worth keeping, so the first chunk still fails loudly.
+            if not chunks_done:
+                raise
+            failed_chunks += 1
+            log.warning(
+                "distribute.fill: %s — keeping the %d chunk(s) that succeeded; its items stay "
+                "Routed for a later run: %s",
+                f"{target} call {index}/{len(chunks)}",
+                chunks_done,
+                exc,
+            )
+            continue
+        chunks_done += 1
         folded += chunk_folded
         dropped += chunk_dropped
         skipped += chunk_skipped
@@ -690,6 +710,7 @@ def fill(
         "folded": len(folded),
         "dropped": len(dropped),
         "skipped": len(skipped),
+        "failed_chunks": failed_chunks,
     }
 
 

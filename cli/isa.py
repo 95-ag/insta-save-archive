@@ -649,6 +649,12 @@ def dispatch_run(args) -> None:
                 template=Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8"))
             d = distribute.staging_dir(env, args.target)
             print(_format_distribute_preview(distribute.preview(env, target=args.target)))
+            if result.get("failed_chunks"):
+                print(
+                    f"  ⚠ {result['failed_chunks']} of {result['calls']} call(s) failed after "
+                    f"retries — their items are NOT in this proposal and stay Routed. "
+                    f"Re-run after applying to pick them up; see the log."
+                )
             print(f"Staged {n} items in {result['calls']} call(s) -> {_rel(d)}\n"
                   f"  Review {_rel(d / 'diff.txt')}, edit {_rel(d / 'proposed.md')} if needed, then:\n"
                   f"  isa run --stage distribute --target {args.target!r} --apply")

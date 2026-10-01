@@ -450,7 +450,13 @@ def test_fill_stages_the_proposal_and_diff(tmp_path, monkeypatch):
         template=TEMPLATE,
         call=lambda prompt, model: reply,
     )
-    assert out == {"calls": 1, "folded": 1, "dropped": 0, "skipped": 0}
+    assert out == {
+        "calls": 1,
+        "folded": 1,
+        "dropped": 0,
+        "skipped": 0,
+        "failed_chunks": 0,
+    }
     assert (d / "proposed.md").read_text() == "# Workouts\n- new\n🔗 [t-a](https://ig/a)"
     assert json.loads((d / "proposal.json").read_text())["folded"] == ["a"]
     assert "+- new" in (d / "diff.txt").read_text()
@@ -2623,3 +2629,53 @@ def test_fill_retries_a_later_chunk_that_drops_an_earlier_chunk_s_links(tmp_path
     proposed = (d / "proposed.md").read_text()
     assert len(calls) == 3
     assert "https://ig/a" in proposed and "https://ig/b" in proposed
+
+
+def test_fill_keeps_earlier_chunks_when_a_later_one_exhausts_its_retries(tmp_path, monkeypatch):
+    """A 6-call page lost all 5 good calls when call 6 exhausted its retries. The items the
+    failed chunk covered appear in no trailer list, so apply leaves them Routed for a later
+    run — nothing is lost and the successful calls are not thrown away."""
+    items = [_item("a", ["fitness-workouts"]), _item("b", ["mobility-posture"])]
+    env, d = _fill_env(tmp_path, monkeypatch, items, "")
+    replies = iter(
+        [
+            '# W\n- a\n🔗 [t-a](https://ig/a)\n\n```json\n{"folded": ["a"]}\n```',
+            "unparseable",
+            "unparseable",
+            "unparseable",
+        ]
+    )
+    out = dist.fill(
+        env,
+        target="Page A",
+        routes=ROUTES,
+        vocab=_Vocab(),
+        budgets=types.SimpleNamespace(max_items=1, char_budget=10000),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: next(replies),
+        sleep=lambda s: None,
+    )
+    assert out["calls"] == 2 and out["failed_chunks"] == 1
+    assert out["folded"] == 1
+    assert "https://ig/a" in (d / "proposed.md").read_text()
+    assert json.loads((d / "proposal.json").read_text())["folded"] == ["a"]
+
+
+def test_fill_still_raises_when_the_very_first_chunk_exhausts_its_retries(tmp_path, monkeypatch):
+    """With nothing staged there is no partial result worth keeping — fail loudly instead of
+    writing an empty proposal over the page."""
+    items = [_item("a", ["fitness-workouts"])]
+    env, _ = _fill_env(tmp_path, monkeypatch, items, "")
+    with pytest.raises(RuntimeError, match="failed after"):
+        dist.fill(
+            env,
+            target="Page A",
+            routes=ROUTES,
+            vocab=_Vocab(),
+            budgets=_Budgets(),
+            model="m",
+            template=TEMPLATE,
+            call=lambda p, m: "unparseable",
+            sleep=lambda s: None,
+        )
