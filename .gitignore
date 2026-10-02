@@ -19,6 +19,7 @@ config/collections.json
 config/run.json
 config/tags.json
 config/routes.json
+config/recipes.json
 
 # python
 __pycache__/
