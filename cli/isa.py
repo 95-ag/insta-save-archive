@@ -12,6 +12,7 @@ from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
 from insta_save.config.tags import load_vocab, load_vocab_or_empty
 from insta_save.adapters.notion import ensure_schema
+from insta_save.config.recipes import load_recipes
 from insta_save.helpers import tui
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
@@ -26,7 +27,7 @@ from insta_save.orchestrator.status_report import build_status, retry_failed as 
 from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic",
-          "route", "distribute"]
+          "route", "distribute", "recipe"]
 
 
 def _guard(load, *args, **kwargs):
@@ -672,6 +673,94 @@ def dispatch_run(args) -> None:
         except (RuntimeError, ValueError) as exc:
             raise SystemExit(str(exc))
 
+    if args.stage == "recipe":
+        from insta_save.helpers.observability import flush_logs
+        from insta_save.stages import recipes
+
+        env = _guard(_load_env)
+        if not env.notion_recipe_database_id:
+            raise SystemExit(
+                "isa run --stage recipe: NOTION_RECIPE_DATABASE_ID is not set — point it at the "
+                "recipe database"
+            )
+        ensure_schema(env)
+        cfg = _guard(load_recipes)
+        run_cfg = _guard(_load_run)
+        version = f"{run_cfg.recipe.model}/{env.recipe_version}"
+        log_path = setup_logging("recipe")
+        print(f"Logging to {_rel(log_path)}")
+
+        try:
+            if args.apply:
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage recipe --apply: refusing to write without confirmation "
+                        "in a non-interactive run — re-run in a terminal or pass --yes"
+                    )
+                else:
+                    choice = tui.confirm_action(
+                        f"Create the staged recipe rows in {cfg.target!r}?",
+                        [
+                            ("Create these rows", "apply", "write one new row per staged proposal"),
+                            (
+                                "Cancel — write nothing",
+                                "cancel",
+                                "keep the staged files, write nothing",
+                            ),
+                        ],
+                    )
+                    proceed = choice == "apply"
+                if not proceed:
+                    d = recipes.staging_dir(env)
+                    print(f"Cancelled — nothing written; staged files kept in {_rel(d)}.")
+                    return
+                counts = recipes.apply(env, cfg=cfg, version=version)
+                print(
+                    f"Recipes: {counts['created']} row(s) created, "
+                    f"{counts['misrouted']} misrouted."
+                )
+                if counts.get("failed"):
+                    print(
+                        f"  ⚠ {counts['failed']} row(s) failed to write and stay Routed — "
+                        f"see the log."
+                    )
+                return
+
+            n = recipes.prepare(env, cfg=cfg, version=version)
+            if n == 0:
+                print(f"Nothing left to turn into a recipe for {cfg.target!r}.")
+                return
+            result = recipes.fill(
+                env,
+                cfg=cfg,
+                model=run_cfg.recipe.model,
+                template=Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8"),
+            )
+            d = recipes.staging_dir(env)
+            print(
+                f"Staged {n} item(s): {result['proposed']} recipe(s), "
+                f"{result['rejected']} not a recipe -> {_rel(d)}"
+            )
+            if result.get("unanswered"):
+                print(f"  ⚠ {result['unanswered']} item(s) got no reply and stay Routed.")
+            print(
+                f"  Review {_rel(d / 'proposals.json')} and {_rel(d / 'rejections.json')}, then:\n"
+                f"  isa run --stage recipe --apply"
+            )
+            print("Nothing has been written to Notion yet.")
+            return
+        except TerminalBackendError as exc:
+            flush_logs()
+            print(f"\n⏹  stopped · {exc}")
+            print(
+                "   This won't resolve by retrying now (usage limit / auth). "
+                "Resume later with: isa run --stage recipe"
+            )
+            return
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc))
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 

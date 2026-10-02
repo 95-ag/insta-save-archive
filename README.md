@@ -15,7 +15,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **Reference**
 - [How it works](#how-it-works) — the pipeline and status flow
 - [Setup](#setup) · [Configuration](#configuration) · [Running](#running) · [Backends](#backends)
-- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends) · [Distribute](#distribute-optional)
+- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends) · [Distribute](#distribute-optional) · [Recipe](#recipe-optional)
 - [Failures, guardrails, backup](#failures-guardrails-backup) · [Reprocessing](#reprocessing) · [Troubleshooting](#troubleshooting)
 - [Requirements](#requirements) · [Repo layout](#repo-layout)
 
@@ -123,6 +123,9 @@ the URL. Schema properties are created automatically on first write.
 | `ENRICH_VERSION` | optional; overrides the default enrich prompt version (`v2.1-enrich`) |
 | `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
 | `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.3-distribute`) |
+| `NOTION_RECIPE_DATABASE_ID` | the recipe DB id — only for `recipe` |
+| `NOTION_GROCERY_DATABASE_ID` | the grocery DB id — only for `recipe`, to link ingredients |
+| `RECIPE_VERSION` | optional; overrides the default recipe prompt version (`v1.0-recipe`) |
 
 ## Configuration
 
@@ -228,7 +231,7 @@ isa backup [--restore-check]  # snapshot Notion to JSON (+ optional restore test
 **Flag reference (allowed values):**
 ```
 isa run   --mode  {first-time | incremental}        # default: incremental
-          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route | distribute}
+          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route | distribute | recipe}
           --group <name>        # restrict to one group (e.g. calibrate a single group)
           --limit <N>           # cap items processed this run
           --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
@@ -236,10 +239,10 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --reextract           # re-run extract on already-Extracted items
           --retry-failed        # reprocess items currently in Failed
           --fresh               # force a current re-crawl (incremental mode)
-          --apply               # apply a staged result: enrich (session backends) results.json, or a reviewed distribute proposal
+          --apply               # apply a staged result: enrich (session backends) results.json, a reviewed distribute proposal, or staged recipe rows
           --rebuild             # distribute only: reset a page to its template + its items to Tagged; mutually exclusive with --apply
           --reroute             # route only: re-evaluate already-Routed items against the current routes.json
-          --yes                 # distribute --apply/--rebuild only: skip the confirmation prompt
+          --yes                 # distribute/recipe --apply and distribute --rebuild: skip the confirmation prompt
           --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts, split by primary-topic vs order)
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
@@ -295,6 +298,42 @@ modality lanes per group** — drain text first, then vision:
 
 In **Cowork**, one kickoff message per lane drives the loop; if the session dies, restart and
 Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do steps 1–3 automatically.
+
+## Recipe (optional)
+
+`distribute`'s sibling, for food saves. Where `distribute` **merges** an item into an existing
+Knowledge-DB page, `recipe` creates **one new row per recipe** in a recipe database — so there is
+nothing to merge, and the body is built as Notion blocks directly rather than through a markdown
+round-trip (a two-column layout cannot survive one). Attended only, like `distribute`.
+
+```bash
+isa run --stage recipe
+isa run --stage recipe --apply
+```
+
+Routing is ordinary: map the food tags in `config/routes.json` to the recipe DB's name, and the
+`route` stage labels those items like any other. `config/recipes.json` (gitignored) carries the
+destination name, the controlled list of dish **families** used to title rows `Family - Variant`,
+and a deterministic map from archive tag to recipe property.
+
+The first command writes nothing to the recipe DB. It resolves each routed item against the
+existing rows — by the `Recipes` relation, or by the source's Instagram shortcode appearing in a
+row's `Video Link` — and then:
+
+- **already captured** (a row with content) → the item is marked `Distributed`, no model call;
+- **a row with an EMPTY body** → the item stays `Routed` and is reported, never marked done
+  against an empty page;
+- **no row** → staged, structured by the backend, and written to `tmp/recipe/proposals.json`
+  plus `rejections.json`.
+
+An item whose source names no ingredients and no method is **not a recipe**: it is recorded with
+the model's stated reason and `--apply` marks it `Misrouted`, rather than creating an empty row.
+
+`--apply` creates each row with its body, then sets the two-way relation, then marks the item
+`Distributed` — in that order, so the relation only ever exists where content actually landed. A
+failed row write leaves the item `Routed` for the next run. Ingredient lines are matched to
+existing grocery rows by name and **never create one**; anything unmatched is listed in
+`tmp/recipe/unmatched_ingredients.json` for you to add by hand.
 
 ## Distribute (optional)
 

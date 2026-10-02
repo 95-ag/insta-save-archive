@@ -8,6 +8,7 @@ needs a markdown round-trip to do it; a recipe is a brand-new page built from st
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from insta_save.adapters.notion import (
     write_distributed,
     write_misrouted,
 )
+from insta_save.backends import claude_p
 from insta_save.backends.base import parse_results_jsonl
 from insta_save.recipe_blocks import recipe_blocks
 from insta_save.recipe_blocks import TIP_SECTIONS
@@ -256,11 +258,12 @@ def _render_prompt(template, *, cfg, items) -> str:
     return template.replace("{families}", families).replace("{items}", _render_items(items))
 
 
-def fill(env, *, cfg, model, template, call, sleep, chunk_size=8) -> dict:
+def fill(env, *, cfg, model, template, call=None, sleep=time.sleep, chunk_size=8) -> dict:
     """Ask the backend to structure each staged item, then validate every reply totally.
 
     A rejected item is recorded with its reason rather than dropped: apply marks it Misrouted so
     it leaves Routed with an explanation, instead of being re-read every run."""
+    call = call or claude_p.consolidate
     d = staging_dir(env)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
     items = batch["items"]

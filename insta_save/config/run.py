@@ -48,6 +48,11 @@ class RunConfig:
     output_language: str = "english"
     distribute: DistributeConfig = field(
         default_factory=lambda: DistributeConfig("claude-p", "claude-sonnet"))
+    # Same shape as distribute, so the type is reused rather than cloned. Absent from run.json
+    # means "whatever distribute uses" - both are attended claude-p stages.
+    recipe: DistributeConfig = field(
+        default_factory=lambda: DistributeConfig("claude-p", "claude-sonnet")
+    )
 
 
 def _require(value, valid, label):
@@ -90,6 +95,11 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         backend=_require(dist_raw.get("backend", "claude-p"), VALID_BACKENDS, "distribute.backend"),
         model=dist_raw.get("model", "claude-sonnet"),
     )
+    rec_raw = data.get("recipe", dist_raw)
+    recipe = DistributeConfig(
+        backend=_require(rec_raw.get("backend", "claude-p"), VALID_BACKENDS, "recipe.backend"),
+        model=rec_raw.get("model", distribute.model),
+    )
     return RunConfig(
         mode=mode,
         enrich=enrich,
@@ -102,4 +112,5 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         deterministic_title_mode=title_mode,
         output_language=output_language,
         distribute=distribute,
+        recipe=recipe,
     )

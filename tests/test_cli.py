@@ -1919,3 +1919,113 @@ def test_enrich_ensure_schema_runs_before_the_drain(monkeypatch, tmp_path):
     )
     isa.main(["run", "--stage", "enrich", "--group", "Hustle", "--lane", "text"])
     assert order == ["schema", "drain"]
+
+
+# ---------------------------------------------------------------------------
+# recipe stage
+# ---------------------------------------------------------------------------
+
+
+def _recipe_env(recipe_db="rdb"):
+    return types.SimpleNamespace(
+        tmp_dir="tmp",
+        notion_recipe_database_id=recipe_db,
+        notion_grocery_database_id="gdb",
+        recipe_version="v1.0-recipe",
+    )
+
+
+def _recipe_cfg():
+    from insta_save.config.recipes import RecipeConfig
+
+    return RecipeConfig(target="TargetDB", families={"FamilyOne": "d"}, tag_axes={})
+
+
+def _stub_recipe(monkeypatch, *, staged=1, recipe_db="rdb", counts=None):
+    import cli.isa as isa
+    from insta_save.stages import recipes
+
+    seen = {"order": [], "apply": 0, "fill": 0}
+    monkeypatch.setattr(isa, "_load_env", lambda: _recipe_env(recipe_db))
+    run_cfg = types.SimpleNamespace(recipe=types.SimpleNamespace(backend="claude-p", model="m"))
+    monkeypatch.setattr(isa, "_load_run", lambda: run_cfg)
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: seen["order"].append("ensure_schema"))
+    monkeypatch.setattr(isa, "load_recipes", lambda: _recipe_cfg(), raising=False)
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "x.log")
+
+    def _prepare(env, **kw):
+        seen["order"].append("prepare")
+        return staged
+
+    def _fill(env, **kw):
+        seen["fill"] += 1
+        return {"proposed": staged, "rejected": 0, "unanswered": 0}
+
+    def _apply(env, **kw):
+        seen["apply"] += 1
+        return counts or {"created": staged, "misrouted": 0, "failed": 0}
+
+    monkeypatch.setattr(recipes, "prepare", _prepare)
+    monkeypatch.setattr(recipes, "fill", _fill)
+    monkeypatch.setattr(recipes, "apply", _apply)
+    return seen
+
+
+def test_recipe_stage_without_apply_writes_nothing(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, staged=3)
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe"])
+    isa.dispatch_run(args)
+    assert seen["apply"] == 0 and seen["fill"] == 1
+    assert "3" in capsys.readouterr().out
+
+
+def test_recipe_stage_calls_ensure_schema_before_preparing(monkeypatch):
+    """The stage writes the Recipes relation, so the property must exist first."""
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch)
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "recipe"]))
+    assert seen["order"][0] == "ensure_schema"
+
+
+def test_recipe_stage_stops_when_nothing_is_staged(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, staged=0)
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "recipe"]))
+    assert seen["fill"] == 0
+    assert "Nothing" in capsys.readouterr().out
+
+
+def test_recipe_stage_refuses_without_a_configured_recipe_db(monkeypatch):
+    import cli.isa as isa
+
+    _stub_recipe(monkeypatch, recipe_db="")
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe"])
+    with pytest.raises(SystemExit, match="NOTION_RECIPE_DATABASE_ID"):
+        isa.dispatch_run(args)
+
+
+def test_recipe_stage_refuses_a_non_interactive_apply_without_yes(monkeypatch):
+    import sys as _sys
+
+    import cli.isa as isa
+
+    _stub_recipe(monkeypatch)
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False, raising=False)
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe", "--apply"])
+    with pytest.raises(SystemExit, match="--yes"):
+        isa.dispatch_run(args)
+
+
+def test_recipe_stage_applies_with_yes(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, counts={"created": 2, "misrouted": 1, "failed": 0})
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe", "--apply", "--yes"])
+    isa.dispatch_run(args)
+    assert seen["apply"] == 1
+    out = capsys.readouterr().out
+    assert "2" in out and "1" in out
