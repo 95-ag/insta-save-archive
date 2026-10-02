@@ -239,6 +239,32 @@ def test_the_real_prompt_carries_every_placeholder_the_renderer_substitutes():
         assert slot in text, f"the shipped prompt is missing {slot}"
 
 
+def test_render_items_includes_the_enrich_summary_labelled_as_derived():
+    """enrich distils a foreign-language post into English; dropping that threw away a real
+    method (a Tamil chicken fry whose transcript was unusable but whose summary carried the
+    quantities). It is passed ALONGSIDE the raw content, never instead of it."""
+    out = recipes._render_items(
+        [
+            {
+                "source_id": "a",
+                "title": "T",
+                "summary": "Half a kilo of chicken with ginger, fried dry.",
+                "content": {"caption": "cap", "transcript": "garbled", "ocr_text": None},
+            }
+        ]
+    )
+    assert "summary (English distillation of this post, by an earlier stage):" in out
+    assert "Half a kilo of chicken" in out
+    assert "cap" in out and "garbled" in out, "raw source must still be present"
+
+
+def test_render_items_omits_an_absent_summary():
+    out = recipes._render_items(
+        [{"source_id": "a", "title": "T", "summary": None, "content": {"caption": "cap"}}]
+    )
+    assert "summary" not in out
+
+
 def test_render_prompt_substitutes_both_slots_in_the_real_prompt():
     from pathlib import Path
 
@@ -731,3 +757,11 @@ def test_the_prompt_explains_named_methods_and_two_dishes():
     assert "Instant Pot Method" in text
     assert "never park a complete method in a Variations tip" in text
     assert "ONE OBJECT PER DISH" in text
+
+
+def test_the_prompt_explains_how_to_use_the_summary():
+    from pathlib import Path
+
+    text = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
+    assert "ENGLISH distillation of this post" in text
+    assert "The summary never licenses invention" in text

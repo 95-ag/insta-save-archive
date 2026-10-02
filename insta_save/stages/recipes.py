@@ -253,7 +253,16 @@ def prepare(env, *, cfg, version) -> int:
     return len(staged)
 
 
+_SUMMARY_LABEL = "summary (English distillation of this post, by an earlier stage):"
+
+
 def _render_items(items) -> str:
+    """One block per post: raw source first, then enrich's summary.
+
+    The summary is DERIVED, so it is labelled and added alongside the raw content rather than
+    replacing it. It matters for non-English posts: a Tamil chicken fry's transcript was
+    unusable while its summary carried the method and quantities, and omitting it lost the
+    recipe entirely."""
     out = []
     for item in items:
         content = item.get("content") or {}
@@ -261,6 +270,8 @@ def _render_items(items) -> str:
         for key in ("caption", "transcript", "ocr_text"):
             if content.get(key):
                 parts.append(f"{key}: {content[key]}")
+        if item.get("summary"):
+            parts.append(f"{_SUMMARY_LABEL} {item['summary']}")
         out.append("\n".join(parts))
     return "\n\n---\n\n".join(out)
 
