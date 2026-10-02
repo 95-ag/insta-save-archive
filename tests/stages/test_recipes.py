@@ -112,6 +112,27 @@ def test_the_prompt_forbids_inventing_a_family():
     assert "null" in text and "never invent a family" in text
 
 
+def test_the_real_prompt_carries_every_placeholder_the_renderer_substitutes():
+    """A stand-in template in a test proves nothing about the shipped file. The first live run
+    returned "I don't see any post data" because prompts/recipe_v1.0.txt had no {items} slot."""
+    from pathlib import Path
+
+    text = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
+    for slot in ("{families}", "{items}"):
+        assert slot in text, f"the shipped prompt is missing {slot}"
+
+
+def test_render_prompt_substitutes_both_slots_in_the_real_prompt():
+    from pathlib import Path
+
+    template = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
+    out = recipes._render_prompt(
+        template, cfg=_cfg(), items=[{**_item("a"), "content": {"caption": "cap text"}}]
+    )
+    assert "{families}" not in out and "{items}" not in out
+    assert "FamilyOne" in out and "cap text" in out and "id: a" in out
+
+
 def test_the_prompt_says_sweet_is_not_a_course():
     """Measured live: of 14 Sweet rows only 5 are Dessert - 8 are Snacks and 2 are Meal."""
     from pathlib import Path
@@ -196,7 +217,7 @@ def _stub(monkeypatch, *, items, recipe_rows, row_blocks=None, grocery=None, cal
     monkeypatch.setattr(recipes, "query_routed_for_target", lambda env, t: items)
     monkeypatch.setattr(recipes, "query_recipe_rows", lambda env: recipe_rows)
     monkeypatch.setattr(recipes, "query_grocery_rows", lambda env: grocery or {})
-    monkeypatch.setattr(recipes, "get_page_blocks", lambda env, pid: row_blocks.get(pid, []))
+    monkeypatch.setattr(recipes, "get_blocks_deep", lambda env, pid: row_blocks.get(pid, []))
     monkeypatch.setattr(
         recipes,
         "get_page_content",
@@ -239,6 +260,26 @@ def test_content_words_ignores_the_template_scaffolding():
     a word count that credited the headings would call them filled."""
     assert recipes.content_words(_shell_blocks()) == 0
     assert recipes.content_words(_shell_blocks() + [_para("350F for 50-60 minutes")]) == 4
+
+
+def test_content_words_counts_text_nested_inside_columns():
+    """Live rows keep every ingredient and step inside column -> children, so a top-level-only
+    read reports 0 words for a fully written recipe. That misread blocked all 42 related items
+    on the first live run."""
+    nested = [
+        {
+            "type": "column_list",
+            "column_list": {},
+            "children": [
+                {
+                    "type": "column",
+                    "column": {},
+                    "children": [_h2("INGREDIENTS"), _divider(), _bullet("1 cup rice")],
+                }
+            ],
+        }
+    ]
+    assert recipes.content_words(nested) == 3
 
 
 def test_prepare_stages_a_fresh_item(tmp_path, monkeypatch):

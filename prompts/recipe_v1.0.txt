@@ -49,3 +49,7 @@ PROPERTIES — use ONLY these values:
              Weekend  — prep time dominates cook time: soaking, fermenting, marinating,
                         overnight resting, or multiple stages
   - Leave a list EMPTY rather than guessing. An empty list is a correct answer.
+
+THE POSTS — one per block, separated by a line of three dashes:
+
+{items}
