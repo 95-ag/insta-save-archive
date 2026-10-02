@@ -5,7 +5,8 @@ from insta_save.config import env as envcfg
 def _set(monkeypatch, **kw):
     for k in ["NOTION_TOKEN", "NOTION_DATABASE_ID", "TMP_DIR", "EXTRACT_VERSION",
               "ENRICH_VERSION", "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
-              "DISPLAY_MODE", "COOKIES_FILE", "NOTION_KNOWLEDGE_DATABASE_ID", "DISTRIBUTE_VERSION"]:
+              "DISPLAY_MODE", "COOKIES_FILE", "NOTION_KNOWLEDGE_DATABASE_ID", "DISTRIBUTE_VERSION",
+              "NOTION_RECIPE_DATABASE_ID", "NOTION_GROCERY_DATABASE_ID", "RECIPE_VERSION"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in kw.items():
         monkeypatch.setenv(k, v)
@@ -76,3 +77,19 @@ def test_load_env_reads_knowledge_database_id(monkeypatch):
 def test_load_env_distribute_version_defaults(monkeypatch):
     _set(monkeypatch)
     assert envcfg.load_env().distribute_version == "v2.3-distribute"
+
+
+def test_env_carries_the_recipe_and_grocery_database_ids(monkeypatch):
+    _set(monkeypatch, NOTION_RECIPE_DATABASE_ID="r", NOTION_GROCERY_DATABASE_ID="g")
+    cfg = envcfg.load_env()
+    assert cfg.notion_recipe_database_id == "r"
+    assert cfg.notion_grocery_database_id == "g"
+    assert cfg.recipe_version == "v1.0-recipe"
+
+
+def test_env_recipe_ids_default_to_empty(monkeypatch):
+    """Absent means the recipe stage is unavailable, not that it writes somewhere wrong."""
+    _set(monkeypatch)
+    cfg = envcfg.load_env()
+    assert cfg.notion_recipe_database_id == ""
+    assert cfg.notion_grocery_database_id == ""

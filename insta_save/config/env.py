@@ -29,6 +29,9 @@ class EnvConfig:
     ig_username: str = ""
     anthropic_api_key: str = ""
     notion_knowledge_database_id: str = ""
+    notion_recipe_database_id: str = ""
+    notion_grocery_database_id: str = ""
+    recipe_version: str = "v1.0-recipe"
     distribute_version: str = "v2.3-distribute"
 
 
@@ -67,6 +70,9 @@ def load_env() -> EnvConfig:
         ig_username=os.getenv("IG_USERNAME", "").strip(),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
         notion_knowledge_database_id=os.getenv("NOTION_KNOWLEDGE_DATABASE_ID", "").strip(),
+        notion_recipe_database_id=os.getenv("NOTION_RECIPE_DATABASE_ID", "").strip(),
+        notion_grocery_database_id=os.getenv("NOTION_GROCERY_DATABASE_ID", "").strip(),
+        recipe_version=os.getenv("RECIPE_VERSION", "v1.0-recipe").strip(),
         distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.3-distribute").strip(),
     )
 

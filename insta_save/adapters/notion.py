@@ -196,6 +196,19 @@ def _status_option_additions(existing_option_names: list[str]):
     return [{"name": n} for n in existing_option_names] + [{"name": n} for n in missing]
 
 
+def _recipe_relation_spec(data_source_id: str) -> dict:
+    """The `Recipes` relation, mirroring `Knowledge Base`. `dual_property: {}` asks Notion to
+    create the synced property on the recipe side and name it after this database; a name passed
+    here is ignored on create, so the resulting name is verified after the fact, not asserted."""
+    return {
+        "relation": {
+            "data_source_id": data_source_id,
+            "type": "dual_property",
+            "dual_property": {},
+        }
+    }
+
+
 # --- API surface -----------------------------------------------------------
 def ensure_schema(env: EnvConfig) -> None:
     """Idempotently add v2 properties and status options. Additive only."""
@@ -212,6 +225,11 @@ def ensure_schema(env: EnvConfig) -> None:
     new_status_opts = _status_option_additions(existing_status)
     if new_status_opts is not None:
         to_add = {**to_add, "status": {"select": {"options": new_status_opts}}}
+
+    # The relation's target comes from the environment, so it cannot live in _V2_PROPERTIES.
+    if env.notion_recipe_database_id and "Recipes" not in props:
+        recipe_ds = _get_data_source_id(client, env.notion_recipe_database_id)
+        to_add = {**to_add, "Recipes": _recipe_relation_spec(recipe_ds)}
 
     if not to_add:
         log.info("notion: schema already up to date")

@@ -406,3 +406,67 @@ def test_row_includes_primary_topic():
 def test_row_primary_topic_none_when_absent():
     page = {"id": "p8", "properties": {}}
     assert notion._row(page)["primary_topic"] is None
+
+
+class _SchemaEnv:
+    notion_token = "t"
+    notion_database_id = "db"
+
+    def __init__(self, recipe_db=""):
+        self.notion_recipe_database_id = recipe_db
+
+
+def _schema_client(monkeypatch, *, properties, status_options, sent):
+    class _DataSources:
+        def retrieve(self, data_source_id=None, **kw):
+            props = dict(properties)
+            props["status"] = {"select": {"options": [{"name": n} for n in status_options]}}
+            return {"properties": props}
+
+        def update(self, data_source_id=None, properties=None, **kw):
+            sent["properties"] = properties
+
+    class _Client:
+        def __init__(self, auth=None):
+            self.data_sources = _DataSources()
+
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    monkeypatch.setattr(notion, "_get_data_source_id", lambda c, db: f"ds-{db}")
+    monkeypatch.setattr(notion, "Client", _Client)
+
+
+def test_recipe_relation_spec_is_a_dual_property_to_the_recipe_data_source():
+    spec = notion._recipe_relation_spec("ds-1")
+    assert spec["relation"]["data_source_id"] == "ds-1"
+    assert spec["relation"]["type"] == "dual_property"
+    assert spec["relation"]["dual_property"] == {}
+
+
+def test_ensure_schema_adds_the_recipes_relation_when_the_db_is_configured(monkeypatch):
+    """Adding a property to the code is not enough - it must be created on the live DB.
+    enrich shipped without this once and every batch failed (lessons.md)."""
+    sent = {}
+    _schema_client(monkeypatch, properties={}, status_options=[], sent=sent)
+    notion.ensure_schema(_SchemaEnv(recipe_db="rdb"))
+    assert sent["properties"]["Recipes"]["relation"]["data_source_id"] == "ds-rdb"
+
+
+def test_ensure_schema_skips_the_relation_when_no_recipe_db_is_set(monkeypatch):
+    sent = {}
+    _schema_client(monkeypatch, properties={}, status_options=[], sent=sent)
+    notion.ensure_schema(_SchemaEnv(recipe_db=""))
+    assert "Recipes" not in sent["properties"]
+
+
+def test_ensure_schema_does_not_re_add_an_existing_relation(monkeypatch):
+    sent = {}
+    current = {k: {} for k in notion._V2_PROPERTIES}
+    current["Recipes"] = {"type": "relation", "relation": {}}
+    _schema_client(
+        monkeypatch,
+        properties=current,
+        status_options=list(notion._V2_STATUS_OPTIONS),
+        sent=sent,
+    )
+    notion.ensure_schema(_SchemaEnv(recipe_db="rdb"))
+    assert sent == {}, "schema was already current; nothing should be sent"
