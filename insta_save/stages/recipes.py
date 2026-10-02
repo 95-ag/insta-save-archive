@@ -5,9 +5,26 @@ needs a markdown round-trip to do it; a recipe is a brand-new page built from st
 `recipe_blocks`, so no converter is involved and no existing page content is ever rewritten.
 """
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from insta_save.adapters.notion import (
+    create_recipe_row,
+    get_page_blocks,
+    get_page_content,
+    normalise_grocery_name,
+    query_grocery_rows,
+    query_recipe_rows,
+    query_routed_for_target,
+    set_recipe_relation,
+    write_distributed,
+    write_misrouted,
+)
+from insta_save.backends.base import parse_results_jsonl
+from insta_save.recipe_blocks import recipe_blocks
 from insta_save.recipe_blocks import TIP_SECTIONS
 
 log = logging.getLogger(__name__)
@@ -18,6 +35,11 @@ COURSE = ("Meal", "Side Dish", "Snack", "Dessert", "Drink")
 NUTRITION = ("Healthy", "High-Protein", "Treat")
 EFFORT = ("Quick", "Medium", "Heavy", "Weekend")
 _AXES = {"Cuisine": CUISINE, "Taste": TASTE, "Course": COURSE, "Nutrition": NUTRITION}
+_SHORTCODE = re.compile(r"instagram\.com/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)")
+# Section headings the template writes whether or not the row was ever filled, so they must not
+# count as content: 9 live rows hold 17 blocks of pure scaffolding and no text.
+_SCAFFOLD = {"INSTRUCTIONS", "TIPS", "INGREDIENTS"}
+_CONTENT_BLOCKS = ("paragraph", "bulleted_list_item", "numbered_list_item")
 
 
 @dataclass(frozen=True)
@@ -99,3 +121,252 @@ def parse_recipe(obj, *, families, source_id):
         effort=effort,
         **axes,
     )
+
+
+def staging_dir(env) -> Path:
+    d = Path(env.tmp_dir) / "recipe"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _shortcode(url):
+    m = _SHORTCODE.search(url or "")
+    return m.group(1) if m else None
+
+
+def shortcodes_on_file(recipe_rows) -> set:
+    """Instagram shortcodes already captured as recipe rows. A second save of the SAME post must
+    not create a second row; a different post of the same dish still gets its own."""
+    found = {_shortcode(row.get("video_link")) for row in recipe_rows}
+    return {code for code in found if code}
+
+
+def content_words(blocks) -> int:
+    """Words of real body text, excluding the template's own section headings and dividers."""
+    total = 0
+    for block in blocks:
+        kind = block.get("type")
+        if kind not in _CONTENT_BLOCKS:
+            continue
+        spans = block.get(kind, {}).get("rich_text", [])
+        text = "".join(s.get("plain_text", "") for s in spans).strip()
+        if text and text.upper() not in _SCAFFOLD:
+            total += len(text.split())
+    return total
+
+
+def match_ingredients(ingredients, grocery) -> tuple:
+    """Link an ingredient line to an existing Grocery row by normalised name. Match-only: a
+    missing grocery row is REPORTED, never created — Buy/Expiry are physical-world state the
+    pipeline cannot know. A missed link is recoverable; a wrong one rewrites a shopping list."""
+    matched, unmatched = [], []
+    for line in ingredients:
+        key = normalise_grocery_name(line)
+        hit = grocery.get(key) or next(
+            (pid for name, pid in grocery.items() if name and name in key), None
+        )
+        if hit:
+            if hit not in matched:
+                matched.append(hit)
+        else:
+            unmatched.append(line)
+    return matched, unmatched
+
+
+def properties_for(cfg, *, tags, proposal, ig_link) -> dict:
+    """Two independent layers: the curated tag map states what the archive already knows, the
+    model states what it read in the content. Both are evidence, so their values are unioned.
+    An empty axis is omitted rather than written empty — unset means unknown."""
+    tag_layer = cfg.axes_for(tags)
+    model_layer = {
+        "Cuisine": proposal.cuisine,
+        "Taste": proposal.taste,
+        "Course": proposal.course,
+        "Nutrition": proposal.nutrition,
+    }
+    props = {}
+    for axis in _AXES:
+        values = list(dict.fromkeys(list(tag_layer.get(axis, [])) + list(model_layer[axis])))
+        if values:
+            props[axis] = {"multi_select": [{"name": v} for v in values]}
+    if proposal.effort:
+        props["Effort"] = {"select": {"name": proposal.effort}}
+    if ig_link:
+        props["Video Link"] = {"url": ig_link}
+    return props
+
+
+def prepare(env, *, cfg, version) -> int:
+    """Resolve every routed item to an existing recipe row, or stage it for creation.
+
+    Three outcomes. A row with content means the item is already captured -> Distributed. A row
+    with NO content means the item would be marked done against an empty page, so it stays Routed
+    and is reported; filling those is a separate, one-off operation."""
+    rows = query_recipe_rows(env)
+    by_code = {}
+    for row in rows:
+        code = _shortcode(row.get("video_link"))
+        if code:
+            by_code.setdefault(code, row["page_id"])
+
+    staged, blocked, skipped = [], [], 0
+    for item in query_routed_for_target(env, cfg.target):
+        row_id = item["recipes"][0] if item["recipes"] else by_code.get(_shortcode(item["ig_link"]))
+        if row_id is None:
+            content = get_page_content(env, item["page_id"])
+            staged.append({**item, "content": content})
+            continue
+        if content_words(get_page_blocks(env, row_id)) == 0:
+            blocked.append(item["source_id"])
+            continue
+        set_recipe_relation(env, item["page_id"], row_id)
+        write_distributed(env, item["page_id"], version)
+        skipped += 1
+
+    d = staging_dir(env)
+    batch = {"target": cfg.target, "items": staged, "blocked": blocked, "skipped": skipped}
+    (d / "batch.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+    if skipped:
+        log.info("recipe.prepare: %d item(s) already captured by a recipe row", skipped)
+    if blocked:
+        log.warning(
+            "recipe.prepare: %d item(s) point at a recipe row with an EMPTY body and stay Routed "
+            "— fill those rows before re-running: %s",
+            len(blocked),
+            ", ".join(blocked),
+        )
+    log.info("recipe.prepare: staged %d item(s) for %s", len(staged), cfg.target)
+    return len(staged)
+
+
+def _render_items(items) -> str:
+    out = []
+    for item in items:
+        content = item.get("content") or {}
+        parts = [f"id: {item['source_id']}", f"title: {item.get('title') or ''}"]
+        for key in ("caption", "transcript", "ocr_text"):
+            if content.get(key):
+                parts.append(f"{key}: {content[key]}")
+        out.append("\n".join(parts))
+    return "\n\n---\n\n".join(out)
+
+
+def _render_prompt(template, *, cfg, items) -> str:
+    families = "\n".join(f"    - {name}: {desc}" for name, desc in cfg.families.items())
+    return template.replace("{families}", families).replace("{items}", _render_items(items))
+
+
+def fill(env, *, cfg, model, template, call, sleep, chunk_size=8) -> dict:
+    """Ask the backend to structure each staged item, then validate every reply totally.
+
+    A rejected item is recorded with its reason rather than dropped: apply marks it Misrouted so
+    it leaves Routed with an explanation, instead of being re-read every run."""
+    d = staging_dir(env)
+    batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
+    items = batch["items"]
+    by_id = {i["source_id"]: i for i in items}
+    proposals, rejections = [], []
+    for start in range(0, len(items), chunk_size):
+        chunk = items[start : start + chunk_size]
+        prompt = _render_prompt(template, cfg=cfg, items=chunk)
+        reply = call(prompt, model)
+        objects, bad = parse_results_jsonl(reply)
+        for raw in bad:
+            log.warning("recipe.fill: unparseable reply line: %s", raw[:160])
+        for obj in objects:
+            sid = obj.get("source_id")
+            if sid not in by_id:
+                log.warning("recipe.fill: reply names unknown id %r — ignored", sid)
+                continue
+            parsed = parse_recipe(obj, families=cfg.families, source_id=sid)
+            if isinstance(parsed, Rejection):
+                rejections.append({"source_id": sid, "reason": parsed.reason})
+            else:
+                proposals.append(
+                    {
+                        "source_id": sid,
+                        "family": parsed.family,
+                        "variant": parsed.variant,
+                        "ingredients": parsed.ingredients,
+                        "steps": parsed.steps,
+                        "tips": parsed.tips,
+                        "cuisine": parsed.cuisine,
+                        "taste": parsed.taste,
+                        "course": parsed.course,
+                        "nutrition": parsed.nutrition,
+                        "effort": parsed.effort,
+                    }
+                )
+        sleep(1)
+    (d / "proposals.json").write_text(
+        json.dumps(proposals, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (d / "rejections.json").write_text(
+        json.dumps(rejections, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    accounted = {p["source_id"] for p in proposals} | {r["source_id"] for r in rejections}
+    missing = [i["source_id"] for i in items if i["source_id"] not in accounted]
+    if missing:
+        log.warning(
+            "recipe.fill: %d staged item(s) got no reply and stay Routed: %s",
+            len(missing),
+            ", ".join(missing),
+        )
+    return {"proposed": len(proposals), "rejected": len(rejections), "unanswered": len(missing)}
+
+
+def apply(env, *, cfg, version) -> dict:
+    """Create a row per proposal, then relate, then mark the item Distributed — in that order.
+
+    The relation proves the content landed, so it can never precede the write. A failed create
+    leaves the item Routed with no relation, to be picked up next run."""
+    d = staging_dir(env)
+    proposals = json.loads((d / "proposals.json").read_text(encoding="utf-8"))
+    rejections = json.loads((d / "rejections.json").read_text(encoding="utf-8"))
+    items = {i["source_id"]: i for i in query_routed_for_target(env, cfg.target)}
+    grocery = query_grocery_rows(env)
+    counts = {"created": 0, "misrouted": 0, "failed": 0}
+    review = []
+
+    for rej in rejections:
+        item = items.get(rej["source_id"])
+        if item is None:
+            continue
+        write_misrouted(env, item["page_id"], rej["reason"], version)
+        counts["misrouted"] += 1
+
+    for raw in proposals:
+        item = items.get(raw["source_id"])
+        if item is None:
+            log.warning("recipe.apply: %s is no longer Routed — skipped", raw["source_id"])
+            continue
+        proposal = RecipeProposal(**raw)
+        matched, unmatched = match_ingredients(proposal.ingredients, grocery)
+        if unmatched:
+            review.append({"source_id": proposal.source_id, "unmatched": unmatched})
+        props = properties_for(cfg, tags=item["tags"], proposal=proposal, ig_link=item["ig_link"])
+        if matched:
+            props["Ingredients"] = {"relation": [{"id": pid} for pid in matched]}
+        body = recipe_blocks(
+            ingredients=proposal.ingredients, steps=proposal.steps, tips=proposal.tips
+        )
+        try:
+            row_id = create_recipe_row(env, title=proposal.title, properties=props, children=body)
+        except RuntimeError as e:
+            log.error("recipe.apply: %s stays Routed — %s", proposal.source_id, e)
+            counts["failed"] += 1
+            continue
+        set_recipe_relation(env, item["page_id"], row_id)
+        write_distributed(env, item["page_id"], version)
+        counts["created"] += 1
+
+    (d / "unmatched_ingredients.json").write_text(
+        json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if review:
+        log.info(
+            "recipe.apply: %d row(s) have ingredients with no Grocery match — see %s",
+            len(review),
+            d / "unmatched_ingredients.json",
+        )
+    return counts

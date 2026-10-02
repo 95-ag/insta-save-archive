@@ -976,3 +976,18 @@ def set_recipe_relation(env: EnvConfig, page_id: str, recipe_row_id: str) -> boo
         return True
     except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to relate {page_id} -> {recipe_row_id}: {e}") from e
+
+
+def create_recipe_row(env: EnvConfig, *, title, properties, children) -> str:
+    """Create one recipe row with its body in a single call. Notion requires a column_list's
+    `column` children inline at creation, so the body cannot be appended afterwards."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_recipe_database_id)
+    props = {"Name": _title(title), **properties}
+    parent = {"type": "data_source_id", "data_source_id": ds_id}
+    try:
+        page = client.pages.create(parent=parent, properties=props, children=children)
+        return page["id"]
+    except _DISTRIBUTE_WRITE_ERRORS as e:
+        raise RuntimeError(f"notion: failed to create recipe row {title!r}: {e}") from e
