@@ -991,3 +991,30 @@ def create_recipe_row(env: EnvConfig, *, title, properties, children) -> str:
         return page["id"]
     except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to create recipe row {title!r}: {e}") from e
+
+
+def get_blocks_deep(env: EnvConfig, block_id: str, *, max_depth: int = 4) -> list:
+    """Every block under `block_id`, with each block's own children attached under "children".
+
+    `get_page_blocks` lists one level only, which reads a recipe row as `[column_list, paragraph]`
+    and hides every ingredient and step nested in the columns. Depth is capped because a cycle
+    would otherwise recurse forever, and recipe bodies nest three levels at most."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+
+    def _children(bid, depth):
+        out, cursor = [], None
+        while True:
+            kwargs = {"block_id": bid, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = client.blocks.children.list(**kwargs)
+            for block in resp.get("results", []):
+                if block.get("has_children") and depth < max_depth:
+                    block["children"] = _children(block["id"], depth + 1)
+                out.append(block)
+            if not resp.get("has_more"):
+                return out
+            cursor = resp.get("next_cursor")
+
+    return _children(block_id, 0)

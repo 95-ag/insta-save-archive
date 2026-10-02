@@ -14,7 +14,7 @@ from pathlib import Path
 
 from insta_save.adapters.notion import (
     create_recipe_row,
-    get_page_blocks,
+    get_blocks_deep,
     get_page_content,
     normalise_grocery_name,
     query_grocery_rows,
@@ -26,8 +26,7 @@ from insta_save.adapters.notion import (
 )
 from insta_save.backends import claude_p
 from insta_save.backends.base import parse_results_jsonl
-from insta_save.recipe_blocks import recipe_blocks
-from insta_save.recipe_blocks import TIP_SECTIONS
+from insta_save.recipe_blocks import TIP_SECTIONS, recipe_blocks
 
 log = logging.getLogger(__name__)
 
@@ -144,16 +143,20 @@ def shortcodes_on_file(recipe_rows) -> set:
 
 
 def content_words(blocks) -> int:
-    """Words of real body text, excluding the template's own section headings and dividers."""
+    """Words of real body text, excluding the template's own section headings and dividers.
+
+    Recurses: a recipe row keeps every ingredient and step inside `column -> children`, so a
+    top-level-only count reports 0 for a fully written recipe. Measured on the first live run —
+    that misread blocked all 42 related items."""
     total = 0
     for block in blocks:
         kind = block.get("type")
-        if kind not in _CONTENT_BLOCKS:
-            continue
-        spans = block.get(kind, {}).get("rich_text", [])
-        text = "".join(s.get("plain_text", "") for s in spans).strip()
-        if text and text.upper() not in _SCAFFOLD:
-            total += len(text.split())
+        if kind in _CONTENT_BLOCKS:
+            spans = block.get(kind, {}).get("rich_text", [])
+            text = "".join(s.get("plain_text", "") for s in spans).strip()
+            if text and text.upper() not in _SCAFFOLD:
+                total += len(text.split())
+        total += content_words(block.get("children") or [])
     return total
 
 
@@ -218,7 +221,7 @@ def prepare(env, *, cfg, version) -> int:
             content = get_page_content(env, item["page_id"])
             staged.append({**item, "content": content})
             continue
-        if content_words(get_page_blocks(env, row_id)) == 0:
+        if content_words(get_blocks_deep(env, row_id)) == 0:
             blocked.append(item["source_id"])
             continue
         set_recipe_relation(env, item["page_id"], row_id)
