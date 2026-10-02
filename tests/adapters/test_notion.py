@@ -470,3 +470,49 @@ def test_ensure_schema_does_not_re_add_an_existing_relation(monkeypatch):
     )
     notion.ensure_schema(_SchemaEnv(recipe_db="rdb"))
     assert sent == {}, "schema was already current; nothing should be sent"
+
+
+def test_distribute_row_exposes_the_recipes_relation():
+    page = {
+        "id": "p1",
+        "properties": {
+            "title": {"title": []},
+            "source_id": {"rich_text": []},
+            "summary": {"rich_text": []},
+            "tags": {"multi_select": []},
+            "ig_link": {"url": None},
+            "Knowledge Base": {"relation": []},
+            "Recipes": {"relation": [{"id": "r1"}, {"id": "r2"}]},
+        },
+    }
+    assert notion._distribute_row(page)["recipes"] == ["r1", "r2"]
+
+
+def test_distribute_row_recipes_is_empty_when_the_property_is_absent():
+    """Items predate the relation; a missing property must read as no links, not crash."""
+    page = {
+        "id": "p1",
+        "properties": {
+            "title": {"title": []},
+            "source_id": {"rich_text": []},
+            "summary": {"rich_text": []},
+            "tags": {"multi_select": []},
+            "ig_link": {"url": None},
+            "Knowledge Base": {"relation": []},
+        },
+    }
+    assert notion._distribute_row(page)["recipes"] == []
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Spices - Rasam Powder", "rasam powder"),
+        ("Canned - Black Beans", "black beans"),
+        ("Flaxseed ", "flaxseed"),
+        ("Heavy cream", "heavy cream"),
+        ("Rice - Sushi", "sushi"),
+    ],
+)
+def test_normalise_grocery_name_strips_the_family_prefix_and_case(raw, expected):
+    assert notion.normalise_grocery_name(raw) == expected

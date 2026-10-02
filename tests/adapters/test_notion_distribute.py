@@ -110,6 +110,7 @@ def test_query_routed_for_target_maps_the_fields(monkeypatch):
         "tags": ["fitness-workouts"],
         "ig_link": "https://ig/x",
         "knowledge_base": ["kp"],
+        "recipes": [],
     }
 
 

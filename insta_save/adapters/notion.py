@@ -659,6 +659,7 @@ def _distribute_row(page: dict) -> dict:
         "tags": [t["name"] for t in props.get("tags", {}).get("multi_select", [])],
         "ig_link": props.get("ig_link", {}).get("url"),
         "knowledge_base": [r["id"] for r in props.get("Knowledge Base", {}).get("relation", [])],
+        "recipes": [r["id"] for r in props.get("Recipes", {}).get("relation", [])],
     }
 
 
@@ -880,3 +881,82 @@ def reset_item_to_tagged(env: EnvConfig, page_id: str) -> None:
         client.pages.update(page_id=page_id, properties=props)
     except _DISTRIBUTE_WRITE_ERRORS as e:
         raise RuntimeError(f"notion: failed to reset {page_id} to Tagged: {e}") from e
+
+
+def normalise_grocery_name(name: str) -> str:
+    """Grocery rows use the same `Family - Item` convention as recipes (`Spices - Rasam Powder`),
+    so matching an ingredient line against the bare item needs the prefix gone."""
+    return name.split(" - ")[-1].strip().lower()
+
+
+def query_recipe_rows(env: EnvConfig) -> list:
+    """Every row in the recipe DB, for dedupe and family lookup. Names and URLs only — the page
+    bodies are never read, because nothing in this stage rewrites one."""
+    validate_notion(env)
+    if not env.notion_recipe_database_id:
+        raise RuntimeError("Missing NOTION_RECIPE_DATABASE_ID — set it to the recipe DB")
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_recipe_database_id)
+    rows, cursor = [], None
+    while True:
+        kwargs = {"page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            props = page.get("properties", {})
+            spans = props.get("Name", {}).get("title", [])
+            name = "".join(b.get("plain_text", "") for b in spans).strip()
+            row = {
+                "page_id": page["id"],
+                "name": name,
+                "family": name.split(" - ")[0] if " - " in name else None,
+                "video_link": props.get("Video Link", {}).get("url"),
+                "web_link": props.get("Web Link", {}).get("url"),
+            }
+            rows.append(row)
+        if not resp.get("has_more"):
+            return rows
+        cursor = resp.get("next_cursor")
+
+
+def query_grocery_rows(env: EnvConfig) -> dict:
+    """Normalised ingredient name -> grocery page id. A name appearing twice keeps the FIRST
+    row: the duplicate is the user's to resolve, and silently preferring the later one would
+    move links that already exist."""
+    validate_notion(env)
+    if not env.notion_grocery_database_id:
+        raise RuntimeError("Missing NOTION_GROCERY_DATABASE_ID — set it to the Grocery DB")
+    client = Client(auth=env.notion_token)
+    ds_id = _get_data_source_id(client, env.notion_grocery_database_id)
+    out, cursor = {}, None
+    while True:
+        kwargs = {"page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = client.data_sources.query(ds_id, **kwargs)
+        for page in resp.get("results", []):
+            spans = page.get("properties", {}).get("Name", {}).get("title", [])
+            key = normalise_grocery_name("".join(b.get("plain_text", "") for b in spans))
+            if key:
+                out.setdefault(key, page["id"])
+        if not resp.get("has_more"):
+            return out
+        cursor = resp.get("next_cursor")
+
+
+def set_recipe_relation(env: EnvConfig, page_id: str, recipe_row_id: str) -> bool:
+    """Idempotently link an archive item to its recipe row. True when it added the link, False
+    when it was already there. Notion mirrors the recipe side."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    try:
+        props = client.pages.retrieve(page_id=page_id)["properties"]
+        current = props.get("Recipes", {}).get("relation", [])
+        if any(r["id"] == recipe_row_id for r in current):
+            return False
+        linked = current + [{"id": recipe_row_id}]
+        client.pages.update(page_id=page_id, properties={"Recipes": {"relation": linked}})
+        return True
+    except _DISTRIBUTE_WRITE_ERRORS as e:
+        raise RuntimeError(f"notion: failed to relate {page_id} -> {recipe_row_id}: {e}") from e
