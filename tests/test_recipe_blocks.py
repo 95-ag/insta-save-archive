@@ -89,3 +89,38 @@ def test_every_tip_section_name_is_accepted():
     left, _ = _cols(out)
     rendered = [_text(b) for b in left["column"]["children"] if b["type"] == "heading_3"]
     assert rendered == list(TIP_SECTIONS)
+
+
+def test_named_methods_render_as_labelled_subsections_under_instructions():
+    """A source giving two COMPLETE methods must not flatten them, nor cram the second into a
+    Variations tip — the Congee's whole stovetop method arrived as one 333-char line."""
+    out = recipe_blocks(
+        ingredients=["1 cup rice"],
+        steps={"Instant Pot Method": ["Pressure cook 30 min."],
+               "Stovetop Method": ["Simmer 30 min.", "Stir."]},
+        tips={},
+    )
+    left, _ = _cols(out)
+    kinds = [(b["type"], _text(b)) for b in left["column"]["children"]]
+    assert kinds[0] == ("heading_2", "INSTRUCTIONS")
+    assert ("heading_3", "Instant Pot Method") in kinds
+    assert ("heading_3", "Stovetop Method") in kinds
+    assert kinds.index(("heading_3", "Instant Pot Method")) < kinds.index(
+        ("heading_3", "Stovetop Method")), "method order is the reply's order"
+    assert ("bulleted_list_item", "Simmer 30 min.") in kinds
+
+
+def test_a_single_method_list_still_renders_bare_bullets():
+    out = recipe_blocks(ingredients=["a"], steps=["Rinse."], tips={})
+    left, _ = _cols(out)
+    assert not any(b["type"] == "heading_3" for b in left["column"]["children"])
+
+
+def test_a_named_method_with_no_steps_is_rejected():
+    with pytest.raises(ValueError, match="steps"):
+        recipe_blocks(ingredients=["a"], steps={"Oven Method": []}, tips={})
+
+
+def test_named_methods_with_every_group_empty_is_rejected():
+    with pytest.raises(ValueError, match="steps"):
+        recipe_blocks(ingredients=["a"], steps={}, tips={})

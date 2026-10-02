@@ -68,6 +68,123 @@ def test_a_blank_variant_is_a_rejection():
     assert isinstance(out, recipes.Rejection) and "variant" in out.reason
 
 
+def test_named_method_steps_survive_parsing():
+    out = recipes.parse_recipe(
+        _obj(steps={"Oven Method": ["Bake."], "Air Fryer Method": ["Fry."]}),
+        families=FAMILIES,
+        source_id="s1",
+    )
+    assert out.steps == {"Oven Method": ["Bake."], "Air Fryer Method": ["Fry."]}
+
+
+def test_a_named_method_with_no_steps_is_rejected():
+    out = recipes.parse_recipe(_obj(steps={"Oven Method": []}), families=FAMILIES, source_id="s1")
+    assert isinstance(out, recipes.Rejection) and "steps" in out.reason
+
+
+def test_two_recipes_from_one_source_become_two_proposals(tmp_path, monkeypatch):
+    """A post holding two distinct dishes gets a row each: a merged row's Course/Effort/Cuisine
+    describe neither, and its Ingredients relation fuses two shopping lists."""
+    env = _staged(tmp_path, [{**_item("a"), "content": {"caption": "c"}}])
+    reply = "\n".join([_reply("a", variant="First"), _reply("a", variant="Second")])
+    out = recipes.fill(
+        env,
+        cfg=_cfg(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: reply,
+        sleep=lambda s: None,
+        chunk_size=1,
+    )
+    assert out["proposed"] == 2
+    props = json.loads((recipes.staging_dir(env) / "proposals.json").read_text(encoding="utf-8"))
+    assert sorted(p["variant"] for p in props) == ["First", "Second"]
+
+
+def test_apply_creates_a_row_per_proposal_and_marks_the_item_done_once(tmp_path, monkeypatch):
+    env = _staged(tmp_path, [_item("a")])
+    d = recipes.staging_dir(env)
+    base = {
+        "source_id": "a",
+        "family": None,
+        "ingredients": ["1/2 cup fried gram"],
+        "steps": ["Do it."],
+        "tips": {},
+        "cuisine": [],
+        "taste": [],
+        "course": [],
+        "nutrition": [],
+        "effort": None,
+    }
+    (d / "proposals.json").write_text(
+        json.dumps([{**base, "variant": "First"}, {**base, "variant": "Second"}]), encoding="utf-8"
+    )
+    (d / "rejections.json").write_text("[]", encoding="utf-8")
+    calls = _stub(monkeypatch, items=[_item("a")], recipe_rows=[])
+    made = []
+
+    def _create(env_, *, title, properties, children):
+        made.append(title)
+        return f"row-{len(made)}"
+
+    monkeypatch.setattr(recipes, "create_recipe_row", _create)
+    out = recipes.apply(env, cfg=_cfg(), version="v")
+    assert out["created"] == 2
+    assert made == ["First", "Second"]
+    assert len(calls["relations"]) == 2, "both rows relate back to the one item"
+    assert calls["distributed"] == ["page-a"], "the item is marked done exactly once"
+
+
+def test_apply_does_not_mark_the_item_done_if_one_of_its_rows_fails(tmp_path, monkeypatch):
+    """Partial success must not look complete — the item comes back round for the missing row."""
+    env = _staged(tmp_path, [_item("a")])
+    d = recipes.staging_dir(env)
+    base = {
+        "source_id": "a",
+        "family": None,
+        "ingredients": ["i"],
+        "steps": ["s"],
+        "tips": {},
+        "cuisine": [],
+        "taste": [],
+        "course": [],
+        "nutrition": [],
+        "effort": None,
+    }
+    (d / "proposals.json").write_text(
+        json.dumps([{**base, "variant": "First"}, {**base, "variant": "Second"}]), encoding="utf-8"
+    )
+    (d / "rejections.json").write_text("[]", encoding="utf-8")
+    calls = _stub(monkeypatch, items=[_item("a")], recipe_rows=[])
+    n = {"i": 0}
+
+    def _create(env_, *, title, properties, children):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise RuntimeError("notion down")
+        return "row-1"
+
+    monkeypatch.setattr(recipes, "create_recipe_row", _create)
+    out = recipes.apply(env, cfg=_cfg(), version="v")
+    assert out["created"] == 1 and out["failed"] == 1
+    assert calls["distributed"] == [], "a partially-written item stays Routed"
+
+
+def test_prepare_blocks_when_any_related_row_is_empty(tmp_path, monkeypatch):
+    """One source can own two rows; a half-filled pair must surface, not count as captured."""
+    env = _env(tmp_path)
+    calls = _stub(
+        monkeypatch,
+        items=[_item("a", recipes_rel=["r1", "r2"])],
+        recipe_rows=[],
+        row_blocks={"r1": [_bullet("Real content")], "r2": _shell_blocks()},
+    )
+    assert recipes.prepare(env, cfg=_cfg(), version="v") == 0
+    batch = json.loads((recipes.staging_dir(env) / "batch.json").read_text(encoding="utf-8"))
+    assert batch["blocked"] == ["a"]
+    assert calls["distributed"] == []
+
+
 def test_an_out_of_vocabulary_axis_value_is_rejected():
     out = recipes.parse_recipe(_obj(course=["Brunch"]), families=FAMILIES, source_id="s1")
     assert isinstance(out, recipes.Rejection) and "Course" in out.reason
@@ -478,18 +595,34 @@ def test_fill_writes_proposals_and_rejections_separately(tmp_path, monkeypatch):
 def test_fill_keeps_the_raw_reply_when_a_chunk_leaves_items_unanswered(tmp_path, monkeypatch):
     """A chunk that silently omits items is undiagnosable without the reply text — the same gap
     enrich closed with raw_reply.txt. Measured: 5 of 82 items got no line back."""
-    env = _staged(tmp_path, [{**_item("a"), "content": {"caption": "c"}},
-                             {**_item("b"), "content": {"caption": "c"}}])
-    recipes.fill(env, cfg=_cfg(), model="m", template=TEMPLATE,
-                 call=lambda p, m: _reply("a"), sleep=lambda s: None, chunk_size=2)
+    env = _staged(
+        tmp_path,
+        [{**_item("a"), "content": {"caption": "c"}}, {**_item("b"), "content": {"caption": "c"}}],
+    )
+    recipes.fill(
+        env,
+        cfg=_cfg(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: _reply("a"),
+        sleep=lambda s: None,
+        chunk_size=2,
+    )
     raw = (recipes.staging_dir(env) / "raw_reply_1.txt").read_text(encoding="utf-8")
-    assert "\"source_id\": \"a\"" in raw
+    assert '"source_id": "a"' in raw
 
 
 def test_fill_keeps_no_raw_reply_when_every_item_is_answered(tmp_path, monkeypatch):
     env = _staged(tmp_path, [{**_item("a"), "content": {"caption": "c"}}])
-    recipes.fill(env, cfg=_cfg(), model="m", template=TEMPLATE,
-                 call=lambda p, m: _reply("a"), sleep=lambda s: None, chunk_size=1)
+    recipes.fill(
+        env,
+        cfg=_cfg(),
+        model="m",
+        template=TEMPLATE,
+        call=lambda p, m: _reply("a"),
+        sleep=lambda s: None,
+        chunk_size=1,
+    )
     assert not list(recipes.staging_dir(env).glob("raw_reply_*.txt"))
 
 
@@ -588,3 +721,13 @@ def test_apply_links_matched_ingredients_to_their_grocery_rows(tmp_path, monkeyp
     monkeypatch.setattr(recipes, "create_recipe_row", _create)
     recipes.apply(env, cfg=_cfg(), version="v")
     assert seen["properties"]["Ingredients"] == {"relation": [{"id": "g1"}]}
+
+
+def test_the_prompt_explains_named_methods_and_two_dishes():
+    """Both rules live in the shipped file, not just in a test fixture."""
+    from pathlib import Path
+
+    text = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
+    assert "Instant Pot Method" in text
+    assert "never park a complete method in a Variations tip" in text
+    assert "ONE OBJECT PER DISH" in text

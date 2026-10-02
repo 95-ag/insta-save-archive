@@ -39,15 +39,30 @@ def _column(children):
     return {"object": "block", "type": "column", "column": {"children": children}}
 
 
+def _instructions(steps) -> list:
+    """INSTRUCTIONS, either as bare bullets or as labelled methods.
+
+    A source offering two COMPLETE alternatives for one dish (Instant Pot and stovetop, oven and
+    air-fryer) gets a labelled subsection each, in the reply's own order. Flattening them loses
+    which step belongs to which method, and parking the second in a Variations tip produced a
+    single 333-character line on the first live row."""
+    if isinstance(steps, dict):
+        out = [_heading(2, "INSTRUCTIONS"), _divider()]
+        for name, lines in steps.items():
+            out += _section(name, lines, level=3)
+        return out
+    return _section("INSTRUCTIONS", steps)
+
+
 def recipe_blocks(*, ingredients, steps, tips) -> list:
     """The body for one recipe. No embed: the source URL lives in the Video Link property."""
-    if not steps:
+    if not steps or (isinstance(steps, dict) and not all(steps.values())):
         raise ValueError("recipe_blocks: steps are required — a recipe needs a method")
     unknown = [k for k in tips if k not in TIP_SECTIONS]
     if unknown:
         raise ValueError(f"recipe_blocks: unknown tip section(s) {sorted(unknown)}")
 
-    left = _section("INSTRUCTIONS", steps)
+    left = _instructions(steps)
     filled = [(name, tips.get(name) or []) for name in TIP_SECTIONS]
     filled = [(name, lines) for name, lines in filled if lines]
     if filled:

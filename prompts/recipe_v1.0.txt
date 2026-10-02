@@ -28,6 +28,18 @@ INGREDIENTS and STEPS
   - One ingredient per entry, quantity included exactly as the source gives it ("1/2 cup fried
     gram"). Keep the source's own order.
   - One step per entry, imperative, no step numbers — they are rendered as bullets.
+  - "steps" is normally a LIST of strings.
+  - When the source gives TWO OR MORE COMPLETE alternative methods for the SAME dish (Instant Pot
+    and stovetop, oven and air-fryer), send an OBJECT instead, keyed by the method's own name:
+      "steps": {"Instant Pot Method": ["...", "..."], "Stovetop Method": ["...", "..."]}
+    Never flatten two methods into one list, and never park a complete method in a Variations tip.
+    Use an object ONLY for complete alternatives; a partial tweak belongs in Variations.
+
+TWO DISHES IN ONE POST
+  - If the post contains two or more DISTINCT dishes, each with its own ingredients and method,
+    reply with ONE OBJECT PER DISH, all carrying the same source_id. Each becomes its own row.
+  - Do NOT merge distinct dishes into a single recipe: their ingredients and properties belong to
+    different dishes. Alternative methods for ONE dish are not two dishes — use "steps" above.
 
 TIPS
   - Include ONLY the subsections you actually have. Omit a subsection entirely rather than

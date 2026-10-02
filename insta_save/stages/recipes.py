@@ -96,6 +96,9 @@ def parse_recipe(obj, *, families, source_id):
     ingredients = obj.get("ingredients") or []
     if not steps:
         return Rejection(source_id, "no steps — a recipe without a method is not a recipe")
+    if isinstance(steps, dict) and not all(steps.values()):
+        empty = sorted(name for name, lines in steps.items() if not lines)
+        return Rejection(source_id, f"named method(s) with no steps: {empty}")
     if not ingredients:
         return Rejection(source_id, "no ingredients listed in the source")
     tips = obj.get("tips") or {}
@@ -216,15 +219,21 @@ def prepare(env, *, cfg, version) -> int:
 
     staged, blocked, skipped = [], [], 0
     for item in query_routed_for_target(env, cfg.target):
-        row_id = item["recipes"][0] if item["recipes"] else by_code.get(_shortcode(item["ig_link"]))
-        if row_id is None:
+        related = list(item["recipes"])
+        if not related:
+            by_shortcode = by_code.get(_shortcode(item["ig_link"]))
+            related = [by_shortcode] if by_shortcode else []
+        if not related:
             content = get_page_content(env, item["page_id"])
             staged.append({**item, "content": content})
             continue
-        if content_words(get_blocks_deep(env, row_id)) == 0:
+        # One source can own several rows (two distinct dishes in one post), so a half-filled
+        # pair must surface rather than count as captured.
+        if any(content_words(get_blocks_deep(env, rid)) == 0 for rid in related):
             blocked.append(item["source_id"])
             continue
-        set_recipe_relation(env, item["page_id"], row_id)
+        for rid in related:
+            set_recipe_relation(env, item["page_id"], rid)
         write_distributed(env, item["page_id"], version)
         skipped += 1
 
@@ -348,30 +357,53 @@ def apply(env, *, cfg, version) -> dict:
         write_misrouted(env, item["page_id"], rej["reason"], version)
         counts["misrouted"] += 1
 
+    # Grouped, because one source can yield several rows: two distinct dishes in one post get a
+    # row each. The item is marked done once, and only when EVERY one of its rows was written —
+    # a partial success must not look complete.
+    by_source = {}
     for raw in proposals:
-        item = items.get(raw["source_id"])
+        by_source.setdefault(raw["source_id"], []).append(raw)
+
+    for source_id, group in by_source.items():
+        item = items.get(source_id)
         if item is None:
-            log.warning("recipe.apply: %s is no longer Routed — skipped", raw["source_id"])
+            log.warning("recipe.apply: %s is no longer Routed — skipped", source_id)
             continue
-        proposal = RecipeProposal(**raw)
-        matched, unmatched = match_ingredients(proposal.ingredients, grocery)
-        if unmatched:
-            review.append({"source_id": proposal.source_id, "unmatched": unmatched})
-        props = properties_for(cfg, tags=item["tags"], proposal=proposal, ig_link=item["ig_link"])
-        if matched:
-            props["Ingredients"] = {"relation": [{"id": pid} for pid in matched]}
-        body = recipe_blocks(
-            ingredients=proposal.ingredients, steps=proposal.steps, tips=proposal.tips
-        )
-        try:
-            row_id = create_recipe_row(env, title=proposal.title, properties=props, children=body)
-        except RuntimeError as e:
-            log.error("recipe.apply: %s stays Routed — %s", proposal.source_id, e)
-            counts["failed"] += 1
-            continue
-        set_recipe_relation(env, item["page_id"], row_id)
-        write_distributed(env, item["page_id"], version)
-        counts["created"] += 1
+        written, failed = [], 0
+        for raw in group:
+            proposal = RecipeProposal(**raw)
+            matched, unmatched = match_ingredients(proposal.ingredients, grocery)
+            if unmatched:
+                review.append({"source_id": source_id, "unmatched": unmatched})
+            props = properties_for(
+                cfg, tags=item["tags"], proposal=proposal, ig_link=item["ig_link"]
+            )
+            if matched:
+                props["Ingredients"] = {"relation": [{"id": pid} for pid in matched]}
+            body = recipe_blocks(
+                ingredients=proposal.ingredients, steps=proposal.steps, tips=proposal.tips
+            )
+            try:
+                row_id = create_recipe_row(
+                    env, title=proposal.title, properties=props, children=body
+                )
+            except RuntimeError as e:
+                log.error("recipe.apply: %s stays Routed — %s", source_id, e)
+                failed += 1
+                continue
+            set_recipe_relation(env, item["page_id"], row_id)
+            written.append(row_id)
+        counts["created"] += len(written)
+        counts["failed"] += failed
+        if written and not failed:
+            write_distributed(env, item["page_id"], version)
+        elif written:
+            log.warning(
+                "recipe.apply: %s wrote %d of %d row(s) and stays Routed — re-run to finish it",
+                source_id,
+                len(written),
+                len(group),
+            )
 
     (d / "unmatched_ingredients.json").write_text(
         json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8"
