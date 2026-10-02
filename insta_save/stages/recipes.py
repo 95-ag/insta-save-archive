@@ -279,6 +279,13 @@ def fill(env, *, cfg, model, template, call=None, sleep=time.sleep, chunk_size=8
         objects, bad = parse_results_jsonl(reply)
         for raw in bad:
             log.warning("recipe.fill: unparseable reply line: %s", raw[:160])
+        answered = {obj.get("source_id") for obj in objects}
+        if any(i["source_id"] not in answered for i in chunk):
+            # A chunk that silently omits items is undiagnosable without the reply text — the
+            # same gap enrich closed with raw_reply.txt.
+            path = d / f"raw_reply_{start // chunk_size + 1}.txt"
+            path.write_text(reply, encoding="utf-8")
+            log.warning("recipe.fill: chunk left items unanswered; raw reply kept at %s", path)
         for obj in objects:
             sid = obj.get("source_id")
             if sid not in by_id:

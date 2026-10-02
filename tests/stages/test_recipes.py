@@ -475,6 +475,24 @@ def test_fill_writes_proposals_and_rejections_separately(tmp_path, monkeypatch):
     assert rejs == [{"source_id": "b", "reason": "a storage tip"}]
 
 
+def test_fill_keeps_the_raw_reply_when_a_chunk_leaves_items_unanswered(tmp_path, monkeypatch):
+    """A chunk that silently omits items is undiagnosable without the reply text — the same gap
+    enrich closed with raw_reply.txt. Measured: 5 of 82 items got no line back."""
+    env = _staged(tmp_path, [{**_item("a"), "content": {"caption": "c"}},
+                             {**_item("b"), "content": {"caption": "c"}}])
+    recipes.fill(env, cfg=_cfg(), model="m", template=TEMPLATE,
+                 call=lambda p, m: _reply("a"), sleep=lambda s: None, chunk_size=2)
+    raw = (recipes.staging_dir(env) / "raw_reply_1.txt").read_text(encoding="utf-8")
+    assert "\"source_id\": \"a\"" in raw
+
+
+def test_fill_keeps_no_raw_reply_when_every_item_is_answered(tmp_path, monkeypatch):
+    env = _staged(tmp_path, [{**_item("a"), "content": {"caption": "c"}}])
+    recipes.fill(env, cfg=_cfg(), model="m", template=TEMPLATE,
+                 call=lambda p, m: _reply("a"), sleep=lambda s: None, chunk_size=1)
+    assert not list(recipes.staging_dir(env).glob("raw_reply_*.txt"))
+
+
 def test_apply_misroutes_a_rejected_item_with_its_reason(tmp_path, monkeypatch):
     env = _staged(tmp_path, [_item("a")])
     d = recipes.staging_dir(env)
