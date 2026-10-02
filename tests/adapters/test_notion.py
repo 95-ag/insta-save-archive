@@ -1,3 +1,5 @@
+import types
+
 import pytest
 from insta_save.adapters import notion
 
@@ -516,3 +518,46 @@ def test_distribute_row_recipes_is_empty_when_the_property_is_absent():
 )
 def test_normalise_grocery_name_strips_the_family_prefix_and_case(raw, expected):
     assert notion.normalise_grocery_name(raw) == expected
+
+
+def _grocery_client(monkeypatch, names):
+    def _page(i, name):
+        return {"id": f"g{i}", "properties": {"Name": {"title": [{"plain_text": name}]}}}
+
+    class _DataSources:
+        def query(self, ds, **kw):
+            return {"results": [_page(i, n) for i, n in enumerate(names)], "has_more": False}
+
+    class _Client:
+        def __init__(self, auth=None):
+            self.data_sources = _DataSources()
+
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    monkeypatch.setattr(notion, "_get_data_source_id", lambda c, db: "ds")
+    monkeypatch.setattr(notion, "Client", _Client)
+    return types.SimpleNamespace(notion_token="t", notion_grocery_database_id="g")
+
+
+def test_query_grocery_rows_keys_on_both_the_full_and_the_bare_name(monkeypatch):
+    env = _grocery_client(monkeypatch, ["Spices - Rasam Powder"])
+    out = notion.query_grocery_rows(env)
+    assert out["spices - rasam powder"] == "g0"
+    assert out["rasam powder"] == "g0"
+
+
+def test_an_unprefixed_row_wins_a_contested_bare_name(monkeypatch):
+    """'Pickle - Garlic' is a garlic pickle, not garlic. The row literally named 'Garlic' owns
+    the bare key; linking an ingredient line to the pickle would be a wrong link, and a wrong
+    link is worse than none."""
+    env = _grocery_client(monkeypatch, ["Pickle - Garlic", "Garlic"])
+    out = notion.query_grocery_rows(env)
+    assert out["garlic"] == "g1"
+    assert out["pickle - garlic"] == "g0"
+
+
+def test_a_contested_bare_name_with_no_unprefixed_row_is_dropped(monkeypatch):
+    """Neither claimant is 'the' item, so nothing matches and the ingredient is reported."""
+    env = _grocery_client(monkeypatch, ["Spices - Basil", "Fresh - Basil"])
+    out = notion.query_grocery_rows(env)
+    assert "basil" not in out
+    assert out["spices - basil"] == "g0" and out["fresh - basil"] == "g1"

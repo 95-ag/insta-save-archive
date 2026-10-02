@@ -921,15 +921,19 @@ def query_recipe_rows(env: EnvConfig) -> list:
 
 
 def query_grocery_rows(env: EnvConfig) -> dict:
-    """Normalised ingredient name -> grocery page id. A name appearing twice keeps the FIRST
-    row: the duplicate is the user's to resolve, and silently preferring the later one would
-    move links that already exist."""
+    """Lookup name -> grocery page id, keyed on BOTH the full title and the bare item.
+
+    Stripping the `Family - Item` prefix can conflate distinct items: measured live, `Garlic`
+    and `Pickle - Garlic` both reduce to "garlic", and a garlic pickle is not garlic. So a
+    contested bare name is owned by the row whose full title IS that name, and dropped when no
+    row claims it outright — the ingredient is then reported as unmatched. A missed link is
+    recoverable; a wrong one silently rewrites a shopping list."""
     validate_notion(env)
     if not env.notion_grocery_database_id:
         raise RuntimeError("Missing NOTION_GROCERY_DATABASE_ID — set it to the Grocery DB")
     client = Client(auth=env.notion_token)
     ds_id = _get_data_source_id(client, env.notion_grocery_database_id)
-    out, cursor = {}, None
+    claims, cursor = {}, None
     while True:
         kwargs = {"page_size": 100}
         if cursor:
@@ -937,12 +941,24 @@ def query_grocery_rows(env: EnvConfig) -> dict:
         resp = client.data_sources.query(ds_id, **kwargs)
         for page in resp.get("results", []):
             spans = page.get("properties", {}).get("Name", {}).get("title", [])
-            key = normalise_grocery_name("".join(b.get("plain_text", "") for b in spans))
-            if key:
-                out.setdefault(key, page["id"])
+            full = "".join(b.get("plain_text", "") for b in spans).strip().lower()
+            if not full:
+                continue
+            for key in {full, normalise_grocery_name(full)}:
+                claims.setdefault(key, []).append((page["id"], full))
         if not resp.get("has_more"):
-            return out
+            break
         cursor = resp.get("next_cursor")
+
+    out = {}
+    for key, rows in claims.items():
+        if len(rows) == 1:
+            out[key] = rows[0][0]
+            continue
+        exact = [pid for pid, full in rows if full == key]
+        if len(exact) == 1:
+            out[key] = exact[0]
+    return out
 
 
 def set_recipe_relation(env: EnvConfig, page_id: str, recipe_row_id: str) -> bool:
