@@ -179,14 +179,19 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
     ignore_res = [re.compile(rf"\b{re.escape(w)}\b") for w in (ignore or []) if w]
     matched, unmatched = [], []
     for line in ingredients:
-        key = normalise_grocery_name(line)
-        hit = grocery.get(key) or next(
-            (pid for name, pid in grocery.items() if name and name in key), None
+        # Two readings of a dashed line, because the dash means different things on each side
+        # of this comparison: in a grocery ROW it is `Family - Item`, but in an ingredient LINE
+        # it is usually `name - quantity`. Stripping blindly turned "Sunflower seeds - 1/2 cup"
+        # into "1/2 cup" and lost the match.
+        keys = [normalise_grocery_name(line), normalise_grocery_name(line.replace(" - ", " "))]
+        key = keys[0]
+        hit = next((grocery[k] for k in keys if k in grocery), None) or next(
+            (pid for name, pid in grocery.items() if name and any(name in k for k in keys)), None
         )
         if hit is None:
             # Longest alias first: "cooking oil" must not be decided by the shorter "oil" rule.
             for word in sorted((w for w in aliases if w), key=len, reverse=True):
-                if word not in key:
+                if not any(word in k for k in keys):
                     continue
                 targets = aliases[word]
                 if isinstance(targets, str):
@@ -211,7 +216,7 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
             if hit not in matched:
                 matched.append(hit)
             continue
-        if any(rx.search(key) for rx in ignore_res):
+        if any(rx.search(k) for rx in ignore_res for k in keys):
             continue
         unmatched.append(line)
     return matched, unmatched

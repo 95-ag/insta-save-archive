@@ -859,3 +859,20 @@ def test_the_longest_matching_alias_wins():
         aliases={"oil": "olive oil", "cooking oil": "sunflower oil"},
     )
     assert matched == ["g-sun"]
+
+
+def test_an_ingredient_line_with_a_dash_still_matches():
+    """`normalise_grocery_name` strips a `Family - Item` prefix, which is right for a grocery
+    ROW but wrong for an ingredient LINE: in `Sunflower seeds - 1/2 cup` the dash separates the
+    name from the quantity, so stripping left only "1/2 cup" and the match was lost."""
+    grocery = {"sunflower seeds": "g1", "sesame seeds": "g2"}
+    matched, unmatched = recipes.match_ingredients(
+        ["Sunflower seeds - 1/2 cup", "White sesame seeds - 1/2 cup"], grocery
+    )
+    assert matched == ["g1", "g2"] and unmatched == []
+
+
+def test_a_dashed_line_still_matches_on_its_tail_when_that_is_the_name():
+    """Both readings are tried, so a line whose name sits AFTER the dash still works."""
+    matched, _ = recipes.match_ingredients(["Spices - rasam powder"], {"rasam powder": "g1"})
+    assert matched == ["g1"]
