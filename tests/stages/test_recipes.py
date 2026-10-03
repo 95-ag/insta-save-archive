@@ -828,8 +828,9 @@ def test_a_multi_target_alias_links_only_the_rows_that_exist():
     """A target that is not stocked is skipped, not invented — and the line still counts as
     matched because at least one real row was found."""
     matched, unmatched = recipes.match_ingredients(
-        ["pico de gallo"], {"tomatoes": "g1"},
-        aliases={"pico de gallo": ["tomatoes", "onions", "green chilli"]}
+        ["pico de gallo"],
+        {"tomatoes": "g1"},
+        aliases={"pico de gallo": ["tomatoes", "onions", "green chilli"]},
     )
     assert matched == ["g1"] and unmatched == []
 
@@ -853,7 +854,8 @@ def test_the_longest_matching_alias_wins():
     """`cooking oil` must resolve as cooking oil, not fall to the shorter `oil` rule."""
     grocery = {"sunflower oil": "g-sun", "olive oil": "g-olive"}
     matched, _ = recipes.match_ingredients(
-        ["2 tbsp cooking oil"], grocery,
-        aliases={"oil": "olive oil", "cooking oil": "sunflower oil"}
+        ["2 tbsp cooking oil"],
+        grocery,
+        aliases={"oil": "olive oil", "cooking oil": "sunflower oil"},
     )
     assert matched == ["g-sun"]
