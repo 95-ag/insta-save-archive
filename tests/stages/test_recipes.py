@@ -891,3 +891,25 @@ def test_the_shorter_name_still_matches_when_it_is_the_only_one():
     grocery = {"sunflower": "g-seeds", "sunflower oil": "g-oil"}
     matched, _ = recipes.match_ingredients(["1/2 cup sunflower"], grocery)
     assert matched == ["g-seeds"]
+
+
+def test_a_grocery_name_must_match_on_a_word_boundary():
+    """`Seeds - Melon` reduces to the key "melon", which sits inside "watermelon". A bare
+    substring test would link a watermelon line to melon seeds."""
+    grocery = {"melon": "g-seeds"}
+    matched, unmatched = recipes.match_ingredients(["1 cup watermelon, cubed"], grocery)
+    assert matched == [] and unmatched == ["1 cup watermelon, cubed"]
+
+
+def test_a_word_boundary_match_still_works_mid_sentence():
+    grocery = {"melon": "g-seeds"}
+    matched, _ = recipes.match_ingredients(["1/2 cup melon, diced"], grocery)
+    assert matched == ["g-seeds"]
+
+
+def test_a_multi_word_grocery_name_still_matches():
+    grocery = {"lime juice": "g1", "chicken stock cubes": "g2"}
+    matched, _ = recipes.match_ingredients(
+        ["1 tbsp lime juice", "2 chicken stock cubes, crushed"], grocery
+    )
+    assert matched == ["g1", "g2"]

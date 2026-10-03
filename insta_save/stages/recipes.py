@@ -189,7 +189,13 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
         if hit is None:
             # LONGEST name wins: "sunflower" sits inside "sunflower oil", so without this the
             # dict's order decides whether an oil line links to the oil or to the seeds.
-            near = [name for name in grocery if name and any(name in k for k in keys)]
+            # WORD BOUNDARY, because "melon" sits inside "watermelon" and a bare substring
+            # test would link a watermelon line to melon seeds.
+            near = [
+                name
+                for name in grocery
+                if name and any(re.search(rf"\b{re.escape(name)}\b", k) for k in keys)
+            ]
             if near:
                 hit = grocery[max(near, key=len)]
         if hit is None:
