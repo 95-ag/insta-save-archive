@@ -23,6 +23,9 @@ class RecipeConfig:
     # ingredient word -> the grocery row it should resolve to. Curated, because neither half is
     # inferable: lime juice is what you get FROM a lime, and Sonamasoori is the default rice.
     ingredient_aliases: dict = field(default_factory=dict)
+    # Ingredient words that are not groceries and never will be ("water"). Reporting them as
+    # unmatched every run is noise, not a finding — 22 of 200 lines were water.
+    ingredient_ignore: list = field(default_factory=list)
 
     def axes_for(self, tags) -> dict:
         merged = {}
@@ -44,6 +47,13 @@ def load_recipes(path=_DEFAULT_RECIPES) -> RecipeConfig:
     aliases = data.get("ingredient_aliases", {})
     if not isinstance(aliases, dict):
         raise ValueError(f"{path}: 'ingredient_aliases' must be an object")
+    ignore = data.get("ingredient_ignore", [])
+    if not isinstance(ignore, list):
+        raise ValueError(f"{path}: 'ingredient_ignore' must be a list")
     return RecipeConfig(
-        target=target, families=families, tag_axes=tag_axes, ingredient_aliases=aliases
+        target=target,
+        families=families,
+        tag_axes=tag_axes,
+        ingredient_aliases=aliases,
+        ingredient_ignore=ignore,
     )

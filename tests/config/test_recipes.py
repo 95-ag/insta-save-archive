@@ -121,3 +121,20 @@ def test_ingredient_aliases_load(tmp_path):
 def test_ingredient_aliases_default_to_empty(tmp_path):
     cfg = load_recipes(_write(tmp_path, {"target": "T", "families": {}, "tag_axes": {}}))
     assert cfg.ingredient_aliases == {}
+
+
+def test_ingredient_ignore_loads(tmp_path):
+    """`water` is 22 of 200 unmatched lines and will never be a grocery row — reporting it as
+    unmatched is pure noise, so it is excluded rather than aliased."""
+    cfg = load_recipes(
+        _write(
+            tmp_path,
+            {"target": "T", "families": {}, "tag_axes": {}, "ingredient_ignore": ["water", "ice"]},
+        )
+    )
+    assert cfg.ingredient_ignore == ["water", "ice"]
+
+
+def test_ingredient_ignore_defaults_to_empty(tmp_path):
+    cfg = load_recipes(_write(tmp_path, {"target": "T", "families": {}, "tag_axes": {}}))
+    assert cfg.ingredient_ignore == []

@@ -163,15 +163,20 @@ def content_words(blocks) -> int:
     return total
 
 
-def match_ingredients(ingredients, grocery, aliases=None) -> tuple:
+def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
     """Link an ingredient line to an existing Grocery row by normalised name. Match-only: a
     missing grocery row is REPORTED, never created — Buy/Expiry are physical-world state the
     pipeline cannot know. A missed link is recoverable; a wrong one rewrites a shopping list.
 
     Resolution order is exact name, then grocery-name-as-substring, then a curated alias. The
     alias comes LAST so it can never displace a row that genuinely bears the name: with a
-    `lime -> lime juice` alias in play, a line reading "1 lime" still prefers a `Lime` row."""
+    `lime -> lime juice` alias in play, a line reading "1 lime" still prefers a `Lime` row.
+
+    A line naming only an `ignore` word (water) is dropped rather than reported: it is not a
+    grocery item and never will be. The check is word-boundary and runs only AFTER matching
+    fails, so "1 cup watermelon" still matches a watermelon row."""
     aliases = aliases or {}
+    ignore_res = [re.compile(rf"\b{re.escape(w)}\b") for w in (ignore or []) if w]
     matched, unmatched = [], []
     for line in ingredients:
         key = normalise_grocery_name(line)
@@ -189,8 +194,10 @@ def match_ingredients(ingredients, grocery, aliases=None) -> tuple:
         if hit:
             if hit not in matched:
                 matched.append(hit)
-        else:
-            unmatched.append(line)
+            continue
+        if any(rx.search(key) for rx in ignore_res):
+            continue
+        unmatched.append(line)
     return matched, unmatched
 
 
@@ -397,7 +404,10 @@ def apply(env, *, cfg, version) -> dict:
         for raw in group:
             proposal = RecipeProposal(**raw)
             matched, unmatched = match_ingredients(
-                proposal.ingredients, grocery, aliases=cfg.ingredient_aliases
+                proposal.ingredients,
+                grocery,
+                aliases=cfg.ingredient_aliases,
+                ignore=cfg.ingredient_ignore,
             )
             if unmatched:
                 review.append({"source_id": source_id, "unmatched": unmatched})

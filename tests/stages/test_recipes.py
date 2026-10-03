@@ -790,3 +790,25 @@ def test_an_alias_pointing_at_a_missing_row_is_reported_not_invented():
 def test_match_ingredients_works_without_aliases():
     matched, _ = recipes.match_ingredients(["1 tsp salt"], {"salt": "g1"})
     assert matched == ["g1"]
+
+
+def test_an_ignored_ingredient_is_neither_matched_nor_reported():
+    """Water is not a grocery item; listing it as "unmatched" every run is noise, not a finding."""
+    matched, unmatched = recipes.match_ingredients(
+        ["600 ml water", "1 tsp salt"], {"salt": "g1"}, ignore=["water"]
+    )
+    assert matched == ["g1"]
+    assert unmatched == [], "the water line is dropped, not reported"
+
+
+def test_an_ignore_word_does_not_swallow_a_real_ingredient():
+    """`water` must not silence `watermelon` or `rose water`-adjacent real items."""
+    matched, unmatched = recipes.match_ingredients(
+        ["1 cup watermelon"], {"watermelon": "g1"}, ignore=["water"]
+    )
+    assert matched == ["g1"] and unmatched == []
+
+
+def test_an_ignored_line_is_dropped_even_when_nothing_else_matches():
+    _, unmatched = recipes.match_ingredients(["water"], {}, ignore=["water"])
+    assert unmatched == []
