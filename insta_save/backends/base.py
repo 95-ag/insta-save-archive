@@ -11,9 +11,12 @@ AUTOMATED False -> fill() is agent-filled; returns FillResult(external=True) (cl
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from insta_save.enrich_schema import RESULT_FIELDS
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +144,57 @@ def _scan_json_depth(line: str, depth: int, in_string: bool, escaped: bool) -> t
     return depth, in_string, escaped
 
 
+_BARE_QUOTE_RE = re.compile(r'(\\.)|"')
+_LIST_FIELDS = frozenset({"topics"})
+
+
+def _repair_unescaped_quotes(chunk: str) -> dict | None:
+    """Recover one result object whose string value holds an unescaped double quote.
+
+    Quote boundaries are what the model got wrong, so they are not trusted: each known key
+    (RESULT_FIELDS, in contract order) is located and the text between two keys is the value.
+    The repair is deliberately all-or-nothing and returns None — leaving the chunk bad, so
+    the item is retried — unless every field is found EXACTLY ONCE and in order. A key name
+    that also appears inside a value makes the boundary ambiguous, and a wrong value written
+    to Notion costs more than a retry. String values must be quote-delimited; `topics` must
+    parse as a JSON list on its own."""
+    text = chunk.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    markers = []
+    for field in RESULT_FIELDS:
+        found = list(re.finditer(r'(?:^\{|,)\s*"%s"\s*:\s*' % re.escape(field), text))
+        if len(found) != 1:
+            return None
+        markers.append(found[0])
+    if any(a.end() > b.start() for a, b in zip(markers, markers[1:])):
+        return None
+    ends = [m.start() for m in markers[1:]] + [len(text) - 1]
+    result = {}
+    for field, marker, end in zip(RESULT_FIELDS, markers, ends):
+        raw = text[marker.end() : end].strip()
+        try:
+            if field in _LIST_FIELDS:
+                value = json.loads(raw)
+                if not isinstance(value, list):
+                    return None
+            else:
+                if len(raw) < 2 or raw[0] != '"' or raw[-1] != '"':
+                    return None
+                inner = _BARE_QUOTE_RE.sub(lambda m: m.group(1) or '\\"', raw[1:-1])
+                value = json.loads('"' + inner + '"', strict=False)
+        except json.JSONDecodeError:
+            return None
+        result[field] = value
+    return result
+
+
+def _split_swallowed_objects(chunk: str) -> list[str]:
+    """An odd quote count flips the depth scan's string state, so the failed chunk may also
+    hold the lines that follow it. Cut it at every line that opens a result object."""
+    return re.split(r'\n(?=\s*\{\s*"page_id"\s*:)', chunk)
+
+
 def parse_results_jsonl(text: str) -> tuple[list[dict], list[str]]:
     """Parse JSON-Lines model output (enrich v2.1): one result object per reply line.
 
@@ -160,11 +214,24 @@ def parse_results_jsonl(text: str) -> tuple[list[dict], list[str]]:
     buffer: list[str] = []
     depth, in_string, escaped = 0, False, False
 
+    def _recover(chunk: str) -> None:
+        for piece in _split_swallowed_objects(chunk):
+            try:
+                json.loads(piece, strict=False)
+            except json.JSONDecodeError:
+                repaired = _repair_unescaped_quotes(piece)
+                if repaired is None:
+                    bad_chunks.append(piece)
+                else:
+                    items.append(repaired)
+            else:
+                _flush(piece)
+
     def _flush(chunk: str) -> None:
         try:
             value = json.loads(chunk, strict=False)  # tolerate raw control chars
         except json.JSONDecodeError:
-            bad_chunks.append(chunk)
+            _recover(chunk)
             return
         if isinstance(value, dict):
             items.append(value)

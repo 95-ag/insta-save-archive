@@ -253,3 +253,88 @@ def test_parse_results_jsonl_ignores_a_fence_between_values_not_inside_one():
     text = '```json\n{"page_id": "p1", "summary": "a\nb"}\n```\n{"page_id": "p2"}'
     items, bad = base.parse_results_jsonl(text)
     assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def _enrich_line(**overrides):
+    fields = {
+        "page_id": "p1",
+        "source_id": "s1",
+        "title": "A title",
+        "summary": "A summary.",
+        "externals": "",
+        "content_type": "Reel",
+        "topics": ["ai", "claude-code"],
+        "primary_topic": "ai",
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _dump_with_raw_summary(raw_summary, **overrides):
+    """json.dumps the object, then splice a summary that is NOT escaped, as the model does."""
+    marker = "@@SUMMARY@@"
+    line = json.dumps(_enrich_line(summary=marker, **overrides))
+    return line.replace(marker, raw_summary)
+
+
+def test_jsonl_recovers_a_summary_holding_an_unescaped_quote():
+    raw = 'He calls it "the one-prompt audit" and shows the steps.'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert bad == []
+    assert items == [_enrich_line(summary=raw)]
+
+
+def test_jsonl_recovery_keeps_valid_escapes_and_fixes_only_the_bare_quote():
+    raw = 'Line one\\nline "two" with a \\"proper\\" escape.'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert bad == []
+    assert items[0]["summary"] == 'Line one\nline "two" with a "proper" escape.'
+
+
+def test_jsonl_recovers_an_unescaped_quote_in_the_title_too():
+    line = json.dumps(_enrich_line(title="@@T@@")).replace("@@T@@", 'The "best" prompt')
+    items, bad = base.parse_results_jsonl(line)
+    assert bad == [] and items[0]["title"] == 'The "best" prompt'
+
+
+def test_jsonl_recovery_does_not_swallow_the_neighbouring_lines():
+    """An odd quote count flips the string state, so the depth scan glues the following
+    lines to the broken one; each must come back as its own item."""
+    good_before = json.dumps(_enrich_line(page_id="p0"))
+    broken = _dump_with_raw_summary('a 5" pan', page_id="p1")
+    good_after = json.dumps(_enrich_line(page_id="p2"))
+    items, bad = base.parse_results_jsonl("\n".join([good_before, broken, good_after]))
+    assert bad == []
+    assert [i["page_id"] for i in items] == ["p0", "p1", "p2"]
+    assert items[1]["summary"] == 'a 5" pan'
+
+
+def test_jsonl_does_not_repair_when_a_known_key_appears_twice():
+    """A summary quoting `, "topics": ` makes the value boundary ambiguous — retry, never guess."""
+    raw = 'see ", "topics": ["x"], "primary_topic": "x" in the video'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_when_a_known_key_is_missing():
+    line = '{"page_id": "p1", "summary": "has "quotes" inside"}'
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and bad == [line]
+
+
+def test_jsonl_does_not_repair_a_topics_list_that_is_not_valid_json():
+    line = _dump_with_raw_summary("fine").replace('["ai", "claude-code"]', '["ai", "claude"code"]')
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_a_non_string_where_a_string_belongs():
+    line = _dump_with_raw_summary('x "y" z').replace('"page_id": "p1"', '"page_id": 7')
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_an_unterminated_object():
+    line = _dump_with_raw_summary('x "y" z')[:-1]
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1
