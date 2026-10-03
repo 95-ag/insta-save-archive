@@ -99,3 +99,25 @@ def test_the_example_config_loads():
     drifted into an unloadable shape precisely because nothing asserted this."""
     cfg = load_recipes("config/recipes.example.json")
     assert cfg.target and cfg.families and cfg.tag_axes
+
+
+def test_ingredient_aliases_load(tmp_path):
+    """Curated by the user: lime juice is what you get from a lime, and Sonamasoori/Ponni are
+    the default rice. Neither is inferable, so neither is guessed."""
+    cfg = load_recipes(
+        _write(
+            tmp_path,
+            {
+                "target": "T",
+                "families": {},
+                "tag_axes": {},
+                "ingredient_aliases": {"lime": "lime juice", "rice": "rice - sonamasoori"},
+            },
+        )
+    )
+    assert cfg.ingredient_aliases == {"lime": "lime juice", "rice": "rice - sonamasoori"}
+
+
+def test_ingredient_aliases_default_to_empty(tmp_path):
+    cfg = load_recipes(_write(tmp_path, {"target": "T", "families": {}, "tag_axes": {}}))
+    assert cfg.ingredient_aliases == {}

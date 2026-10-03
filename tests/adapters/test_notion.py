@@ -561,3 +561,30 @@ def test_a_contested_bare_name_with_no_unprefixed_row_is_dropped(monkeypatch):
     out = notion.query_grocery_rows(env)
     assert "basil" not in out
     assert out["spices - basil"] == "g0" and out["fresh - basil"] == "g1"
+
+
+def test_grocery_keys_strips_a_buy_extra_qualifier():
+    """23 live rows are named `X + Extra` (the user's "buy extra" note). The bare name must
+    still be a lookup key, or `2 tsp salt` never matches `Spice - Salt + Extra`."""
+    keys = notion.grocery_keys("Spice - Salt + Extra")
+    assert "salt" in keys
+    assert "spice - salt + extra" in keys, "the full name stays addressable too"
+    assert "spice - salt" in keys, "and so does the prefixed name without the note"
+
+
+def test_grocery_keys_adds_a_singular_or_plural_variant():
+    assert "onion" in notion.grocery_keys("Onions")
+    assert "potato" in notion.grocery_keys("Potatoes")
+    assert "strawberries" in notion.grocery_keys("Strawberry")
+
+
+def test_grocery_keys_does_not_vary_a_very_short_name():
+    """A 3-character stem would over-match: `oat` inside `oatmeal`, `ice` inside `ice cream`."""
+    keys = notion.grocery_keys("Oat")
+    assert keys == {"oat"}
+
+
+def test_grocery_keys_keeps_the_prefixed_and_bare_forms_distinct():
+    keys = notion.grocery_keys("Rice - Sonamasoori")
+    assert "rice - sonamasoori" in keys and "sonamasoori" in keys
+    assert "rice" not in keys, "the family prefix alone is not this row's name"

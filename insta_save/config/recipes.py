@@ -20,6 +20,9 @@ class RecipeConfig:
     # archive tag -> {recipe property: [values]}. The deterministic first layer; the model fills
     # only what no tag can state (Effort, Spicy, Course for a drink).
     tag_axes: dict = field(default_factory=dict)
+    # ingredient word -> the grocery row it should resolve to. Curated, because neither half is
+    # inferable: lime juice is what you get FROM a lime, and Sonamasoori is the default rice.
+    ingredient_aliases: dict = field(default_factory=dict)
 
     def axes_for(self, tags) -> dict:
         merged = {}
@@ -38,4 +41,9 @@ def load_recipes(path=_DEFAULT_RECIPES) -> RecipeConfig:
     tag_axes = data.get("tag_axes", {})
     if not isinstance(families, dict) or not isinstance(tag_axes, dict):
         raise ValueError(f"{path}: 'families' and 'tag_axes' must both be objects")
-    return RecipeConfig(target=target, families=families, tag_axes=tag_axes)
+    aliases = data.get("ingredient_aliases", {})
+    if not isinstance(aliases, dict):
+        raise ValueError(f"{path}: 'ingredient_aliases' must be an object")
+    return RecipeConfig(
+        target=target, families=families, tag_axes=tag_axes, ingredient_aliases=aliases
+    )

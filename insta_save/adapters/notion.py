@@ -6,6 +6,7 @@ to EnvConfig and extract_version. ensure_schema is additive + idempotent (never 
 import json
 import logging
 import os
+import re
 
 import httpx
 from notion_client import Client
@@ -883,10 +884,52 @@ def reset_item_to_tagged(env: EnvConfig, page_id: str) -> None:
         raise RuntimeError(f"notion: failed to reset {page_id} to Tagged: {e}") from e
 
 
+# "Salt  + Extra" is the user's "buy extra" note, not part of the item's name — 23 live rows
+# carry one, and the bare name must still be addressable.
+_GROCERY_QUALIFIER_RE = re.compile(r"\s*\+.*$")
+# Below this length a stem over-matches: "oat" sits inside "oatmeal", "ice" inside "ice cream".
+_MIN_STEM_FOR_VARIANT = 4
+
+
 def normalise_grocery_name(name: str) -> str:
     """Grocery rows use the same `Family - Item` convention as recipes (`Spices - Rasam Powder`),
     so matching an ingredient line against the bare item needs the prefix gone."""
     return name.split(" - ")[-1].strip().lower()
+
+
+def _plural_variants(key: str) -> set:
+    """The other of the singular/plural pair, when the stem is long enough to be safe.
+    Live rows are named `Onions` and `Potatoes` while recipe lines say `onion`, `Potatoes`."""
+    if len(key) < _MIN_STEM_FOR_VARIANT:
+        return set()
+    out = set()
+    if key.endswith("ies") and len(key) > 4:
+        out.add(key[:-3] + "y")
+    elif key.endswith("es") and len(key) > 4:
+        # Both strippings are needed and only one is ever real: potatoes -> potato (-2) but
+        # olives -> olive (-1). The other is an alias no ingredient line contains, so harmless.
+        out.add(key[:-2])
+        out.add(key[:-1])
+    elif key.endswith("s"):
+        out.add(key[:-1])
+    elif key.endswith("y"):
+        out.add(key[:-1] + "ies")
+    else:
+        out.add(key + "s")
+    return {v for v in out if len(v) >= _MIN_STEM_FOR_VARIANT}
+
+
+def grocery_keys(name: str) -> set:
+    """Every lookup key a grocery row answers to: its full name, its bare item name, each with
+    the `+ extra` qualifier removed, plus the singular/plural counterpart of the bare name."""
+    full = name.strip().lower()
+    bare = normalise_grocery_name(name)
+    plain_full = _GROCERY_QUALIFIER_RE.sub("", full).strip()
+    plain_bare = _GROCERY_QUALIFIER_RE.sub("", bare).strip()
+    base = {k for k in (full, plain_full, bare, plain_bare) if k}
+    # Vary ONLY the qualifier-free item name: varying the prefixed form or the `+ extra` form
+    # just manufactures keys ("spice - salts", "salt + extras") no ingredient line can contain.
+    return base | _plural_variants(plain_bare)
 
 
 def query_recipe_rows(env: EnvConfig) -> list:
@@ -941,10 +984,11 @@ def query_grocery_rows(env: EnvConfig) -> dict:
         resp = client.data_sources.query(ds_id, **kwargs)
         for page in resp.get("results", []):
             spans = page.get("properties", {}).get("Name", {}).get("title", [])
-            full = "".join(b.get("plain_text", "") for b in spans).strip().lower()
+            raw = "".join(b.get("plain_text", "") for b in spans).strip()
+            full = raw.lower()
             if not full:
                 continue
-            for key in {full, normalise_grocery_name(full)}:
+            for key in grocery_keys(raw):
                 claims.setdefault(key, []).append((page["id"], full))
         if not resp.get("has_more"):
             break

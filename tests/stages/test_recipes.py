@@ -765,3 +765,28 @@ def test_the_prompt_explains_how_to_use_the_summary():
     text = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
     assert "ENGLISH distillation of this post" in text
     assert "The summary never licenses invention" in text
+
+
+def test_match_ingredients_resolves_a_curated_alias():
+    """`1 Whole Lime, squeezed` has no `lime` row — the user's alias points it at lime juice."""
+    grocery = {"lime juice": "g1"}
+    matched, unmatched = recipes.match_ingredients(
+        ["1 Whole Lime, squeezed"], grocery, aliases={"lime": "lime juice"}
+    )
+    assert matched == ["g1"] and unmatched == []
+
+
+def test_an_alias_never_overrides_a_direct_match():
+    grocery = {"lime": "g-direct", "lime juice": "g-alias"}
+    matched, _ = recipes.match_ingredients(["1 lime"], grocery, aliases={"lime": "lime juice"})
+    assert matched == ["g-direct"]
+
+
+def test_an_alias_pointing_at_a_missing_row_is_reported_not_invented():
+    matched, unmatched = recipes.match_ingredients(["1 lime"], {}, aliases={"lime": "lime juice"})
+    assert matched == [] and unmatched == ["1 lime"]
+
+
+def test_match_ingredients_works_without_aliases():
+    matched, _ = recipes.match_ingredients(["1 tsp salt"], {"salt": "g1"})
+    assert matched == ["g1"]

@@ -163,16 +163,29 @@ def content_words(blocks) -> int:
     return total
 
 
-def match_ingredients(ingredients, grocery) -> tuple:
+def match_ingredients(ingredients, grocery, aliases=None) -> tuple:
     """Link an ingredient line to an existing Grocery row by normalised name. Match-only: a
     missing grocery row is REPORTED, never created — Buy/Expiry are physical-world state the
-    pipeline cannot know. A missed link is recoverable; a wrong one rewrites a shopping list."""
+    pipeline cannot know. A missed link is recoverable; a wrong one rewrites a shopping list.
+
+    Resolution order is exact name, then grocery-name-as-substring, then a curated alias. The
+    alias comes LAST so it can never displace a row that genuinely bears the name: with a
+    `lime -> lime juice` alias in play, a line reading "1 lime" still prefers a `Lime` row."""
+    aliases = aliases or {}
     matched, unmatched = [], []
     for line in ingredients:
         key = normalise_grocery_name(line)
         hit = grocery.get(key) or next(
             (pid for name, pid in grocery.items() if name and name in key), None
         )
+        if hit is None:
+            for word, target in aliases.items():
+                if word and word in key:
+                    hit = grocery.get(target.strip().lower()) or grocery.get(
+                        normalise_grocery_name(target)
+                    )
+                    if hit:
+                        break
         if hit:
             if hit not in matched:
                 matched.append(hit)
@@ -383,7 +396,9 @@ def apply(env, *, cfg, version) -> dict:
         written, failed = [], 0
         for raw in group:
             proposal = RecipeProposal(**raw)
-            matched, unmatched = match_ingredients(proposal.ingredients, grocery)
+            matched, unmatched = match_ingredients(
+                proposal.ingredients, grocery, aliases=cfg.ingredient_aliases
+            )
             if unmatched:
                 review.append({"source_id": source_id, "unmatched": unmatched})
             props = properties_for(
