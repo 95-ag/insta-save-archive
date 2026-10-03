@@ -289,10 +289,12 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
 
     calls = {"prepare": 0, "fill": 0, "apply": 0}
     counts = iter([2, 0])  # batch once, then drained
+    # The drain confirms an empty prepare before believing it; no need to wait in a test.
+    monkeypatch.setattr(isa.enrich, "_DRAIN_RECHECK_SECONDS", 0)
 
     def _prepare(*a, **k):
         calls["prepare"] += 1
-        return next(counts)
+        return next(counts, 0)
     monkeypatch.setattr(isa.enrich, "prepare", _prepare)
     monkeypatch.setattr(local_ollama, "fill",
                         lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1)
@@ -305,7 +307,9 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
         ["run", "--stage", "enrich", "--group", "Hustling"])
     isa.dispatch_run(args)
 
-    assert calls == {"prepare": 2, "fill": 1, "apply": 1}
+    # 3 prepares: the batch, the empty result, and the confirmation that the lane
+    # really is empty — a lagging query is not proof on its own.
+    assert calls == {"prepare": 3, "fill": 1, "apply": 1}
     assert "ENRICH_DRAINED group=Hustling lane=text" in capsys.readouterr().out
 
 

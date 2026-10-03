@@ -24,6 +24,11 @@ from insta_save.helpers import observability
 from insta_save.orchestrator import guardrails, run_control
 
 log = logging.getLogger(__name__)
+
+# How long to let Notion's query index settle before believing an empty prepare. The observed
+# lag is seconds-scale (a Carousel was invisible to the query right after extract moved it), and
+# this is deliberately NOT notion_write_delay — that throttles writes, a different concern.
+_DRAIN_RECHECK_SECONDS = 2.0
 _console = Console()
 
 _FILL_ATTEMPTS = 3       # 1 initial + 2 retries for a transient fill failure
@@ -403,6 +408,11 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
         stop_reason = "drained"
 
         n_batch = 0
+        # `data_sources.query` lags writes by seconds, so ONE empty prepare is not proof the lane
+        # is empty: an item another stage has just moved to Extracted can still be invisible. It
+        # cost a Carousel a second vision run on 2026-10-01. Confirm an empty result once, after a
+        # settle, before declaring DRAINED. Reset on progress so a later empty is confirmed too.
+        rechecked = False
         while True:
             run_control.checkpoint()
             n_batch += 1
@@ -415,9 +425,20 @@ def drain_enrich_group(env, run_cfg, collections_cfg, vocab, backend, group, *,
                             kinds=lane["kinds"], image_token_budget=lane["image_budget"],
                             output_language=run_cfg.output_language, progress=progress)
             if n == 0:
+                if not rechecked:
+                    rechecked = True
+                    log.info(
+                        "drain_enrich_group: %s lane=%s looks empty — confirming against a "
+                        "settled index before declaring it drained",
+                        group,
+                        lane_name,
+                    )
+                    sleep(_DRAIN_RECHECK_SECONDS)
+                    continue
                 log.info("drain_enrich_group: %s lane=%s DRAINED", group, lane_name)
                 stop_reason = "drained"
                 break
+            rechecked = False
 
             # Per-batch spend gate: estimate cost from the rendered prompt before calling
             # the model. Only reads prompt.txt when the api backend is active and a cap is
