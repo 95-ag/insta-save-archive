@@ -588,3 +588,15 @@ def test_grocery_keys_keeps_the_prefixed_and_bare_forms_distinct():
     keys = notion.grocery_keys("Rice - Sonamasoori")
     assert "rice - sonamasoori" in keys and "sonamasoori" in keys
     assert "rice" not in keys, "the family prefix alone is not this row's name"
+
+
+def test_grocery_keys_fold_accents():
+    """Recipe lines spell the same item `jalapeno`, `jalapenos`, `jalapeño`, `jalapeños`.
+    Enumerating spellings in the alias list is how one gets missed — fold instead."""
+    assert "jalapeno" in notion.grocery_keys("Jalapeños")
+    assert "jalapenos" in notion.grocery_keys("Jalapeños")
+
+
+def test_normalise_grocery_name_folds_accents():
+    assert notion.normalise_grocery_name("3 Tbsp Chopped jalapeños") == "3 tbsp chopped jalapenos"
+    assert notion.normalise_grocery_name("Crème Fraîche") == "creme fraiche"

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 
 import httpx
 from notion_client import Client
@@ -891,10 +892,18 @@ _GROCERY_QUALIFIER_RE = re.compile(r"\s*\+.*$")
 _MIN_STEM_FOR_VARIANT = 4
 
 
+def _fold_accents(text: str) -> str:
+    """Drop combining marks so one spelling matches all of them. Recipe lines write the same
+    item as `jalapeno`, `jalapenos`, `jalapeño`, `jalapeños`; enumerating those in the alias
+    list is how the fourth gets missed."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 def normalise_grocery_name(name: str) -> str:
     """Grocery rows use the same `Family - Item` convention as recipes (`Spices - Rasam Powder`),
-    so matching an ingredient line against the bare item needs the prefix gone."""
-    return name.split(" - ")[-1].strip().lower()
+    so matching an ingredient line against the bare item needs the prefix gone. Accents are
+    folded so a line's spelling does not decide whether it matches."""
+    return _fold_accents(name.split(" - ")[-1].strip().lower())
 
 
 def _plural_variants(key: str) -> set:
@@ -922,7 +931,7 @@ def _plural_variants(key: str) -> set:
 def grocery_keys(name: str) -> set:
     """Every lookup key a grocery row answers to: its full name, its bare item name, each with
     the `+ extra` qualifier removed, plus the singular/plural counterpart of the bare name."""
-    full = name.strip().lower()
+    full = _fold_accents(name.strip().lower())
     bare = normalise_grocery_name(name)
     plain_full = _GROCERY_QUALIFIER_RE.sub("", full).strip()
     plain_bare = _GROCERY_QUALIFIER_RE.sub("", bare).strip()
