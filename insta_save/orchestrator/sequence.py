@@ -49,6 +49,10 @@ class Plan:
     next_action: object # first GroupStep whose action != "done", or None
     done: bool          # True iff every step's action == "done"
     skipped: list = field(default_factory=list)  # [{group, action, reason}] groups skipped on no-progress
+    # [{group, unrouted, reason}] groups whose tags have NO routes.json mapping. A complete
+    # outcome, not a stall: the items have nowhere to go by design (parked groups). Kept apart
+    # from `skipped` so the no-progress warning keeps meaning something.
+    unmapped: list = field(default_factory=list)
 
 
 def _parse_page(page: dict) -> tuple[str | None, list[str]]:
@@ -247,19 +251,22 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     """
     executed: set[tuple[str, str]] = set()
     stuck_groups: set[str] = set()
+    unmapped_groups: set[str] = set()
     skipped: list[dict] = []
+    unmapped: list[dict] = []
     current_group: str | None = None
 
     while True:
         run_control.checkpoint()
         plan = compute_plan(env, run_cfg, collections_cfg, vocab, backend, routes)
 
-        step = _next_unstuck(plan, stuck_groups)
+        step = _next_unstuck(plan, stuck_groups | unmapped_groups)
         if step is None:
             # Nothing left that isn't done or stuck.
             if current_group is not None:
                 _band(current_group, collections_cfg, done=True)
             plan.skipped = skipped
+            plan.unmapped = unmapped
             return plan
 
         # Open/close group bands on group transitions.
@@ -278,6 +285,7 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
             # Agent-filled enrich (or non-interactive): return the plan as a gate.
             _band(current_group, collections_cfg, done=True)
             plan.skipped = skipped
+            plan.unmapped = unmapped
             return plan
 
         key = (step.group, step.action)
@@ -298,8 +306,27 @@ def _run_loop(env, run_cfg, collections_cfg, vocab, backend, routes, *,
 
         executed.add(key)
 
-        _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
-                      step, progress_factory)
+        result = _execute_step(
+            env, run_cfg, collections_cfg, vocab, backend, routes, step, progress_factory
+        )
+
+        # A route group whose tags carry no mapping routed nothing and never will: that is a
+        # finished outcome, so retiring it quietly keeps the no-progress warning meaningful.
+        if step.action == "route" and result and not result.get("failed"):
+            if not result.get("routed") and result.get("unrouted"):
+                log.info(
+                    "sequencer: group=%r has %d Tagged item(s) with no routes.json mapping — "
+                    "nothing to route, by design",
+                    step.group,
+                    result["unrouted"],
+                )
+                unmapped_groups.add(step.group)
+                record = {
+                    "group": step.group,
+                    "unrouted": result["unrouted"],
+                    "reason": "no routes.json mapping for this group's tags",
+                }
+                unmapped.append(record)
 
 
 def _null_progress(label):
@@ -312,7 +339,10 @@ def _null_progress(label):
 
 def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
                   step, progress_factory):
-    """Dispatch one automated step to the appropriate stage drain."""
+    """Dispatch one automated step to the appropriate stage drain.
+
+    Returns the stage's counters where it has them (route), else None — the caller uses them
+    to tell "nothing to do by design" apart from "ran but made no progress"."""
     pf = progress_factory or _null_progress
 
     if step.action == "extract":
@@ -335,8 +365,9 @@ def _execute_step(env, run_cfg, collections_cfg, vocab, backend, routes,
     elif step.action == "route":
         write_delay = getattr(env, "notion_write_delay", 0.0)
         with pf(f"Route · {step.group}") as progress:
-            run_route_stage(env, routes, collections_cfg, progress,
-                            group=step.group, write_delay=write_delay)
+            return run_route_stage(env, routes, collections_cfg, progress,
+                                   group=step.group, write_delay=write_delay)
+    return None
 
 
 def run_first_time(env, run_cfg, collections_cfg, vocab, backend, routes, *,

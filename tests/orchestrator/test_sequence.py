@@ -694,3 +694,64 @@ def test_stuck_group_skip_is_printed(monkeypatch, capsys):
     sequence.run_first_time(None, run_cfg, cfg, vocab, backend, routes)
     out = capsys.readouterr().out
     assert "skipped" in out.lower() and "A" in out
+
+
+# --- "no mapping" is a complete outcome, not a stall -------------------------
+
+
+def _route_only_plan(group="GroupOne"):
+    """A plan whose only outstanding step is routing that group."""
+    return sequence.Plan(
+        steps=[
+            sequence.GroupStep(group=group, action="route", automated=True, detail="route 5 Tagged")
+        ],
+        next_action=None,
+        done=False,
+    )
+
+
+def _loop_with_route_result(monkeypatch, result, group="GroupOne"):
+    """Drive _run_loop with a single routable group whose route stage returns `result`."""
+    calls = {"route": 0}
+
+    monkeypatch.setattr(sequence, "compute_plan", lambda *a, **k: _route_only_plan(group))
+    monkeypatch.setattr(sequence, "_band", lambda *a, **k: None)
+
+    def _exec(env, run_cfg, cols, vocab, backend, routes, step, pf):
+        calls["route"] += 1
+        return result
+
+    monkeypatch.setattr(sequence, "_execute_step", _exec)
+    plan = sequence._run_loop(None, None, _cols_stub(), None, None, None)
+    return plan, calls
+
+
+def _cols_stub():
+    import types as _t
+
+    return _t.SimpleNamespace(groups=("GroupOne",))
+
+
+def test_a_route_group_with_no_mapping_is_reported_unmapped_not_skipped(monkeypatch):
+    """1,167 Tagged memberships across the parked groups have 0 routable targets by design.
+    Warning "state did not advance" for them masks a genuinely stuck group."""
+    plan, calls = _loop_with_route_result(monkeypatch, {"routed": 0, "unrouted": 5, "failed": 0})
+    assert plan.skipped == [], "nothing is stuck — these items have nowhere to go by design"
+    assert [u["group"] for u in plan.unmapped] == ["GroupOne"]
+    assert plan.unmapped[0]["unrouted"] == 5
+    assert calls["route"] == 1, "an unmapped group must not be retried"
+
+
+def test_a_route_group_that_fails_is_still_treated_as_stalled(monkeypatch):
+    """A failure is not 'no mapping' — the existing no-progress guard must still fire."""
+    plan, calls = _loop_with_route_result(monkeypatch, {"routed": 0, "unrouted": 0, "failed": 2})
+    assert plan.unmapped == []
+    assert [s["group"] for s in plan.skipped] == ["GroupOne"]
+    assert calls["route"] == 1
+
+
+def test_a_route_group_that_routes_something_is_neither_unmapped_nor_skipped(monkeypatch):
+    """Progress was made; the group is re-planned normally (and here immediately re-runs)."""
+    plan, calls = _loop_with_route_result(monkeypatch, {"routed": 3, "unrouted": 2, "failed": 0})
+    assert plan.unmapped == []
+    assert [s["group"] for s in plan.skipped] == ["GroupOne"]

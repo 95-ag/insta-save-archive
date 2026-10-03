@@ -2033,3 +2033,44 @@ def test_recipe_stage_applies_with_yes(monkeypatch, capsys):
     assert seen["apply"] == 1
     out = capsys.readouterr().out
     assert "2" in out and "1" in out
+
+
+def test_plan_report_lists_unmapped_groups_without_a_warning(capsys):
+    """An unmapped group is a finished outcome. Reporting it under ⚠ is what buried real
+    stalls: 5 parked groups warned on every incremental run."""
+    import types
+
+    import cli.isa as isa
+
+    plan = types.SimpleNamespace(
+        steps=[],
+        skipped=[],
+        done=True,
+        next_action=None,
+        unmapped=[
+            {"group": "GroupOne", "unrouted": 5, "reason": "no rule"},
+            {"group": "GroupTwo", "unrouted": 7, "reason": "no rule"},
+        ],
+    )
+    isa._print_plan(plan, dry_run=False)
+    out = capsys.readouterr().out
+    assert "no routing mapping yet (12 Tagged item(s) in 2 group(s))" in out
+    assert "GroupOne: 5 Tagged" in out
+    assert "⚠" not in out, "an unmapped group is not a warning"
+
+
+def test_plan_report_still_warns_for_a_genuinely_skipped_group(capsys):
+    import types
+
+    import cli.isa as isa
+
+    plan = types.SimpleNamespace(
+        steps=[],
+        done=True,
+        next_action=None,
+        unmapped=[],
+        skipped=[{"group": "GroupOne", "action": "route", "reason": "did not advance"}],
+    )
+    isa._print_plan(plan, dry_run=False)
+    out = capsys.readouterr().out
+    assert "⚠" in out and "did not advance" in out

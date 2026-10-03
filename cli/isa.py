@@ -857,6 +857,18 @@ def _print_plan(plan, dry_run: bool) -> None:
         for s in skipped:
             print(f"  - {s['group']} ({s['action']}): {s['reason']}")
 
+    # Deliberately NOT a warning: these items have nowhere to go until their destination
+    # exists, so flagging them as a problem every run is what drowned out real stalls.
+    unmapped = getattr(plan, "unmapped", [])
+    if unmapped:
+        total = sum(u["unrouted"] for u in unmapped)
+        print(
+            f"\n·  no routing mapping yet ({total} Tagged item(s) in "
+            f"{len(unmapped)} group(s)) — nothing to route until a rule exists:"
+        )
+        for u in unmapped:
+            print(f"  - {u['group']}: {u['unrouted']} Tagged, no matching rule")
+
     if plan.done:
         print(f"All groups complete.{label}")
         return
