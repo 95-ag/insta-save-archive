@@ -184,13 +184,29 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
             (pid for name, pid in grocery.items() if name and name in key), None
         )
         if hit is None:
-            for word, target in aliases.items():
-                if word and word in key:
-                    hit = grocery.get(target.strip().lower()) or grocery.get(
-                        normalise_grocery_name(target)
+            # Longest alias first: "cooking oil" must not be decided by the shorter "oil" rule.
+            for word in sorted((w for w in aliases if w), key=len, reverse=True):
+                if word not in key:
+                    continue
+                targets = aliases[word]
+                if isinstance(targets, str):
+                    targets = [targets]
+                # An ingredient can genuinely BE several items (pico de gallo). A target that
+                # is not stocked is skipped, never created.
+                found = [
+                    pid
+                    for pid in (
+                        grocery.get(t.strip().lower()) or grocery.get(normalise_grocery_name(t))
+                        for t in targets
                     )
-                    if hit:
-                        break
+                    if pid
+                ]
+                if found:
+                    for pid in found:
+                        if pid not in matched:
+                            matched.append(pid)
+                    hit = found[0]
+                    break
         if hit:
             if hit not in matched:
                 matched.append(hit)

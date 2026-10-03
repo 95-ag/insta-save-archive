@@ -812,3 +812,48 @@ def test_an_ignore_word_does_not_swallow_a_real_ingredient():
 def test_an_ignored_line_is_dropped_even_when_nothing_else_matches():
     _, unmatched = recipes.match_ingredients(["water"], {}, ignore=["water"])
     assert unmatched == []
+
+
+def test_an_alias_may_resolve_to_several_grocery_rows():
+    """Some ingredients ARE several items: pico de gallo is tomatoes + onions + chilli + more,
+    and cumin is stocked as both powder and seeds."""
+    grocery = {"cumin powder": "g1", "cumin seeds": "g2"}
+    matched, unmatched = recipes.match_ingredients(
+        ["1 tsp cumin"], grocery, aliases={"cumin": ["cumin powder", "cumin seeds"]}
+    )
+    assert matched == ["g1", "g2"] and unmatched == []
+
+
+def test_a_multi_target_alias_links_only_the_rows_that_exist():
+    """A target that is not stocked is skipped, not invented — and the line still counts as
+    matched because at least one real row was found."""
+    matched, unmatched = recipes.match_ingredients(
+        ["pico de gallo"], {"tomatoes": "g1"},
+        aliases={"pico de gallo": ["tomatoes", "onions", "green chilli"]}
+    )
+    assert matched == ["g1"] and unmatched == []
+
+
+def test_a_multi_target_alias_with_no_stocked_row_is_reported():
+    matched, unmatched = recipes.match_ingredients(
+        ["pico de gallo"], {}, aliases={"pico de gallo": ["tomatoes", "onions"]}
+    )
+    assert matched == [] and unmatched == ["pico de gallo"]
+
+
+def test_a_single_string_alias_still_works():
+    """The config may give one target or a list; both are accepted."""
+    matched, _ = recipes.match_ingredients(
+        ["1 lime"], {"lime juice": "g1"}, aliases={"lime": "lime juice"}
+    )
+    assert matched == ["g1"]
+
+
+def test_the_longest_matching_alias_wins():
+    """`cooking oil` must resolve as cooking oil, not fall to the shorter `oil` rule."""
+    grocery = {"sunflower oil": "g-sun", "olive oil": "g-olive"}
+    matched, _ = recipes.match_ingredients(
+        ["2 tbsp cooking oil"], grocery,
+        aliases={"oil": "olive oil", "cooking oil": "sunflower oil"}
+    )
+    assert matched == ["g-sun"]
