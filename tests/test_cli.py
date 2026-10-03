@@ -1917,7 +1917,7 @@ def test_enrich_ensure_schema_runs_before_the_drain(monkeypatch, tmp_path):
         "insta_save.stages.enrich.drain_enrich_group",
         lambda *a, **kw: order.append("drain") or {"lanes": {"text": {"stop_reason": "drained"}}},
     )
-    isa.main(["run", "--stage", "enrich", "--group", "Hustle", "--lane", "text"])
+    isa.main(["run", "--stage", "enrich", "--group", "GroupOne", "--lane", "text"])
     assert order == ["schema", "drain"]
 
 

@@ -2606,7 +2606,7 @@ def test_dropped_links_ignores_a_section_the_reply_does_not_touch():
 
 def test_fill_retries_a_later_chunk_that_drops_an_earlier_chunk_s_links(tmp_path, monkeypatch):
     """Chunk 2 rewriting a section chunk 1 created used to pass per-chunk validation and lose
-    the links in the merge — 2 of 17 items on AI/ML Engg, 1 of 47 on Claude Code."""
+    the links in the merge — measured live at 2 of 17 items on one page, 1 of 47 on another."""
     items = [_item("a", ["fitness-workouts"]), _item("b", ["mobility-posture"])]
     env, d = _fill_env(tmp_path, monkeypatch, items, "")
     replies = iter(

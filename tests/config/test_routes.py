@@ -127,52 +127,52 @@ def test_by_primary_topic_routes_a_topic_that_is_not_in_tag_order():
     has `legal` as its primary topic while 9 merely carry the tag, so a by_tag rule would sweep
     in items about business registration, art IP and manufacturer NDAs."""
     routes = routecfg.Routes(
-        by_tag=[("indie-saas", "Indie SaaS")],
-        by_primary_topic={"legal": "Side Income"},
+        by_tag=[("indie-saas", "PageTwo")],
+        by_primary_topic={"legal": "PageThree"},
     )
-    assert routes.route_for(["indie-saas", "legal"], [], [], primary_topic="legal") == "Side Income"
+    assert routes.route_for(["indie-saas", "legal"], [], [], primary_topic="legal") == "PageThree"
 
 
 def test_a_tag_rule_does_not_fire_for_a_primary_topic_only_rule():
     """The other side of the same coin: merely carrying `legal` must NOT reach the page."""
     routes = routecfg.Routes(
-        by_tag=[("indie-saas", "Indie SaaS")],
-        by_primary_topic={"legal": "Side Income"},
+        by_tag=[("indie-saas", "PageTwo")],
+        by_primary_topic={"legal": "PageThree"},
     )
-    assert routes.route_for(["indie-saas", "legal"], [], [], primary_topic=None) == "Indie SaaS"
+    assert routes.route_for(["indie-saas", "legal"], [], [], primary_topic=None) == "PageTwo"
 
 
 def test_by_primary_topic_wins_over_a_by_tag_rule_for_the_same_topic():
     routes = routecfg.Routes(
-        by_tag=[("seo", "Web Design")],
-        by_primary_topic={"seo": "Side Income"},
+        by_tag=[("seo", "PageFour")],
+        by_primary_topic={"seo": "PageThree"},
     )
-    assert routes.route_for(["seo"], [], [], primary_topic="seo") == "Side Income"
+    assert routes.route_for(["seo"], [], [], primary_topic="seo") == "PageThree"
 
 
 def test_target_for_primary_topic_still_falls_back_to_by_tag():
-    routes = routecfg.Routes(by_tag=[("ui-ux", "UI - UX")], by_primary_topic={})
-    assert routes.target_for_primary_topic("ui-ux") == "UI - UX"
+    routes = routecfg.Routes(by_tag=[("ui-ux", "PageOne")], by_primary_topic={})
+    assert routes.target_for_primary_topic("ui-ux") == "PageOne"
 
 
 def test_target_for_primary_topic_is_none_for_an_unmapped_topic():
-    routes = routecfg.Routes(by_tag=[("ui-ux", "UI - UX")], by_primary_topic={"legal": "X"})
+    routes = routecfg.Routes(by_tag=[("ui-ux", "PageOne")], by_primary_topic={"legal": "X"})
     assert routes.target_for_primary_topic("ecommerce") is None
 
 
 def test_load_routes_reads_by_primary_topic(tmp_path):
     path = tmp_path / "routes.json"
     path.write_text(
-        '{"by_tag": [["ui-ux", "UI - UX"]], "by_primary_topic": {"legal": "Side Income"}}',
+        '{"by_tag": [["ui-ux", "PageOne"]], "by_primary_topic": {"legal": "PageThree"}}',
         encoding="utf-8",
     )
     routes = routecfg.load_routes(path)
-    assert routes.by_primary_topic == {"legal": "Side Income"}
-    assert routes.by_tag == [("ui-ux", "UI - UX")]
+    assert routes.by_primary_topic == {"legal": "PageThree"}
+    assert routes.by_tag == [("ui-ux", "PageOne")]
 
 
 def test_load_routes_defaults_by_primary_topic_to_empty(tmp_path):
     """A routes.json written before this section existed must still load."""
     path = tmp_path / "routes.json"
-    path.write_text('{"by_tag": [["ui-ux", "UI - UX"]]}', encoding="utf-8")
+    path.write_text('{"by_tag": [["ui-ux", "PageOne"]]}', encoding="utf-8")
     assert routecfg.load_routes(path).by_primary_topic == {}

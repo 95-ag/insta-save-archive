@@ -6,7 +6,7 @@ FIXTURE = {
     "groups": ["Hustling", "Biz", "Lifestyle", "uncategorized"],
     "collections": {
         "Coding": {"group": "Hustling", "extract": True},
-        "Hustle Ideas": {"group": "Biz", "extract": True},
+        "CollectionTwo": {"group": "Biz", "extract": True},
         "Makeup": {"group": "Lifestyle", "extract": False},
     },
 }
@@ -51,7 +51,7 @@ def test_is_extract_path(tmp_path):
 def test_enrich_group_is_last_extract_group(tmp_path):
     c = _load(tmp_path)
     # item spanning Hustling (extract) + Biz (extract): Biz is later in `groups`
-    assert c.enrich_group(["Coding", "Hustle Ideas"]) == "Biz"
+    assert c.enrich_group(["Coding", "CollectionTwo"]) == "Biz"
     # single-group item
     assert c.enrich_group(["Coding"]) == "Hustling"
     # all extract=no -> None (deterministic branch)
@@ -61,13 +61,13 @@ def test_enrich_group_is_last_extract_group(tmp_path):
 def test_extract_groups_of(tmp_path):
     c = _load(tmp_path)
     # cross-group item spanning Hustling (extract) + Biz (extract) -> both, in groups order
-    assert c.extract_groups_of(["Coding", "Hustle Ideas"]) == ["Hustling", "Biz"]
+    assert c.extract_groups_of(["Coding", "CollectionTwo"]) == ["Hustling", "Biz"]
     # single-group item
     assert c.extract_groups_of(["Coding"]) == ["Hustling"]
     # non-extract-only item (Lifestyle extract=False) -> []
     assert c.extract_groups_of(["Makeup"]) == []
     # enrich_group is still the last element (backward-compat)
-    assert c.enrich_group(["Coding", "Hustle Ideas"]) == "Biz"
+    assert c.enrich_group(["Coding", "CollectionTwo"]) == "Biz"
 
 
 def test_legacy_flat_shape_raises(tmp_path):
