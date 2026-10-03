@@ -185,9 +185,13 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
         # into "1/2 cup" and lost the match.
         keys = [normalise_grocery_name(line), normalise_grocery_name(line.replace(" - ", " "))]
         key = keys[0]
-        hit = next((grocery[k] for k in keys if k in grocery), None) or next(
-            (pid for name, pid in grocery.items() if name and any(name in k for k in keys)), None
-        )
+        hit = next((grocery[k] for k in keys if k in grocery), None)
+        if hit is None:
+            # LONGEST name wins: "sunflower" sits inside "sunflower oil", so without this the
+            # dict's order decides whether an oil line links to the oil or to the seeds.
+            near = [name for name in grocery if name and any(name in k for k in keys)]
+            if near:
+                hit = grocery[max(near, key=len)]
         if hit is None:
             # Longest alias first: "cooking oil" must not be decided by the shorter "oil" rule.
             for word in sorted((w for w in aliases if w), key=len, reverse=True):

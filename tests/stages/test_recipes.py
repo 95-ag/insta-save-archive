@@ -876,3 +876,18 @@ def test_a_dashed_line_still_matches_on_its_tail_when_that_is_the_name():
     """Both readings are tried, so a line whose name sits AFTER the dash still works."""
     matched, _ = recipes.match_ingredients(["Spices - rasam powder"], {"rasam powder": "g1"})
     assert matched == ["g1"]
+
+
+def test_the_longest_grocery_name_wins_a_substring_match():
+    """`Seeds - Sunflower` reduces to the key "sunflower", which also sits inside "sunflower
+    oil". Without a longest-match preference, dict order decides whether a line reading
+    "sunflower oil" links to the OIL or to the SEEDS — a wrong link either way half the time."""
+    grocery = {"sunflower": "g-seeds", "sunflower oil": "g-oil"}
+    matched, _ = recipes.match_ingredients(["2 tbsp sunflower oil"], grocery)
+    assert matched == ["g-oil"]
+
+
+def test_the_shorter_name_still_matches_when_it_is_the_only_one():
+    grocery = {"sunflower": "g-seeds", "sunflower oil": "g-oil"}
+    matched, _ = recipes.match_ingredients(["1/2 cup sunflower"], grocery)
+    assert matched == ["g-seeds"]
