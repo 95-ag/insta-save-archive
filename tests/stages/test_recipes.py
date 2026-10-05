@@ -913,3 +913,35 @@ def test_a_multi_word_grocery_name_still_matches():
         ["1 tbsp lime juice", "2 chicken stock cubes, crushed"], grocery
     )
     assert matched == ["g1", "g2"]
+
+
+def test_a_line_naming_several_groceries_links_all_of_them():
+    """Measured on live data: "tahini peanut marinade" names two stocked items and the
+    longest-wins rule linked only `peanut`, silently losing the tahini. One line is not one
+    ingredient."""
+    grocery = {"tahini": "g-tahini", "peanut": "g-peanut"}
+    matched, _ = recipes.match_ingredients(["tahini peanut marinade"], grocery)
+    assert sorted(matched) == ["g-peanut", "g-tahini"]
+
+
+def test_a_longer_name_suppresses_the_shorter_one_it_contains():
+    """Collecting every hit must not link BOTH `Garlic powder` and `Garlic` for one line — the
+    shorter name matched only the longer one's own text, so it names no separate ingredient."""
+    grocery = {"garlic": "g-garlic", "garlic powder": "g-powder"}
+    matched, _ = recipes.match_ingredients(["1-2 tsp garlic powder"], grocery)
+    assert matched == ["g-powder"]
+
+
+def test_a_suppressed_name_still_matches_where_it_stands_alone():
+    """`coconut milk` owns its own text, but a line naming milk SEPARATELY still links milk."""
+    grocery = {"milk": "g-milk", "coconut milk": "g-coconut"}
+    matched, _ = recipes.match_ingredients(["200ml coconut milk and 50ml milk"], grocery)
+    assert sorted(matched) == ["g-coconut", "g-milk"]
+
+
+def test_an_exact_name_match_still_wins_outright():
+    """A line that IS a grocery name takes that row alone — no substring sweep, so a line
+    reading "milk" never also picks up a row whose name merely contains it."""
+    grocery = {"milk": "g-milk", "milk powder": "g-powder"}
+    matched, _ = recipes.match_ingredients(["milk"], grocery)
+    assert matched == ["g-milk"]

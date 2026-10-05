@@ -163,12 +163,52 @@ def content_words(blocks) -> int:
     return total
 
 
+def _names_in_line(keys, grocery) -> list:
+    """Every grocery name an ingredient line names, longest first and never overlapping.
+
+    One LINE is not one ingredient: "tahini peanut marinade" names two stocked items, and taking
+    only the longest hit silently lost the tahini. But taking every hit would link both
+    `Garlic powder` and `Garlic` for "1-2 tsp garlic powder", where the shorter name matched
+    nothing but the longer one's own text. So a name claims its SPAN, and a later name whose span
+    overlaps a claimed one is dropped — "200ml coconut milk and 50ml milk" still yields both,
+    because the second `milk` stands on its own text.
+
+    WORD BOUNDARY, because "melon" sits inside "watermelon" and a bare substring test would link
+    a watermelon line to melon seeds. LONGEST FIRST, so `sunflower oil` claims its span before
+    the `sunflower` seeds row can.
+    """
+    spans, out = {}, []
+    for name in sorted((n for n in grocery if n), key=len, reverse=True):
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        for key in keys:
+            # EVERY occurrence is tried, not just the first: in "coconut milk and 50ml milk" the
+            # first `milk` sits inside the claimed `coconut milk` and the second does not.
+            # Spans are only comparable within ONE key, since the two readings of a dashed line
+            # are different strings — so each key keeps its own claims.
+            claimed = spans.setdefault(key, [])
+            free = next(
+                (
+                    at
+                    for at in pattern.finditer(key)
+                    if not any(at.start() < end and start < at.end() for start, end in claimed)
+                ),
+                None,
+            )
+            if free is None:
+                continue
+            claimed.append((free.start(), free.end()))
+            out.append(name)
+            break
+    return out
+
+
 def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
     """Link an ingredient line to an existing Grocery row by normalised name. Match-only: a
     missing grocery row is REPORTED, never created — Buy/Expiry are physical-world state the
     pipeline cannot know. A missed link is recoverable; a wrong one rewrites a shopping list.
 
-    Resolution order is exact name, then grocery-name-as-substring, then a curated alias. The
+    Resolution order is exact name, then every grocery name the line NAMES (see
+    `_names_in_line`), then a curated alias. The
     alias comes LAST so it can never displace a row that genuinely bears the name: with a
     `lime -> lime juice` alias in play, a line reading "1 lime" still prefers a `Lime` row.
 
@@ -187,17 +227,13 @@ def match_ingredients(ingredients, grocery, aliases=None, ignore=None) -> tuple:
         key = keys[0]
         hit = next((grocery[k] for k in keys if k in grocery), None)
         if hit is None:
-            # LONGEST name wins: "sunflower" sits inside "sunflower oil", so without this the
-            # dict's order decides whether an oil line links to the oil or to the seeds.
-            # WORD BOUNDARY, because "melon" sits inside "watermelon" and a bare substring
-            # test would link a watermelon line to melon seeds.
-            near = [
-                name
-                for name in grocery
-                if name and any(re.search(rf"\b{re.escape(name)}\b", k) for k in keys)
-            ]
-            if near:
-                hit = grocery[max(near, key=len)]
+            found = _names_in_line(keys, grocery)
+            if found:
+                for name in found:
+                    pid = grocery[name]
+                    if pid not in matched:
+                        matched.append(pid)
+                hit = grocery[found[0]]
         if hit is None:
             # Longest alias first: "cooking oil" must not be decided by the shorter "oil" rule.
             for word in sorted((w for w in aliases if w), key=len, reverse=True):
