@@ -578,10 +578,20 @@ def test_grocery_keys_adds_a_singular_or_plural_variant():
     assert "strawberries" in notion.grocery_keys("Strawberry")
 
 
+def test_grocery_keys_adds_an_ies_plural_for_a_name_ending_in_i():
+    """A name ending in `i` pluralises both ways in the wild — `chilli` becomes `chillies` as
+    often as `chillis` — and the recipe lines use the `-ies` spelling. Emitting only `+s` left 4
+    correct `Green chilli` links looking like the matcher had never produced them."""
+    keys = notion.grocery_keys("Green chilli")
+    assert "green chillies" in keys
+    assert "green chillis" in keys, "the other reading stays, since neither is predictable"
+
+
 def test_grocery_keys_does_not_vary_a_very_short_name():
     """A 3-character stem would over-match: `oat` inside `oatmeal`, `ice` inside `ice cream`."""
     keys = notion.grocery_keys("Oat")
     assert keys == {"oat"}
+    assert notion.grocery_keys("Ahi") == {"ahi"}, "the guard applies to an -i name too"
 
 
 def test_grocery_keys_keeps_the_prefixed_and_bare_forms_distinct():

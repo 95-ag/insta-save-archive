@@ -290,6 +290,7 @@ import types
 
 import pytest
 
+from insta_save.adapters import notion
 from insta_save.config.recipes import RecipeConfig
 
 
@@ -765,6 +766,14 @@ def test_the_prompt_explains_how_to_use_the_summary():
     text = Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8")
     assert "ENGLISH distillation of this post" in text
     assert "The summary never licenses invention" in text
+
+
+def test_match_ingredients_matches_an_ies_plural_against_a_singular_row():
+    """End to end for the plural gap: a key existing is not the same as a line linking. The row is
+    named `Green chilli` and every recipe line says `green chillies`."""
+    grocery = {k: "g1" for k in notion.grocery_keys("Green chilli")}
+    matched, unmatched = recipes.match_ingredients(["2 green chillies"], grocery)
+    assert matched == ["g1"] and unmatched == []
 
 
 def test_match_ingredients_resolves_a_curated_alias():

@@ -923,6 +923,12 @@ def _plural_variants(key: str) -> set:
         out.add(key[:-1])
     elif key.endswith("y"):
         out.add(key[:-1] + "ies")
+    elif key.endswith("i"):
+        # A name ending in `i` pluralises both ways and neither is predictable from the word:
+        # chilli -> chillies, but roti -> rotis. Emitting both costs an unused key, while
+        # emitting only `+s` lost every `green chillies` line to a `Green chilli` row.
+        out.add(key + "s")
+        out.add(key + "es")
     else:
         out.add(key + "s")
     return {v for v in out if len(v) >= _MIN_STEM_FOR_VARIANT}
