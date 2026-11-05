@@ -149,7 +149,7 @@ All config files live in `config/`. Private ones are gitignored.
 
 - **`enrich.backend`** — `claude-p | api | local | cowork | claude-code`. **`model`/`effort`** — effort maps to thinking budget (`api`), model size (`local`), advisory (sessions).
 - **`extract.transcript`** — `model`: `base | small | distil-large-v3`; `vad`: Silero voice-activity filter (recommended on).
-- **`extract.ocr.mode`** — `none | rapidocr`. RapidOCR runs on every carousel/post slide (images persisted to `tmp/slides/<shortcode>/` for the vision enrich lane) and on sampled reel frames (ephemeral).
+- **`extract.ocr.mode`** — `none | rapidocr`. RapidOCR runs on every carousel/post slide (images persisted to `data/slides/<shortcode>/` for the vision enrich lane) and on sampled reel frames (ephemeral).
 - **`batch.max_image_tokens`** — cap on total estimated image tokens per vision-lane batch (≈ 1600 tokens/slide); vision lane only. Text lane uses `max_char_budget`.
 - **`guardrails`** — hard caps; a run stops before exceeding them. Set `max_spend_usd` for the `api` backend.
 

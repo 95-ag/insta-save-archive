@@ -6,8 +6,11 @@ node_modules/
 .env
 session_cookies.json
 
-# temp media (transcription audio, OCR frames, slide images) + ingest snapshots (tmp/ingest/)
+# staging only — safe to wipe (transcription audio, OCR frames, per-run stage files)
 tmp/
+
+# durable app data — crawl snapshots, carousel/post slide images, backups
+data/
 
 # debug logs (clean terminal = rich progress; full detail goes here)
 logs/
