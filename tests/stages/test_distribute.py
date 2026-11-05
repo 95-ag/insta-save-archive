@@ -2747,6 +2747,20 @@ def test_lost_lines_keeps_a_links_only_line_whose_url_moved_into_an_entry():
     assert dist._lost_lines(current, proposed) == []
 
 
+def test_lost_lines_keeps_a_merge_that_changes_end_punctuation():
+    current = "# A\n- Use Canva for thumbnails."
+    proposed = "# A\n- Use Canva for thumbnails, or Figma for layouts. 🔗 [b](https://ig/b)"
+    assert dist._lost_lines(current, proposed) == []
+
+
+def test_lost_lines_keeps_a_line_whose_bold_marker_moved():
+    assert dist._lost_lines("# A\n- **Tip:** use X", "# A\n- **Tip**: use X daily") == []
+
+
+def test_lost_lines_flags_a_dropped_word_hidden_inside_a_longer_word():
+    assert dist._lost_lines("# A\n- AI\n- x", "# A\n- TRAINing\n- x") == [("A", "- AI")]
+
+
 def test_preview_reports_lost_lines(tmp_path):
     env, _ = _staged(
         tmp_path,

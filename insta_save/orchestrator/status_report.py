@@ -153,6 +153,12 @@ def _enrich_version(props: dict) -> str | None:
     return text or None
 
 
+def _is_stale(stamped: str | None, current: str) -> bool:
+    """Enrich stamps `<model>/<enrich_version>/<group>`, so the current version is one segment
+    of the stamp, never the whole of it."""
+    return stamped is None or current not in stamped.split("/")
+
+
 def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
     """Requeue `group`'s Tagged/Routed items whose enrich_version is not the current one, so
     the next enrich re-tags them under today's vocabulary.
@@ -172,7 +178,7 @@ def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
         if (
             status in _RETAGGABLE
             and collections_cfg.enrich_group(collections) == group
-            and _enrich_version(page.get("properties", {})) != env.enrich_version
+            and _is_stale(_enrich_version(page.get("properties", {})), env.enrich_version)
         ):
             selected.append((page_id, status))
 

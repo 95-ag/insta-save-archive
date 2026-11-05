@@ -404,3 +404,14 @@ def test_retag_requeues_and_counts(monkeypatch):
     result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
     assert writes == ["a", "b"]
     assert result["requeued"] == 2
+
+
+def test_retag_reads_the_version_segment_enrich_stamps(monkeypatch):
+    pages = [
+        _retag_page("current", "Routed", ["Reels"], "sonnet/v2.1-enrich/Hustling"),
+        _retag_page("stale", "Routed", ["Reels"], "sonnet/v2.0-enrich/Hustling"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["stale"]
+    assert result["selected"] == 1
