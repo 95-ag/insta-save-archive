@@ -180,9 +180,17 @@ def test_slide_images_from_raw_resolves_paths():
         {"slide": 2, "text": None, "ocr_confidence": None, "image": "slides/ab/slide2.jpg"},
         {"slide": 3, "text": "C", "ocr_confidence": 0.8, "image": None},
     ]}}
-    out = notion._slide_images_from_raw(raw, tmp_dir="tmp", extract_version="v2.0-base-tuned")
+    out = notion._slide_images_from_raw(raw, data_dir="tmp", extract_version="v2.0-base-tuned")
     assert out == [os.path.abspath(os.path.join("tmp", "slides/ab/slide1.jpg")),
                    os.path.abspath(os.path.join("tmp", "slides/ab/slide2.jpg"))]
+
+
+def test_slide_images_resolve_against_data_dir():
+    import os
+
+    raw = {"v": {"carousel_slides": [{"slide": 1, "image": "slides/X/slide1.jpg"}]}}
+    out = notion._slide_images_from_raw(raw, data_dir="/d", extract_version="v")
+    assert out == [os.path.abspath("/d/slides/X/slide1.jpg")]
 
 
 def test_slide_images_from_raw_empty_when_no_slides():

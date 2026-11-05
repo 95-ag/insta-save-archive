@@ -6,7 +6,8 @@ def _set(monkeypatch, **kw):
     for k in ["NOTION_TOKEN", "NOTION_DATABASE_ID", "TMP_DIR", "EXTRACT_VERSION",
               "ENRICH_VERSION", "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
               "DISPLAY_MODE", "COOKIES_FILE", "NOTION_KNOWLEDGE_DATABASE_ID", "DISTRIBUTE_VERSION",
-              "NOTION_RECIPE_DATABASE_ID", "NOTION_GROCERY_DATABASE_ID", "RECIPE_VERSION"]:
+              "NOTION_RECIPE_DATABASE_ID", "NOTION_GROCERY_DATABASE_ID", "RECIPE_VERSION",
+              "DATA_DIR"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in kw.items():
         monkeypatch.setenv(k, v)
@@ -93,3 +94,19 @@ def test_env_recipe_ids_default_to_empty(monkeypatch):
     cfg = envcfg.load_env()
     assert cfg.notion_recipe_database_id == ""
     assert cfg.notion_grocery_database_id == ""
+
+
+def test_data_dir_defaults_to_data(monkeypatch):
+    _set(monkeypatch)
+    assert envcfg.load_env().data_dir == "data"
+
+
+def test_data_dir_reads_env(monkeypatch):
+    _set(monkeypatch, DATA_DIR="/x/d")
+    assert envcfg.load_env().data_dir == "/x/d"
+
+
+def test_data_dir_independent_of_tmp_dir(monkeypatch):
+    _set(monkeypatch, TMP_DIR="/t")
+    cfg = envcfg.load_env()
+    assert cfg.tmp_dir == "/t" and cfg.data_dir == "data"

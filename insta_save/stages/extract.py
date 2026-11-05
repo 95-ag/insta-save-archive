@@ -81,11 +81,11 @@ def run_extract_item(env, run_extract_cfg, browser, item) -> str:
     elif post_type == "Carousel":
         results["carousel_slides"] = extract_carousel(
             context=browser.context(), ig_link=ig_link, shortcode=shortcode,
-            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file)
+            data_dir=env.data_dir, cookies_json=env.cookies_file)
     elif post_type == "Post":
         results["carousel_slides"] = extract_post(
             context=browser.context(), ig_link=ig_link, shortcode=shortcode,
-            tmp_dir=env.tmp_dir, cookies_json=env.cookies_file)
+            data_dir=env.data_dir, cookies_json=env.cookies_file)
     else:
         log.warning("extract: %s unknown type %r — skipping", item.get("source_id"), post_type)
 

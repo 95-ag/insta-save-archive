@@ -2,7 +2,7 @@
 
 CARRYOVER: carousel scope 'ul img'; post scope 'img'; CDN markers t51.82787-15/t51.71878-15;
 IG CDN instagram.fblr22-*.fna.fbcdn.net; cookie-header image download; yt-dlp mp4 + ffmpeg fps=1;
-cleanup in finally. Carousel/post slide images are PERSISTED under slides/<shortcode>/ in tmp_dir
+cleanup in finally. Carousel/post slide images are PERSISTED under slides/<shortcode>/ in data_dir
 so a vision-capable enrich stage can read them directly — no flagging or escalation here."""
 
 import json
@@ -81,7 +81,7 @@ def ocr_score(rapid_result) -> tuple[str, float | None]:
 def slide_record(slide: int, text: str, confidence: float | None, image: str | None = None) -> dict:
     """One slide's OCR result. `ocr_confidence` is the mean RapidOCR per-detection
     score (0-1, higher = more confident text recognition) — a diagnostic only; it
-    no longer gates anything. `image` is the slide image path relative to tmp_dir,
+    no longer gates anything. `image` is the slide image path relative to data_dir,
     so a vision-capable enrich can Read it."""
     return {
         "slide": slide,
@@ -143,7 +143,7 @@ def extract_carousel(
     context,
     ig_link: str,
     shortcode: str,
-    tmp_dir: str,
+    data_dir: str,
     cookies_json: str,
 ) -> list[dict]:
     """
@@ -151,13 +151,11 @@ def extract_carousel(
     and OCR it.
 
     Returns a list of slide_record dicts ordered by slide position. Slide images
-    are persisted to slides/<shortcode>/ under tmp_dir (not deleted) so a
+    are persisted to slides/<shortcode>/ under data_dir (not deleted) so a
     vision-capable enrich stage can read them. The `image` field in each record
-    is the path relative to tmp_dir.
+    is the path relative to data_dir.
     """
-    tmp = Path(tmp_dir)
-    tmp.mkdir(exist_ok=True)
-    slides_dir = tmp / "slides" / shortcode
+    slides_dir = Path(data_dir) / "slides" / shortcode
     slides_dir.mkdir(parents=True, exist_ok=True)
     cookie_header = _load_session_cookies(cookies_json)
 
@@ -199,7 +197,7 @@ def extract_carousel(
             try:
                 _download_image(url, str(dest), cookie_header)
                 text, conf = ocr_image(str(dest))
-                rel = os.path.relpath(str(dest), tmp_dir)
+                rel = os.path.relpath(str(dest), data_dir)
                 results.append(slide_record(i, text, conf, image=rel))
                 log.info("ocr: carousel %s slide %d — %d chars conf=%.2f",
                          shortcode, i, len(text), conf if conf is not None else 0)
@@ -217,7 +215,7 @@ def extract_post(
     context,
     ig_link: str,
     shortcode: str,
-    tmp_dir: str,
+    data_dir: str,
     cookies_json: str,
 ) -> list[dict]:
     """
@@ -226,12 +224,10 @@ def extract_post(
     Uses scope="img" (not "ul img") because Post images are not wrapped in a <ul>.
     Returns [slide_record(1, text, conf, image=rel)] — same format as extract_carousel so
     results write to the carousel_slides field without any schema change. The image is
-    persisted to slides/<shortcode>/slide1.jpg under tmp_dir for a vision-capable enrich.
+    persisted to slides/<shortcode>/slide1.jpg under data_dir for a vision-capable enrich.
     Returns [] if no content image is found on the page.
     """
-    tmp = Path(tmp_dir)
-    tmp.mkdir(exist_ok=True)
-    slides_dir = tmp / "slides" / shortcode
+    slides_dir = Path(data_dir) / "slides" / shortcode
     slides_dir.mkdir(parents=True, exist_ok=True)
     cookie_header = _load_session_cookies(cookies_json)
 
@@ -260,7 +256,7 @@ def extract_post(
         dest = slides_dir / "slide1.jpg"
         _download_image(urls[0], str(dest), cookie_header)
         text, conf = ocr_image(str(dest))
-        rel = os.path.relpath(str(dest), tmp_dir)
+        rel = os.path.relpath(str(dest), data_dir)
         log.info("ocr: post %s — %d chars conf=%s", shortcode, len(text),
                  f"{conf:.2f}" if conf is not None else "None")
         return [slide_record(1, text, conf, image=rel)]

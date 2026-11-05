@@ -918,7 +918,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             summary = run_discover(env, ig_username=ig_username,
                                    collections_path="config/collections.json",
-                                   tmp_dir=env.tmp_dir, headed=args.headed,
+                                   data_dir=env.data_dir, headed=args.headed,
                                    fresh=args.fresh, names=names)
         except RuntimeError as exc:
             raise SystemExit(str(exc))
@@ -930,7 +930,7 @@ def main(argv: list[str] | None = None) -> None:
         collections_cfg = _guard(_load_collections)
         log_path = setup_logging("backup")
         print(f"Logging to {_rel(log_path)}")
-        out_dir = Path(env.tmp_dir) / "backups"
+        out_dir = Path(env.data_dir) / "backups"
         if args.restore_check:
             # Find the newest backup file (ts format sorts lexically = chronologically).
             candidates = sorted(out_dir.glob("notion-*.json")) if out_dir.exists() else []

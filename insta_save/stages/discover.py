@@ -132,7 +132,7 @@ def _inline_pick_collections(collections_path, new_names) -> None:
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_collection,
+def crawl_all(*, context, ig_username, collections_cfg, data_dir, crawl_fn=crawl_collection,
               fresh=False, names=None, max_age_min=360, now=None, progress=None) -> list:
     """Crawl each collection grid → snapshot. Reuses complete+fresh snapshots unless
     `fresh`. `names` limits the set (None = all). Returns names skipped for missing ids."""
@@ -151,13 +151,13 @@ def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_
             continue
         if progress is not None:
             progress.set_current("crawl", slug)
-        if not fresh and is_reusable(read_snapshot(tmp_dir, slug), max_age_min, now=now):
+        if not fresh and is_reusable(read_snapshot(data_dir, slug), max_age_min, now=now):
             log.info("discover: reusing snapshot for %s", slug)
             if progress is not None:
                 progress.advance(bar)
             continue
         posts, complete = crawl_fn(context, ig_username, slug, numeric_id)
-        write_snapshot(tmp_dir, name=name, slug=slug, numeric_id=numeric_id,
+        write_snapshot(data_dir, name=name, slug=slug, numeric_id=numeric_id,
                        posts=posts, complete=complete, now=now)
         if progress is not None:
             progress.bump("crawled", len(posts))
@@ -165,7 +165,7 @@ def crawl_all(*, context, ig_username, collections_cfg, tmp_dir, crawl_fn=crawl_
     return skipped
 
 
-def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
+def run_discover(env, *, ig_username, collections_path, data_dir, headed=False,
                  fresh=False, names=None, max_age_min=360, persist=True,
                  select_mode="inline"):
     """Full discover: auth → index refresh → inline-select or editor → crawl all grids.
@@ -188,8 +188,8 @@ def run_discover(env, *, ig_username, collections_path, tmp_dir, headed=False,
             cfg = load_collections(collections_path)
             with StageProgress("discover") as progress:
                 skipped = crawl_all(context=context, ig_username=ig_username, collections_cfg=cfg,
-                                    tmp_dir=tmp_dir, fresh=fresh, names=names, max_age_min=max_age_min,
-                                    progress=progress)
+                                    data_dir=data_dir, fresh=fresh, names=names,
+                                    max_age_min=max_age_min, progress=progress)
         finally:
             browser.close()
     # The collection gate runs OUTSIDE the Playwright context: questionary (tui) drives a

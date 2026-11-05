@@ -33,6 +33,7 @@ class EnvConfig:
     notion_grocery_database_id: str = ""
     recipe_version: str = "v1.0-recipe"
     distribute_version: str = "v2.3-distribute"
+    data_dir: str = "data"
 
 
 def _env_float(key: str, default: float) -> float:
@@ -74,6 +75,7 @@ def load_env() -> EnvConfig:
         notion_grocery_database_id=os.getenv("NOTION_GROCERY_DATABASE_ID", "").strip(),
         recipe_version=os.getenv("RECIPE_VERSION", "v1.0-recipe").strip(),
         distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.3-distribute").strip(),
+        data_dir=os.getenv("DATA_DIR", "data").strip(),
     )
 
 

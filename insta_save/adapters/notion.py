@@ -126,8 +126,8 @@ def _transcript_language_from_raw(raw: dict, extract_version: str):
     return None
 
 
-def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> list[str]:
-    """Resolve carousel/post slide image paths (recorded relative-to-tmp_dir at
+def _slide_images_from_raw(raw: dict, data_dir: str, extract_version: str) -> list[str]:
+    """Resolve carousel/post slide image paths (recorded relative-to-data_dir at
     extract) to paths a vision enrich can Read. Prefer the slot matching
     extract_version, else any slot carrying carousel_slides."""
     slot = raw.get(extract_version) or {}
@@ -139,7 +139,7 @@ def _slide_images_from_raw(raw: dict, tmp_dir: str, extract_version: str) -> lis
                 break
     if not isinstance(slides, list):
         return []
-    return [os.path.abspath(os.path.join(tmp_dir, s["image"])) for s in slides
+    return [os.path.abspath(os.path.join(data_dir, s["image"])) for s in slides
             if isinstance(s, dict) and s.get("image")]
 
 
@@ -383,7 +383,7 @@ def get_page_content(env: EnvConfig, page_id: str) -> dict:
         raw = {}
     extract_version = _text("extract_version") or ""
     transcript_language = _transcript_language_from_raw(raw, extract_version)
-    slide_images = _slide_images_from_raw(raw, env.tmp_dir, extract_version)
+    slide_images = _slide_images_from_raw(raw, env.data_dir, extract_version)
 
     # Collapse near-duplicate frame-OCR at enrich-read so enrich/calibrate read (and budget on)
     # the cleaned text, while raw_extraction keeps the full OCR (D13: durable/reprocessable).

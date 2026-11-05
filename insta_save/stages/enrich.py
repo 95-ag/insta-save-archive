@@ -117,11 +117,12 @@ def prepare(env, *, group, collections_cfg, vocab, char_budget, max_items, statu
 def _warn_missing_slide_images(items) -> None:
     """Warn when an item's recorded slide images are not on disk.
 
-    Notion keeps the PATHS written at extract time but `tmp/slides/` is transient, so after a
-    cleanup a vision batch reads nothing: the model falls back to caption+OCR and the tagging is
-    quietly weaker than intended. It said so in prose once, which broke JSON parsing — that was
-    the only reason 59 blind-tagged items came to light. Never skip the item: an item no lane
-    will take is worse than one tagged from text (see lessons on un-advanceable items)."""
+    Notion keeps the PATHS written at extract time, but the files under `data/slides/` can still
+    be deleted by hand, and then a vision batch reads nothing: the model falls back to
+    caption+OCR and the tagging is quietly weaker than intended. It said so in prose once, which
+    broke JSON parsing — that was the only reason 59 blind-tagged items came to light. Never skip
+    the item: an item no lane will take is worse than one tagged from text (see lessons on
+    un-advanceable items)."""
     blind = [
         item.get("source_id") or item["page_id"]
         for item in items

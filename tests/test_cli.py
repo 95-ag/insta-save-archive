@@ -1,4 +1,5 @@
 import types
+from pathlib import Path
 
 import pytest
 from cli.isa import build_parser
@@ -550,7 +551,7 @@ def _patch_backup_common(monkeypatch, tmp_dir):
     import types
     import insta_save.backup as backup_mod
 
-    env = types.SimpleNamespace(tmp_dir=tmp_dir)
+    env = types.SimpleNamespace(tmp_dir=tmp_dir, data_dir=tmp_dir)
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
@@ -588,6 +589,36 @@ def test_backup_command_calls_backup_and_prints_path(monkeypatch, tmp_path, caps
     out = capsys.readouterr().out
     assert "backup" in out.lower() or str(written_path) in out or "notion-" in out
     assert calls  # backup() was called
+
+
+def test_backup_writes_under_data_dir(monkeypatch, tmp_path):
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path / "t"))
+    env.data_dir = str(tmp_path / "d")
+    seen = {}
+
+    def _fake_backup(env_arg, *, out_dir, ts):
+        seen["out_dir"] = Path(out_dir)
+        written = Path(out_dir) / "notion-x.json"
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_text('{"snapshot_ts":"t","count":0,"pages":[]}', encoding="utf-8")
+        return written
+
+    monkeypatch.setattr(isa, "backup", _fake_backup)
+    monkeypatch.setattr(
+        isa,
+        "build_parser",
+        lambda: type(
+            "P",
+            (),
+            {
+                "parse_args": lambda self, argv=None: types.SimpleNamespace(
+                    command="backup", restore_check=False
+                )
+            },
+        )(),
+    )
+    isa.main()
+    assert seen["out_dir"] == tmp_path / "d" / "backups"
 
 
 def test_backup_command_restore_check_ok(monkeypatch, tmp_path, capsys):

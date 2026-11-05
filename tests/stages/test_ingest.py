@@ -48,6 +48,7 @@ def test_run_ingest_applies_retags_without_browser(monkeypatch, tmp_path):
 
     class _Env:
         tmp_dir = str(tmp_path)
+        data_dir = str(tmp_path)
         cookies_file = "x"
 
     write_snapshot(str(tmp_path), name="Dev", slug="dev", numeric_id="1",
