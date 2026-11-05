@@ -53,7 +53,7 @@ def test_run_extract_dispatches(monkeypatch):
 
     isa.dispatch_run(type("A", (), {
         "mode": "incremental", "stage": "extract", "group": "Hustling",
-        "limit": 5, "reextract": False, "retry_failed": False})())
+        "limit": 5, "reextract": False, "retry_failed": False, "retag": False})())
 
     assert calls["schema"] == "ENV"
     assert calls["stage"][0] == "ENV" and calls["stage"][1] == "EX"
@@ -64,7 +64,7 @@ def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
             "mode": "incremental", "stage": "discover", "group": None,
-            "limit": None, "reextract": False, "retry_failed": False,
+            "limit": None, "reextract": False, "retry_failed": False, "retag": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
             "confirm_removed": None, "apply": False, "prepare": False})())
 
@@ -192,7 +192,7 @@ def _det_common(monkeypatch, run_obj):
 def _det_args(**kw):
     base = {"mode": "incremental", "stage": "deterministic", "group": None, "limit": None,
             "prepare": False, "apply": False, "reextract": False,
-            "retry_failed": False, "collection": None}
+            "retry_failed": False, "retag": False, "collection": None}
     base.update(kw)
     return type("A", (), base)()
 
@@ -2140,3 +2140,54 @@ def test_plan_report_still_warns_for_a_genuinely_skipped_group(capsys):
     isa._print_plan(plan, dry_run=False)
     out = capsys.readouterr().out
     assert "⚠" in out and "did not advance" in out
+
+
+
+def _patch_retag_cli(monkeypatch):
+    calls = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir="tmp"))
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(
+        isa,
+        "_retag_group",
+        lambda env, cfg, group, *, dry_run: calls.append((group, dry_run))
+        or {
+            "selected": 3,
+            "requeued": 0 if dry_run else 2,
+            "skipped_status_changed": 0 if dry_run else 1,
+            "by_status": {"Tagged": 2, "Routed": 1},
+        },
+    )
+    return calls
+
+
+def test_retag_requires_group(monkeypatch):
+    calls = _patch_retag_cli(monkeypatch)
+    with pytest.raises(SystemExit, match="--group"):
+        isa.main(["run", "--stage", "enrich", "--retag"])
+    assert calls == []
+
+
+def test_retag_refused_with_non_enrich_stage(monkeypatch):
+    calls = _patch_retag_cli(monkeypatch)
+    with pytest.raises(SystemExit, match="--stage enrich"):
+        isa.main(["run", "--stage", "route", "--group", "Content", "--retag"])
+    assert calls == []
+
+
+def test_retag_dry_run_prints_counts_and_says_nothing_written(monkeypatch, capsys):
+    calls = _patch_retag_cli(monkeypatch)
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag", "--dry-run"])
+    out = capsys.readouterr().out
+    assert calls == [("Content", True)]
+    assert "selected 3 (Tagged 2, Routed 1)" in out
+    assert "dry run" in out
+
+
+def test_retag_prints_requeued_and_skipped(monkeypatch, capsys):
+    calls = _patch_retag_cli(monkeypatch)
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag"])
+    out = capsys.readouterr().out
+    assert calls == [("Content", False)]
+    assert "requeued 2" in out and "skipped 1 (status changed)" in out

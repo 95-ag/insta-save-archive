@@ -23,7 +23,11 @@ from insta_save.backends.base import get_backend, TerminalBackendError
 from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
-from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
+from insta_save.orchestrator.status_report import (
+    build_status,
+    retag_group as _retag_group,
+    retry_failed as _retry_failed,
+)
 from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
 STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic",
@@ -210,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--reextract", action="store_true")
     run.add_argument("--retry-failed", action="store_true")
+    run.add_argument("--retag", action="store_true")
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
     run.add_argument("--collection", default=None)
@@ -237,7 +242,38 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _dispatch_retag(args) -> None:
+    if args.stage != "enrich":
+        raise SystemExit("isa run --retag: only with --stage enrich")
+    if not args.group:
+        raise SystemExit("isa run --stage enrich --retag: --group is required")
+    env = _guard(_load_env)
+    collections_cfg = _guard(_load_collections)
+    print(f"Logging to {_rel(setup_logging('retag'))}")
+    r = _retag_group(env, collections_cfg, args.group, dry_run=args.dry_run)
+    by_status = r["by_status"]
+    selected = (
+        f"Retag {args.group}: selected {r['selected']} "
+        f"(Tagged {by_status['Tagged']}, Routed {by_status['Routed']})"
+    )
+    if args.dry_run:
+        print(f"{selected} — dry run, nothing written")
+        return
+    print(
+        f"{selected} · requeued {r['requeued']} · "
+        f"skipped {r['skipped_status_changed']} (status changed)"
+    )
+    if r["requeued"]:
+        print(
+            f"  Next: isa run --stage enrich --group {args.group}, "
+            f"then isa run --stage route --group {args.group}"
+        )
+
+
 def dispatch_run(args) -> None:
+    if args.retag:
+        _dispatch_retag(args)
+        return
     if args.stage == "extract":
         env = _guard(_load_env)
         run_cfg = _guard(_load_run)

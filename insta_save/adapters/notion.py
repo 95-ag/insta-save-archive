@@ -472,6 +472,22 @@ def write_unroute(env: EnvConfig, page_id: str) -> None:
         raise RuntimeError(f"notion: failed to unroute {page_id}: {e}") from e
 
 
+def requeue_for_retag(env: EnvConfig, page_id: str) -> None:
+    """Send a Tagged/Routed item back to Extracted so enrich re-tags it. route_target is
+    cleared because route recomputes it from the new tags; a stale one would read as decided."""
+    validate_notion(env)
+    client = Client(auth=env.notion_token)
+    props = {
+        "status": _select("Extracted"),
+        "route_target": {"select": None},
+    }
+    try:
+        client.pages.update(page_id=page_id, properties=props)
+        log.info("notion: requeued %s -> Extracted for re-tag", page_id)
+    except APIResponseError as e:
+        raise RuntimeError(f"notion: failed to requeue {page_id} for re-tag: {e}") from e
+
+
 def create_page(env: EnvConfig, metadata: dict) -> str:
     """Create a new page from metadata (Imported). Caller dedups via bulk_load_state."""
     validate_notion(env)

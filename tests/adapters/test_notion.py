@@ -251,6 +251,27 @@ def test_row_route_target_none_when_absent():
     assert notion._row(page)["route_target"] is None
 
 
+def test_requeue_for_retag_sets_extracted_and_clears_route(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    notion.requeue_for_retag(type("E", (), {"notion_token": "t"})(), "pg7")
+    assert captured == {
+        "page_id": "pg7",
+        "props": {"status": {"select": {"name": "Extracted"}}, "route_target": {"select": None}},
+    }
+
+
 def test_write_unroute_sets_tagged_status_and_clears_route_target(monkeypatch):
     captured = {}
 
