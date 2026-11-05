@@ -979,6 +979,56 @@ def _refuse_orphan_text(proposed_md) -> None:
         )
 
 
+def _lost_lines(current_md, proposed_md) -> list:
+    """`(heading, line)` for each non-blank line of a replaced section whose content the
+    proposal no longer carries. fill's checks only follow link lines, so a dropped tip or note
+    would otherwise reach the page unnoticed.
+
+    Compared by TEXT, not by line: the prompt merges items into existing entries and appends
+    their source links, so a kept entry legitimately grows. A line is kept when its text, links
+    stripped, still appears in one of the section's proposed lines; a links-only line is kept
+    when all of its URLs are still in the section. A reworded line or one moved to another
+    section counts as lost."""
+    current = dict(split_sections(current_md))
+    lost = []
+    for op in plan_sections(current_md, proposed_md):
+        if op.action != "replace":
+            continue
+        proposed_texts = [_entry_text(line) for line in op.body_markdown.splitlines()]
+        proposed_urls = set(_HREF_RE.findall(op.body_markdown))
+        for line in current[op.heading].splitlines():
+            if not line.strip():
+                continue
+            text = _entry_text(line)
+            if text:
+                kept = any(text in candidate for candidate in proposed_texts)
+            else:
+                kept = set(_HREF_RE.findall(line)) <= proposed_urls
+            if not kept:
+                lost.append((op.heading, line.rstrip()))
+    return lost
+
+
+_MARKDOWN_LINK_RE = re.compile(r"(?:🔗|🎬\s*\*\*Watch:\*\*)?\s*\[[^\]]*\]\(https?://[^)]+\)")
+
+
+def _entry_text(line) -> str:
+    """A line's prose with its bullet marker, links and ` · ` link joins removed and its
+    whitespace collapsed — what a merge must preserve."""
+    text = _MARKDOWN_LINK_RE.sub(" ", line)
+    text = re.sub(r"^\s*[-*]\s+", "", text)
+    return " ".join(token for token in text.split() if token != "·")
+
+
+def _refuse_lost_lines(current_md, proposed_md, proposed_path) -> None:
+    lost = _lost_lines(current_md, proposed_md)
+    if lost:
+        raise RuntimeError(
+            f"distribute.apply: proposed.md drops {len(lost)} line(s) from existing sections — "
+            f"restore them in {proposed_path} or re-run fill"
+        )
+
+
 def _comparable_sections(md) -> list:
     """Sections as the page renders them after a write: empty paragraphs and dividers leave
     blank or no lines, and the anchor heading of an empty page renders as an empty section."""
@@ -1071,6 +1121,7 @@ class ApplyPreview:
     skipped: list
     unmentioned: list
     diff_text: str
+    lost_lines: list
 
 
 def _section_line_counts(before, after) -> tuple:
@@ -1109,6 +1160,7 @@ def preview(env, *, target) -> ApplyPreview:
         skipped=[(item["source_id"], item.get("title"), reason) for item, reason in c.skipped],
         unmentioned=[(item["source_id"], item.get("title")) for item in c.unmentioned],
         diff_text=render_diff(staged.current_md, staged.proposed_md),
+        lost_lines=_lost_lines(staged.current_md, staged.proposed_md),
     )
 
 
@@ -1125,6 +1177,7 @@ def apply(env, *, target, version) -> dict:
     batch, proposal = staged.batch, staged.proposal
     staged_current, proposed_md = staged.current_md, staged.proposed_md
     _refuse_orphan_text(proposed_md)
+    _refuse_lost_lines(staged_current, proposed_md, d / "proposed.md")
 
     page_id = batch["page_id"]
     blocks = _content_blocks(get_page_blocks(env, page_id))

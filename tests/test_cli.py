@@ -1249,7 +1249,14 @@ class _FakeTemplatePath:
 
 def _empty_distribute_preview(**overrides):
     fields = dict(
-        sections=[], folded=[], unverified=[], dropped=[], skipped=[], unmentioned=[], diff_text=""
+        sections=[],
+        folded=[],
+        unverified=[],
+        dropped=[],
+        skipped=[],
+        unmentioned=[],
+        diff_text="",
+        lost_lines=[],
     )
     return types.SimpleNamespace(**{**fields, **overrides})
 
@@ -1414,6 +1421,23 @@ def test_distribute_prepare_runtime_error_becomes_system_exit(monkeypatch, tmp_p
                             ["run", "--stage", "distribute", "--target", "Page B"])
 
 
+def test_distribute_apply_stops_before_prompt_on_lost_lines(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        "insta_save.stages.distribute.apply",
+        lambda env, **kw: pytest.fail("apply must not run when lines would be lost"),
+    )
+    with pytest.raises(SystemExit, match="proposed.md"):
+        _run_distribute_cli(
+            monkeypatch,
+            tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"],
+            preview=lambda env, **kw: _empty_distribute_preview(lost_lines=[("A", "- two")]),
+            confirm=lambda *a, **k: pytest.fail("must stop before the prompt"),
+        )
+    out = capsys.readouterr().out
+    assert "'A'" in out and "- two" in out
+
+
 def test_distribute_apply_runtime_error_becomes_system_exit(monkeypatch, tmp_path):
     monkeypatch.setattr("insta_save.stages.distribute.apply",
                         lambda env, **kw: (_ for _ in ()).throw(
@@ -1470,7 +1494,7 @@ def test_distribute_apply_confirm_diff_then_apply_prints_diff_and_applies(
     monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
     review = types.SimpleNamespace(
         sections=[], folded=[], unverified=[], dropped=[], skipped=[], unmentioned=[],
-        diff_text="THE-FULL-DIFF",
+        diff_text="THE-FULL-DIFF", lost_lines=[],
     )
     _run_distribute_cli(
         monkeypatch, tmp_path,
@@ -1550,6 +1574,7 @@ def test_distribute_stage_prints_preview_summary_before_applying(monkeypatch, tm
         folded=[], unverified=[], dropped=[], skipped=[],
         unmentioned=[("z", "Unmentioned")],
         diff_text="",
+        lost_lines=[],
     )
     _run_distribute_cli(
         monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"],
@@ -1824,7 +1849,9 @@ def test_format_rebuild_preview_omits_heading_line_when_already_clear(capsys):
 # ---------------------------------------------------------------------------
 
 
-def _preview(*, sections=(), folded=(), unverified=(), dropped=(), skipped=(), unmentioned=()):
+def _preview(
+    *, sections=(), folded=(), unverified=(), dropped=(), skipped=(), unmentioned=(), lost_lines=()
+):
     return types.SimpleNamespace(
         sections=list(sections),
         folded=list(folded),
@@ -1832,6 +1859,7 @@ def _preview(*, sections=(), folded=(), unverified=(), dropped=(), skipped=(), u
         dropped=list(dropped),
         skipped=list(skipped),
         unmentioned=list(unmentioned),
+        lost_lines=list(lost_lines),
     )
 
 
@@ -1889,6 +1917,13 @@ def test_format_distribute_preview_skipped_without_reason_has_no_dash_or_none(ca
     out = capsys.readouterr().out
     assert "Skipped Title" in out
     assert "Skipped Title —" not in out and "None" not in out
+
+
+def test_format_distribute_preview_lists_lost_lines_under_their_heading(capsys):
+    print(isa._format_distribute_preview(_preview(lost_lines=[("Workouts", "- old tip")])))
+    out = capsys.readouterr().out
+    assert "apply will refuse (1)" in out
+    assert "'Workouts': - old tip" in out
 
 
 def test_format_distribute_preview_with_no_sections_prints_no_changes_line(capsys):

@@ -61,6 +61,13 @@ def _format_distribute_preview(preview) -> str:
             lines.append(f"  {marker} {section.heading!r} (+{section.added} -{section.removed})")
     else:
         lines.append("  No page content changes")
+    if preview.lost_lines:
+        lines.append(
+            f"  ⚠ lines dropped from existing sections — apply will refuse "
+            f"({len(preview.lost_lines)}):"
+        )
+        for heading, line in preview.lost_lines:
+            lines.append(f"    {heading!r}: {line}")
 
     lines.append(f"  folded: {len(preview.folded)}")
     if preview.dropped:
@@ -593,6 +600,13 @@ def dispatch_run(args) -> None:
             if args.apply:
                 review = distribute.preview(env, target=args.target)
                 print(_format_distribute_preview(review))
+                if review.lost_lines:
+                    proposed = distribute.staging_dir(env, args.target) / "proposed.md"
+                    raise SystemExit(
+                        f"isa run --stage distribute --apply: refusing — "
+                        f"{len(review.lost_lines)} line(s) would be dropped from existing "
+                        f"sections; restore them in {_rel(proposed)} or re-run fill"
+                    )
 
                 if args.yes:
                     proceed = True

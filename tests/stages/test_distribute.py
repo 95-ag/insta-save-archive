@@ -1185,7 +1185,7 @@ def test_apply_replaces_a_changed_section_and_links_folded_items(tmp_path, monke
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1204,7 +1204,7 @@ def test_apply_fills_the_empty_anchor_on_a_first_time_build(tmp_path, monkeypatc
         tmp_path,
         items=items,
         current_md="# ",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1220,7 +1220,7 @@ def test_apply_marks_a_dropped_item_misrouted_without_a_relation(tmp_path, monke
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- old\n- new",
         proposal={"folded": [], "dropped": [{"source_id": "a", "reason": "meal prep"}]},
     )
     calls = {}
@@ -1237,7 +1237,7 @@ def test_apply_passes_a_missing_drop_reason_through_as_none(tmp_path, monkeypatc
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new",
+        proposed_md="# Workouts\n- old\n- new",
         proposal={"folded": [], "dropped": [{"source_id": "a", "reason": None}]},
     )
     calls = {}
@@ -1255,7 +1255,7 @@ def test_apply_leaves_an_item_in_no_trailer_list_routed(tmp_path, monkeypatch):
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1272,7 +1272,7 @@ def test_apply_marks_a_skipped_item_distributed_with_its_stated_reason(tmp_path,
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={
             "folded": ["a"],
             "dropped": [],
@@ -1295,7 +1295,7 @@ def test_apply_falls_back_to_the_skip_note_when_a_skipped_item_gives_no_reason(
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": [], "skipped": [{"source_id": "b"}]},
     )
     calls = {}
@@ -1310,7 +1310,7 @@ def test_apply_writes_no_item_state_when_a_section_write_fails(tmp_path, monkeyp
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1331,7 +1331,7 @@ def test_apply_aborts_when_the_page_changed_since_prepare(tmp_path, monkeypatch)
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     calls = {}
@@ -1347,7 +1347,7 @@ def test_apply_ignores_an_invented_source_id(tmp_path, monkeypatch):
         tmp_path,
         items=items,
         current_md="# Workouts\n- old",
-        proposed_md="# Workouts\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# Workouts\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a", "ghost"], "dropped": []},
     )
     calls = {}
@@ -1467,7 +1467,7 @@ def test_apply_replaces_one_section_keeps_the_other_and_appends_last(tmp_path, m
             _read_block("by", "bulleted_list_item", "y keep"),
         ]
     ).patch(monkeypatch)
-    proposed = "# X\n- x new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep\n# Z\n- z one"
+    proposed = "# X\n- x old, now merged\n🔗 [t-a](https://ig/a)\n# Y\n- y keep\n# Z\n- z one"
     env, _ = _stage_for(
         tmp_path,
         page,
@@ -1556,7 +1556,9 @@ def test_apply_refuses_to_replace_a_section_holding_unshowable_blocks(
         tmp_path,
         page,
         items=[_item("a", ["fitness-workouts"])],
-        proposed_md="# X\n- x2\n🔗 [t-a](https://ig/a)\n# Y\n- y2",
+        proposed_md="# X\n- x\n- x2\n🔗 [t-a](https://ig/a)\n# Y\n"
+        + (rendered + "\n" if rendered else "")
+        + "- y2",
         proposal={"folded": ["a"], "dropped": []},
     )
     with pytest.raises(RuntimeError, match=rf"section 'Y' holds blocks .*{kind}") as exc:
@@ -1580,7 +1582,7 @@ def test_apply_replace_keeps_dividers_and_empty_paragraphs(tmp_path, monkeypatch
         tmp_path,
         page,
         items=[_item("a", ["fitness-workouts"])],
-        proposed_md="# X\n- x new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# X\n- x old\nprose old\n- x new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
     dist.apply(env, target="Page A", version="v")
@@ -1599,7 +1601,7 @@ def test_apply_links_only_folded_items_whose_link_landed(tmp_path, monkeypatch):
         tmp_path,
         page,
         items=items,
-        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# X\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a", "b", "c"], "dropped": []},
     )
     counts = dist.apply(env, target="Page A", version="v")
@@ -1619,11 +1621,11 @@ def test_apply_links_only_folded_items_whose_link_landed(tmp_path, monkeypatch):
 
 
 def test_apply_resumes_item_writes_when_the_proposal_is_already_on_the_page(tmp_path, monkeypatch):
-    proposed = "# X\n- new\n🔗 [t-a](https://ig/a)\n# Z\n- z"
+    proposed = "# X\n- old, now merged\n🔗 [t-a](https://ig/a)\n# Z\n- z"
     page = _FakePage(
         [
             _read_block("hx", "heading_1", "X"),
-            _read_block("bx", "bulleted_list_item", "new"),
+            _read_block("bx", "bulleted_list_item", "old, now merged"),
             _read_block("dv", "divider"),
             _read_block("ep", "paragraph"),
             _read_block("nx", "numbered_list_item", "invisible"),
@@ -1657,7 +1659,7 @@ def test_apply_removes_staged_files_only_after_success(tmp_path, monkeypatch):
     staged = ("batch.json", "current.md", "proposed.md", "proposal.json")
     kwargs = dict(
         items=[_item("a", ["fitness-workouts"])],
-        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# X\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a"], "dropped": []},
     )
 
@@ -1705,7 +1707,7 @@ def test_apply_resumes_after_a_partial_failure_despite_indentation_and_trailing_
     ).patch(monkeypatch)
     # A hand-editable indented sub-bullet and a trailing space: markdown_to_blocks flattens
     # and strips both on the real write, so the raw text never reappears on the live page.
-    proposed = "# X\n- parent\n  - child\n- item \n🔗 [t-a](https://ig/a)\n🔗 [t-b](https://ig/b)"
+    proposed = "# X\n- old\n- parent\n  - child\n- item \n🔗 [t-a](https://ig/a)\n🔗 [t-b](https://ig/b)"
     items = [_item("a", ["fitness-workouts"]), _item("b", ["fitness-workouts"])]
     env, d = _stage_for(
         tmp_path,
@@ -1755,7 +1757,7 @@ def test_apply_resumes_after_a_partial_failure_when_an_untouched_section_was_del
     ).patch(monkeypatch)
     # The reviewer hand-edited proposed.md and dropped the untouched "Y" section entirely;
     # plan_sections leaves a section the proposal omits alone, so Y stays on the page.
-    proposed = "# X\n- new\n🔗 [t-a](https://ig/a)"
+    proposed = "# X\n- old, now merged\n🔗 [t-a](https://ig/a)"
     env, d = _stage_for(
         tmp_path,
         page,
@@ -1771,7 +1773,7 @@ def test_apply_resumes_after_a_partial_failure_when_an_untouched_section_was_del
     with pytest.raises(RuntimeError, match="notion down"):
         dist.apply(env, target="Page A", version="v")
     assert (d / "batch.json").exists()
-    assert page.render() == "# X\n- new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep"
+    assert page.render() == "# X\n- old, now merged\n🔗 [t-a](https://ig/a)\n# Y\n- y keep"
 
     monkeypatch.setattr(dist, "set_knowledge_relation", page.set_knowledge_relation)
     before = len(page.log)
@@ -1806,7 +1808,7 @@ def test_apply_does_not_verify_a_folded_item_whose_link_is_only_a_url_prefix(tmp
         tmp_path,
         page,
         items=[_item("a", ["fitness-workouts"])],
-        proposed_md="# X\n- new\n🔗 [x](https://ig/ab)",
+        proposed_md="# X\n- old\n- new\n🔗 [x](https://ig/ab)",
         proposal={"folded": ["a"], "dropped": []},
     )
     counts = dist.apply(env, target="Page A", version="v")
@@ -1835,7 +1837,7 @@ def test_apply_resumes_with_untouched_section_having_trailing_space(tmp_path, mo
             _read_block("by", "bulleted_list_item", "y keep "),  # trailing space
         ]
     ).patch(monkeypatch)
-    proposed = "# X\n- x new\n🔗 [t-a](https://ig/a)\n# Y\n- y keep "
+    proposed = "# X\n- x old, now merged\n🔗 [t-a](https://ig/a)\n# Y\n- y keep "
     items = [_item("a", ["fitness-workouts"])]
     env, d = _stage_for(
         tmp_path,
@@ -1887,7 +1889,7 @@ def test_apply_logs_the_unverified_warning_even_when_a_linked_write_raises(
         tmp_path,
         page,
         items=items,
-        proposed_md="# X\n- new\n🔗 [t-a](https://ig/a)",
+        proposed_md="# X\n- old\n- new\n🔗 [t-a](https://ig/a)",
         proposal={"folded": ["a", "b"], "dropped": []},
     )
 
@@ -2696,3 +2698,77 @@ def test_scrub_keeps_a_line_that_still_has_words_after_removal():
     out = dist._scrub(body, [{"title": "t", "summary": "s", "ig_link": "https://ig/a"}], "")
     assert "invented.example.com" not in out
     assert "use the tool at" in out
+
+
+def test_lost_lines_flags_line_dropped_from_replaced_section():
+    assert dist._lost_lines("# A\n- one\n- two", "# A\n- one\n- three") == [("A", "- two")]
+
+
+def test_lost_lines_silent_when_lines_kept():
+    assert dist._lost_lines("# A\n- one\n- two", "# A\n- one\n- two\n- three") == []
+
+
+def test_lost_lines_ignores_blank_line_changes():
+    assert dist._lost_lines("# A\n- one\n\n- two", "# A\n- one\n- two\n- three") == []
+
+
+def test_lost_lines_ignores_trailing_whitespace():
+    assert dist._lost_lines("# A\n- one\n- two ", "# A\n- one\n- two\n- three") == []
+
+
+def test_lost_lines_ignores_new_sections():
+    assert dist._lost_lines("# A\n- one", "# A\n- one\n# B\n- new") == []
+
+
+def test_lost_lines_counts_line_moved_to_other_section():
+    current = "# A\n- one\n- two\n# B\n- b"
+    proposed = "# A\n- one\n# B\n- b\n- two"
+    assert dist._lost_lines(current, proposed) == [("A", "- two")]
+
+
+def test_lost_lines_keeps_a_merge_that_appends_text_and_links():
+    current = "# A\n- tip X 🔗 [a](https://ig/a)"
+    proposed = "# A\n- tip X, plus Y 🔗 [a](https://ig/a) · [b](https://ig/b)"
+    assert dist._lost_lines(current, proposed) == []
+
+
+def test_lost_lines_flags_a_reworded_line():
+    assert dist._lost_lines("# A\n- tip X", "# A\n- tip Z") == [("A", "- tip X")]
+
+
+def test_lost_lines_flags_a_links_only_line_whose_url_vanished():
+    current = "# A\n- tip\n🔗 [a](https://ig/a)"
+    assert dist._lost_lines(current, "# A\n- tip") == [("A", "🔗 [a](https://ig/a)")]
+
+
+def test_lost_lines_keeps_a_links_only_line_whose_url_moved_into_an_entry():
+    current = "# A\n- tip\n🎬 **Watch:** [a](https://ig/a)"
+    proposed = "# A\n- tip 🎬 **Watch:** [a](https://ig/a)"
+    assert dist._lost_lines(current, proposed) == []
+
+
+def test_preview_reports_lost_lines(tmp_path):
+    env, _ = _staged(
+        tmp_path,
+        items=[_item("a", ["fitness-workouts"])],
+        current_md="# A\n- one\n- two",
+        proposed_md="# A\n- one\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    assert dist.preview(env, target="Page A").lost_lines == [("A", "- two")]
+
+
+def test_apply_refuses_on_lost_lines_without_writing(tmp_path, monkeypatch):
+    env, d = _staged(
+        tmp_path,
+        items=[_item("a", ["fitness-workouts"])],
+        current_md="# A\n- one\n- two",
+        proposed_md="# A\n- one\n🔗 [t-a](https://ig/a)",
+        proposal={"folded": ["a"], "dropped": []},
+    )
+    calls = {}
+    _patch_apply(monkeypatch, [_h1("A"), _bullet("one", "b1"), _bullet("two", "b2")], calls=calls)
+    with pytest.raises(RuntimeError, match="1 line") as exc:
+        dist.apply(env, target="Page A", version="v")
+    assert "proposed.md" in str(exc.value)
+    assert calls == {}
