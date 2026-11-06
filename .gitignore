@@ -33,6 +33,7 @@ __pycache__/
 
 # claude 
 .claude/
+.superpowers/
 
 # os
 .DS_Store
