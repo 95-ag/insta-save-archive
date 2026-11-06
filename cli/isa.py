@@ -259,10 +259,15 @@ def _dispatch_retag(args) -> None:
     if args.dry_run:
         print(f"{selected} — dry run, nothing written")
         return
+    failed = f" · failed {r['failed']} (see the log)" if r["failed"] else ""
     print(
         f"{selected} · requeued {r['requeued']} · "
-        f"skipped {r['skipped_status_changed']} (status changed)"
+        f"skipped {r['skipped_status_changed']} (status changed){failed}"
     )
+    if r["failed"]:
+        print(
+            f"  To retry the failed items: re-run isa run --stage enrich --group {args.group} --retag"
+        )
     if r["requeued"]:
         print(
             f"  Next: isa run --stage enrich --group {args.group}, "

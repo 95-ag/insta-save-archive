@@ -2156,6 +2156,7 @@ def _patch_retag_cli(monkeypatch):
             "selected": 3,
             "requeued": 0 if dry_run else 2,
             "skipped_status_changed": 0 if dry_run else 1,
+            "failed": 0,
             "by_status": {"Tagged": 2, "Routed": 1},
         },
     )
@@ -2191,3 +2192,23 @@ def test_retag_prints_requeued_and_skipped(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert calls == [("Content", False)]
     assert "requeued 2" in out and "skipped 1 (status changed)" in out
+    assert "failed" not in out
+
+
+def test_retag_reports_failed_items_and_how_to_resume(monkeypatch, capsys):
+    _patch_retag_cli(monkeypatch)
+    monkeypatch.setattr(
+        isa,
+        "_retag_group",
+        lambda env, cfg, group, *, dry_run: {
+            "selected": 3,
+            "requeued": 1,
+            "skipped_status_changed": 0,
+            "failed": 2,
+            "by_status": {"Tagged": 3, "Routed": 0},
+        },
+    )
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag"])
+    out = capsys.readouterr().out
+    assert "failed 2" in out
+    assert "re-run isa run --stage enrich --group Content --retag" in out

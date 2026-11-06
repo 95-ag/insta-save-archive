@@ -168,7 +168,10 @@ def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
     Distributed is never touched: its page links carry the item title, which a re-enrich
     rewrites. Each status is re-read live before its write because a filtered query lags.
 
-    Returns {"selected", "requeued", "skipped_status_changed", "by_status"}."""
+    One failed Notion call is counted and the loop moves on, as in retry_failed: a requeued
+    item is already Extracted, so a re-run picks up only what is left.
+
+    Returns {"selected", "requeued", "skipped_status_changed", "failed", "by_status"}."""
     with observability.spinner(f"Scanning Notion for {group} items to re-tag…"):
         pages = query_all_pages(env)
 
@@ -187,6 +190,7 @@ def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
         "selected": len(selected),
         "requeued": 0,
         "skipped_status_changed": 0,
+        "failed": 0,
         "by_status": by_status,
     }
     if dry_run:
@@ -195,18 +199,23 @@ def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
     with StageProgress("Re-tag") as progress:
         bar = progress.add_bar("Requeue", total=len(selected))
         for page_id, _ in selected:
-            if get_item_status(env, page_id) not in _RETAGGABLE:
-                result["skipped_status_changed"] += 1
-            else:
-                requeue_for_retag(env, page_id)
-                result["requeued"] += 1
-                time.sleep(env.notion_write_delay)
+            try:
+                if get_item_status(env, page_id) not in _RETAGGABLE:
+                    result["skipped_status_changed"] += 1
+                else:
+                    requeue_for_retag(env, page_id)
+                    result["requeued"] += 1
+                    time.sleep(env.notion_write_delay)
+            except Exception as exc:  # noqa: BLE001 — one bad item must not abort the loop
+                log.error("status: re-tag failed for %s — %s", page_id, exc)
+                result["failed"] += 1
             progress.advance(bar)
 
     log.info(
-        "status: re-tag %s requeued %d, skipped %d (status changed)",
+        "status: re-tag %s requeued %d, skipped %d (status changed), failed %d",
         group,
         result["requeued"],
         result["skipped_status_changed"],
+        result["failed"],
     )
     return result

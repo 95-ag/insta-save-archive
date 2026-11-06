@@ -391,6 +391,7 @@ def test_retag_dry_run_writes_nothing(monkeypatch):
         "selected": 2,
         "requeued": 0,
         "skipped_status_changed": 0,
+        "failed": 0,
         "by_status": {"Tagged": 1, "Routed": 1},
     }
 
@@ -415,3 +416,40 @@ def test_retag_reads_the_version_segment_enrich_stamps(monkeypatch):
     result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
     assert writes == ["stale"]
     assert result["selected"] == 1
+
+
+def test_retag_counts_a_failed_write_and_keeps_going(monkeypatch):
+    pages = [
+        _retag_page("bad", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("good", "Tagged", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+
+    def requeue(env, pid):
+        if pid == "bad":
+            raise RuntimeError("notion: requeue_for_retag failed on bad")
+        writes.append(pid)
+
+    monkeypatch.setattr(status_report, "requeue_for_retag", requeue)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["good"]
+    assert result["requeued"] == 1
+    assert result["failed"] == 1
+
+
+def test_retag_counts_a_failed_status_read_and_keeps_going(monkeypatch):
+    pages = [
+        _retag_page("bad", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("good", "Tagged", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+
+    def status(env, pid):
+        if pid == "bad":
+            raise ConnectionError("network down")
+        return "Tagged"
+
+    monkeypatch.setattr(status_report, "get_item_status", status)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["good"]
+    assert result["failed"] == 1
