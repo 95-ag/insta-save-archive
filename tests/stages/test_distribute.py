@@ -2761,6 +2761,44 @@ def test_lost_lines_flags_a_dropped_word_hidden_inside_a_longer_word():
     assert dist._lost_lines("# A\n- AI\n- x", "# A\n- TRAINing\n- x") == [("A", "- AI")]
 
 
+def test_lost_lines_flags_an_inline_link_dropped_from_kept_prose():
+    current = "# A\n- Mock it up first, see the [guide](https://figma.com/guide)"
+    proposed = "# A\n- Mock it up first, see the"
+    assert dist._lost_lines(current, proposed) == [
+        ("A", "- Mock it up first, see the [guide](https://figma.com/guide)")
+    ]
+
+
+def test_lost_lines_flags_an_inline_link_whose_text_changed():
+    current = "# A\n- Mock it up in [Figma](https://figma.com) first"
+    proposed = "# A\n- Mock it up in [Sketch](https://figma.com) first"
+    assert dist._lost_lines(current, proposed) == [
+        ("A", "- Mock it up in [Figma](https://figma.com) first")
+    ]
+
+
+def test_lost_lines_keeps_an_inline_link_inside_a_merged_entry():
+    current = "# A\n- Mock it up in [Figma](https://figma.com) first"
+    proposed = (
+        "# A\n- Mock it up in [Figma](https://figma.com) first, then test 🔗 [b](https://ig/b)"
+    )
+    assert dist._lost_lines(current, proposed) == []
+
+
+def test_lost_lines_keeps_a_renumbered_line():
+    current = "# A\n1. Prep the board\n2. Sand it"
+    proposed = "# A\n1. Measure twice\n2. Prep the board\n3. Sand it"
+    assert dist._lost_lines(current, proposed) == []
+
+
+def test_lost_lines_keeps_a_renumbered_dotted_paragraph():
+    assert dist._lost_lines("# A\n3.2 Pricing tiers", "# A\n3.1 Intro\n3.3 Pricing tiers") == []
+
+
+def test_lost_lines_still_flags_a_dropped_leading_number_that_is_content():
+    assert dist._lost_lines("# A\n- 2024 was big", "# A\n- was big") == [("A", "- 2024 was big")]
+
+
 def test_preview_reports_lost_lines(tmp_path):
     env, _ = _staged(
         tmp_path,

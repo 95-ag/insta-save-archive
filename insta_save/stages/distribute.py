@@ -986,9 +986,9 @@ def _lost_lines(current_md, proposed_md) -> list:
 
     Compared by TEXT, not by line: the prompt merges items into existing entries and appends
     their source links, so a kept entry legitimately grows. A line is kept when its words still
-    appear, in order, inside one of the section's proposed lines; a links-only line is kept when
-    all of its URLs are still in the section. A reworded line, one split across lines, or one
-    moved to another section counts as lost."""
+    appear, in order, inside one of the section's proposed lines, and every URL it held is still
+    in the section. A reworded line, one split across lines, one that lost a link, or one moved
+    to another section counts as lost."""
     current = dict(split_sections(current_md))
     lost = []
     for op in plan_sections(current_md, proposed_md):
@@ -1000,25 +1000,30 @@ def _lost_lines(current_md, proposed_md) -> list:
             if not line.strip():
                 continue
             words = _entry_words(line)
-            if words:
-                kept = any(_contains_run(candidate, words) for candidate in proposed_words)
-            else:
-                kept = set(_HREF_RE.findall(line)) <= proposed_urls
+            kept = set(_HREF_RE.findall(line)) <= proposed_urls and (
+                not words or any(_contains_run(candidate, words) for candidate in proposed_words)
+            )
             if not kept:
                 lost.append((op.heading, line.rstrip()))
     return lost
 
 
-_MARKDOWN_LINK_RE = re.compile(r"(?:🔗|🎬\s*\*\*Watch:\*\*)?\s*\[[^\]]*\]\(https?://[^)]+\)")
+_SOURCE_MARK = r"(?:🔗|🎬\s*\*\*Watch:\*\*)"
+_LINK = r"\[[^\]]*\]\(https?://[^)]+\)"
+_SOURCE_LINKS_RE = re.compile(rf"{_SOURCE_MARK}\s*{_LINK}(?:\s*·\s*(?:{_SOURCE_MARK}\s*)?{_LINK})*")
+_INLINE_LINK_RE = re.compile(r"\[([^\]]*)\]\(https?://[^)]+\)")
+_ENTRY_MARKER_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:(?:\d+(?:\.\d+)+\.?|\d+[.)])(?=\s))?\s*")
 
 
 def _entry_words(line) -> list:
-    """A line's words with its bullet marker, links, ` · ` link joins and `**` removed, each
-    stripped of surrounding punctuation — what a merge must preserve. A merge re-punctuates
-    ("thumbnails." becomes "thumbnails, or …") and moves bold markers ("**Tip:**" becomes
-    "**Tip**:"), and neither loses content."""
-    text = _MARKDOWN_LINK_RE.sub(" ", line).replace("**", "")
-    text = re.sub(r"^\s*[-*]\s+", "", text)
+    """A line's words with its bullet or list number, source links and their ` · ` joins, and
+    `**` removed, each stripped of surrounding punctuation — what a merge must preserve. A merge
+    re-punctuates ("thumbnails." becomes "thumbnails, or …"), moves bold markers ("**Tip:**"
+    becomes "**Tip**:") and renumbers a list when it inserts a step, and none of these loses
+    content. An inline prose link keeps its text, so changing what it says is still caught."""
+    text = _SOURCE_LINKS_RE.sub(" ", line)
+    text = _INLINE_LINK_RE.sub(r" \1 ", text).replace("**", "")
+    text = _ENTRY_MARKER_RE.sub("", text, count=1)
     words = (word.strip(".,;:!?") for word in text.split())
     return [word for word in words if word and word != "·"]
 
