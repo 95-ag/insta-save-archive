@@ -120,6 +120,7 @@ the URL. Schema properties are created automatically on first write.
 | `IG_USERNAME` | Instagram handle (no `@`) |
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
+| `DATA_DIR` | optional; durable app data — crawl snapshots, slide images, backups (default `data`). `TMP_DIR` is staging only and safe to wipe |
 | `ENRICH_VERSION` | optional; overrides the default enrich prompt version (`v2.1-enrich`) |
 | `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
 | `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.3-distribute`) |
@@ -191,14 +192,27 @@ help routing (below) decide an item whose tags point at more than one page.
 
 ### `routes.json` — optional routing *(committed example)*
 
-Maps `tag > collection > group → route_target` (tag wins, then collection, then group default) —
-**unless the item's primary topic has its own `by_tag` rule**, in which case that rule wins
-outright, ahead of ordinary tag order. This matters for an item whose tags point at more than one
-page: a static priority list always resolves that tag combination to the same page regardless of
-which item it is, but the primary topic reflects what *this* item is actually about, so it can win
-over a higher-ranked tag the item also happens to carry. An item with no primary topic, or one not
-covered by `by_tag`, falls back to plain tag order. Omit or empty `routes.json` to leave items at
-`Tagged`.
+```json
+{
+  "by_primary_topic": { "topic-a": "TopicTargetDB" },
+  "by_tag": [["tag-a", "ExampleTargetDB"], ["tag-b", "OtherTargetDB"]],
+  "by_collection": { "Example Collection A": "LearningDB" },
+  "by_group": { "GroupTwo": "MarketDB" }
+}
+```
+
+Maps an item to a `route_target`, first match wins:
+
+1. **The item's primary topic** — looked up in `by_primary_topic`, then as a tag in `by_tag`.
+2. **`by_tag`** — an ordered list; the highest-listed tag the item carries wins, whatever order
+   the item's own tags are in.
+3. **`by_collection`**, then **`by_group`** — the defaults.
+
+The primary topic goes first because it reflects what *this* item is about: a static priority
+list always resolves a tag combination to the same page, whichever item carries it. Keep a topic
+in `by_primary_topic` rather than `by_tag` when it should route only the items *about* it — as a
+`by_tag` rule it would also sweep in every item that merely carries the tag. Omit or empty
+`routes.json` to leave items at `Tagged`.
 
 Routing only evaluates items still at `Tagged` — editing `routes.json` doesn't retroactively move
 items already `Routed`. To re-evaluate those against the current file:
@@ -242,6 +256,7 @@ isa run   --mode  {first-time | incremental}        # default: incremental
           --apply               # apply a staged result: enrich (session backends) results.json, a reviewed distribute proposal, or staged recipe rows
           --rebuild             # distribute only: reset a page to its template + its items to Tagged; mutually exclusive with --apply
           --reroute             # route only: re-evaluate already-Routed items against the current routes.json
+          --retag               # enrich only, needs --group: requeue items tagged under an older enrich version
           --yes                 # distribute/recipe --apply and distribute --rebuild: skip the confirmation prompt
           --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts, split by primary-topic vs order)
 isa status --retry-failed       # requeue Failed items to their inferred prior status
@@ -411,6 +426,22 @@ Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
 
 `extract_version` and `enrich_version` are independent:
 - Re-extract (e.g. after a whisper upgrade) without re-enriching: `isa run --stage extract --reextract`.
+- Re-tag a group's items enriched under an older enrich version (e.g. after a prompt upgrade) —
+  an item tagged earlier can never elect a tag added since:
+
+  ```bash
+  isa run --stage enrich --group <name> --retag --dry-run   # count what would be requeued
+  isa run --stage enrich --group <name> --retag             # requeue them
+  isa run --stage enrich --group <name>                     # re-tag
+  isa run --stage route --group <name>                      # re-route
+  ```
+
+  `--retag` selects the group's `Tagged` and `Routed` items whose `enrich_version` stamp does not
+  carry the current version (`ENRICH_VERSION`), sends them back to `Extracted` and clears
+  `route_target`. Items are selected by the group they are enriched under. `Distributed` items are
+  never touched, because their page links carry the item title, which a re-enrich rewrites.
+  Selection reads only the version stamp: an edit to `tags.json` alone, under the same
+  `ENRICH_VERSION`, selects nothing.
 
 `raw_extraction` is never overwritten, so re-parsing slides/audio never requires re-scraping Instagram.
 
