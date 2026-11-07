@@ -28,14 +28,9 @@ def test_parse_results_reads_array(tmp_path):
 
 def test_parse_results_rejects_non_list(tmp_path):
     p = tmp_path / "r.json"
-    p.write_text('{"page_id": "p1"}', encoding="utf-8")
+    p.write_text('{"status": "error", "message": "batch failed"}', encoding="utf-8")
     with pytest.raises(ValueError):
         base.parse_results(p)
-
-
-def test_parse_results_array_rejects_non_array():
-    with pytest.raises(ValueError):
-        base.parse_results_array('{"not":"an array"}')
 
 
 def test_parse_results_object_reads_clean_object():
@@ -63,20 +58,6 @@ def test_parse_results_object_rejects_non_object():
 def test_parse_results_object_raises_on_no_object():
     with pytest.raises(ValueError):
         base.parse_results_object('just prose, no JSON object anywhere')
-
-
-def test_parse_results_array_extracts_from_prose_wrapped_output():
-    text = ("I don't have write permission to tmp/enrich/. Here's the array:\n\n"
-            '```json\n[{"page_id": "p1", "content_type": "tool", "topics": ["x"]}]\n```\n\n'
-            "**Note:** done.")
-    out = base.parse_results_array(text)
-    assert out[0]["page_id"] == "p1"
-
-
-def test_parse_results_array_raises_when_no_array():
-    import pytest
-    with pytest.raises(ValueError):
-        base.parse_results_array("just prose, no array here")
 
 
 def test_normalize_results_takes_identity_from_batch():
@@ -119,14 +100,241 @@ def test_is_terminal_error_flags_expired_oauth():
         "expired. Re-authenticate to continue."))
 
 
-def test_parse_results_array_tolerates_raw_control_chars():
-    # 2026-09-08: the model echoes food/fitness captions with unescaped newlines into JSON
-    # string values; strict json.loads raised "Invalid control character". Must parse now.
-    out = base.parse_results_array('[{"page_id": "p1", "summary": "line one\nline two"}]')
-    assert out[0]["page_id"] == "p1"
-    assert out[0]["summary"] == "line one\nline two"  # content preserved, not stripped
-
-
 def test_parse_results_object_tolerates_raw_control_chars():
     out = base.parse_results_object('{"content_type": {"tool": "a\tb"}}')
     assert out["content_type"]["tool"] == "a\tb"
+
+
+# ---------------------------------------------------------------------------
+# JSON Lines results contract (enrich v2.1)
+# ---------------------------------------------------------------------------
+
+def test_parse_results_jsonl_parses_every_good_line():
+    text = ('{"page_id": "p1", "title": "a"}\n'
+            '{"page_id": "p2", "title": "b"}\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_keeps_good_lines_and_returns_bad_ones():
+    # the live failure mode: one unescaped quote in one summary. Under the array contract
+    # that one line killed all 15 items; here the other lines must survive.
+    text = ('{"page_id": "p1", "summary": "fine"}\n'
+            '{"page_id": "p2", "summary": "he said "no" here"}\n'
+            '{"page_id": "p3", "summary": "also fine"}\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p3"]
+    assert len(bad) == 1 and "p2" in bad[0]
+
+
+def test_parse_results_jsonl_ignores_blank_lines_and_fences():
+    text = ('```json\n'
+            '\n'
+            '{"page_id": "p1"}\n'
+            '   \n'
+            '{"page_id": "p2"}\n'
+            '```\n')
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_takes_objects_from_a_single_line_array():
+    # a model that ignores the line-delimited contract and emits the whole array on one
+    # line must still be usable — the objects are taken, not reported as a bad line.
+    items, bad = base.parse_results_jsonl('[{"page_id": "p1"}, {"page_id": "p2"}]')
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+    assert bad == []
+
+
+def test_parse_results_jsonl_never_raises_on_garbage():
+    items, bad = base.parse_results_jsonl("not json at all\nnor this")
+    assert items == []
+    assert bad == ["not json at all", "nor this"]
+
+
+def test_parse_results_jsonl_tolerates_raw_control_chars():
+    items, bad = base.parse_results_jsonl('{"page_id": "p1", "summary": "a\tb"}')
+    assert items[0]["summary"] == "a\tb" and bad == []
+
+
+def test_parse_results_reads_jsonl_file(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1"}\n{"page_id": "p2"}\n', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2"]
+
+
+def test_parse_results_still_reads_a_single_line_array(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('[{"page_id": "p1"}, {"page_id": "p2"}]', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2"]
+
+
+def test_parse_results_raises_on_unusable_content(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text("the model explained itself instead of answering", encoding="utf-8")
+    with pytest.raises(ValueError):
+        base.parse_results(p)
+
+
+def test_parse_results_reads_single_object_file(tmp_path):
+    # a batch of 1: a conformant one-object results.json (e.g. an agent-filled backend
+    # under the v2.1 contract) must be accepted as a one-item list, not rejected as a
+    # non-list document.
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1", "title": "T"}', encoding="utf-8")
+    assert base.parse_results(p) == [{"page_id": "p1", "title": "T"}]
+
+
+def test_parse_results_reads_multiline_jsonl_file(tmp_path):
+    p = tmp_path / "results.json"
+    p.write_text('{"page_id": "p1"}\n{"page_id": "p2"}\n{"page_id": "p3"}\n', encoding="utf-8")
+    assert [i["page_id"] for i in base.parse_results(p)] == ["p1", "p2", "p3"]
+
+
+def test_parse_results_jsonl_reassembles_a_value_split_by_an_embedded_newline():
+    """The live failure: a summary containing a literal newline split the object into an
+    unterminated string plus a remainder, and BOTH counted bad — one newline cost two
+    failures and forced a retry of the item."""
+    text = '{"page_id": "p1", "summary": "first line\nsecond line"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == []
+    assert items == [{"page_id": "p1", "summary": "first line\nsecond line"}]
+
+
+def test_parse_results_jsonl_reassembles_a_pretty_printed_object():
+    text = '{\n  "page_id": "p1",\n  "summary": "s"\n}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and items == [{"page_id": "p1", "summary": "s"}]
+
+
+def test_parse_results_jsonl_keeps_multi_line_values_separate():
+    text = '{"page_id": "p1", "summary": "a\nb"}\n{"page_id": "p2", "summary": "c\nd"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == []
+    assert [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_reassembles_a_multi_line_array():
+    text = '[\n  {"page_id": "p1"},\n  {"page_id": "p2"}\n]'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_does_not_let_a_brace_in_a_string_open_a_chunk():
+    text = '{"page_id": "p1", "summary": "use {braces} here"}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_does_not_let_an_escaped_quote_end_a_string():
+    text = '{"page_id": "p1", "summary": "he said \\"hi\\" loudly"}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def test_parse_results_jsonl_one_bad_value_does_not_swallow_the_next():
+    """A malformed value must cost only itself — the following good object still parses."""
+    text = '{"page_id": "p1", BROKEN}\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p2"]
+    assert len(bad) == 1
+
+
+def test_parse_results_jsonl_reports_an_unterminated_value_at_the_end():
+    text = '{"page_id": "p1"}\n{"page_id": "p2", "summary": "never closed'
+    items, bad = base.parse_results_jsonl(text)
+    assert [i["page_id"] for i in items] == ["p1"]
+    assert len(bad) == 1 and "never closed" in bad[0]
+
+
+def test_parse_results_jsonl_ignores_a_fence_between_values_not_inside_one():
+    text = '```json\n{"page_id": "p1", "summary": "a\nb"}\n```\n{"page_id": "p2"}'
+    items, bad = base.parse_results_jsonl(text)
+    assert bad == [] and [i["page_id"] for i in items] == ["p1", "p2"]
+
+
+def _enrich_line(**overrides):
+    fields = {
+        "page_id": "p1",
+        "source_id": "s1",
+        "title": "A title",
+        "summary": "A summary.",
+        "externals": "",
+        "content_type": "Reel",
+        "topics": ["ai", "claude-code"],
+        "primary_topic": "ai",
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _dump_with_raw_summary(raw_summary, **overrides):
+    """json.dumps the object, then splice a summary that is NOT escaped, as the model does."""
+    marker = "@@SUMMARY@@"
+    line = json.dumps(_enrich_line(summary=marker, **overrides))
+    return line.replace(marker, raw_summary)
+
+
+def test_jsonl_recovers_a_summary_holding_an_unescaped_quote():
+    raw = 'He calls it "the one-prompt audit" and shows the steps.'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert bad == []
+    assert items == [_enrich_line(summary=raw)]
+
+
+def test_jsonl_recovery_keeps_valid_escapes_and_fixes_only_the_bare_quote():
+    raw = 'Line one\\nline "two" with a \\"proper\\" escape.'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert bad == []
+    assert items[0]["summary"] == 'Line one\nline "two" with a "proper" escape.'
+
+
+def test_jsonl_recovers_an_unescaped_quote_in_the_title_too():
+    line = json.dumps(_enrich_line(title="@@T@@")).replace("@@T@@", 'The "best" prompt')
+    items, bad = base.parse_results_jsonl(line)
+    assert bad == [] and items[0]["title"] == 'The "best" prompt'
+
+
+def test_jsonl_recovery_does_not_swallow_the_neighbouring_lines():
+    """An odd quote count flips the string state, so the depth scan glues the following
+    lines to the broken one; each must come back as its own item."""
+    good_before = json.dumps(_enrich_line(page_id="p0"))
+    broken = _dump_with_raw_summary('a 5" pan', page_id="p1")
+    good_after = json.dumps(_enrich_line(page_id="p2"))
+    items, bad = base.parse_results_jsonl("\n".join([good_before, broken, good_after]))
+    assert bad == []
+    assert [i["page_id"] for i in items] == ["p0", "p1", "p2"]
+    assert items[1]["summary"] == 'a 5" pan'
+
+
+def test_jsonl_does_not_repair_when_a_known_key_appears_twice():
+    """A summary quoting `, "topics": ` makes the value boundary ambiguous — retry, never guess."""
+    raw = 'see ", "topics": ["x"], "primary_topic": "x" in the video'
+    items, bad = base.parse_results_jsonl(_dump_with_raw_summary(raw))
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_when_a_known_key_is_missing():
+    line = '{"page_id": "p1", "summary": "has "quotes" inside"}'
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and bad == [line]
+
+
+def test_jsonl_does_not_repair_a_topics_list_that_is_not_valid_json():
+    line = _dump_with_raw_summary("fine").replace('["ai", "claude-code"]', '["ai", "claude"code"]')
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_a_non_string_where_a_string_belongs():
+    line = _dump_with_raw_summary('x "y" z').replace('"page_id": "p1"', '"page_id": 7')
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1
+
+
+def test_jsonl_does_not_repair_an_unterminated_object():
+    line = _dump_with_raw_summary('x "y" z')[:-1]
+    items, bad = base.parse_results_jsonl(line)
+    assert items == [] and len(bad) == 1

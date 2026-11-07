@@ -22,3 +22,18 @@ def test_is_reusable_requires_complete_and_fresh():
                        max_age_min=360, now="2026-06-11T00:10:00Z") is False
     assert is_reusable(fresh_complete, max_age_min=30, now="2026-06-11T02:00:00Z") is False
     assert is_reusable(None, max_age_min=360, now="2026-06-11T00:00:00Z") is False
+
+
+def test_snapshot_written_under_data_dir(tmp_path):
+    root = tmp_path / "d"
+    write_snapshot(
+        data_dir=str(root),
+        name="Dev",
+        slug="dev",
+        numeric_id="1",
+        posts=[],
+        complete=True,
+        now="2026-06-11T00:00:00Z",
+    )
+    assert (root / "snapshots" / "dev.json").exists()
+    assert read_snapshot(data_dir=str(root), slug="dev")["name"] == "Dev"

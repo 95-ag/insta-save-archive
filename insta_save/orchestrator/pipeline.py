@@ -17,7 +17,7 @@ def run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes, *,
     computed plan (no Notion writes, no crawling).
 
     Args:
-        env:             EnvConfig with .tmp_dir, .ig_username, .notion_write_delay.
+        env:             EnvConfig with .data_dir, .ig_username, .notion_write_delay.
         run_cfg:         RunConfig.
         collections_cfg: CollectionsConfig (may be reloaded after discover).
         vocab:           Vocab.
@@ -50,7 +50,7 @@ def run_pipeline(env, run_cfg, collections_cfg, vocab, backend, routes, *,
         env,
         ig_username=username,
         collections_path="config/collections.json",
-        tmp_dir=env.tmp_dir,
+        data_dir=env.data_dir,
         headed=headed,
         fresh=(mode == "first-time") or fresh,
         select_mode=select_mode,

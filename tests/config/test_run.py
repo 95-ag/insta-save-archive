@@ -84,3 +84,16 @@ def test_load_run_config_missing_file_has_actionable_message(tmp_path):
     with pytest.raises(FileNotFoundError) as ei:
         runcfg.load_run_config(path=str(tmp_path / "nope.json"))
     assert "isa run" in str(ei.value)
+
+
+def test_distribute_block_defaults_to_claude_p(tmp_path):
+    p = _write(tmp_path, {"mode": "incremental"})
+    cfg = runcfg.load_run_config(p)
+    assert cfg.distribute.backend == "claude-p"
+    assert cfg.distribute.model == "claude-sonnet"
+
+
+def test_distribute_block_rejects_unknown_backend(tmp_path):
+    p = _write(tmp_path, {"mode": "incremental", "distribute": {"backend": "nope"}})
+    with pytest.raises(ValueError):
+        runcfg.load_run_config(p)

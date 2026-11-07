@@ -122,6 +122,38 @@ def test_apply_validates_tags_and_writes(tmp_path, monkeypatch):
     assert not (tmp_path / "enrich" / "batch.json").exists()
 
 
+def test_apply_forwards_validated_primary_topic(tmp_path, monkeypatch):
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S", "externals": "",
+         "content_type": "tool", "topics": ["seo", "ai"], "primary_topic": "seo"}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet", collections_cfg=_Cols())
+    assert written["p1"]["primary_topic"] == "seo"
+
+
+def test_apply_drops_primary_topic_not_among_this_items_topics(tmp_path, monkeypatch):
+    (tmp_path / "enrich").mkdir()
+    (tmp_path / "enrich" / "batch.json").write_text(json.dumps(
+        {"group": "Hustling",
+         "items": [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]}]}))
+    (tmp_path / "enrich" / "results.json").write_text(json.dumps([
+        {"page_id": "p1", "source_id": "s1", "title": "T", "summary": "S", "externals": "",
+         "content_type": "tool", "topics": ["seo"], "primary_topic": "ai"}]))
+    written = {}
+    monkeypatch.setattr(enrich, "write_enrichment",
+                        lambda env, pid, fields, version: written.update({pid: fields}))
+
+    enrich.apply(_env(tmp_path), vocab=_vocab(), model="claude-sonnet", collections_cfg=_Cols())
+    assert written["p1"]["primary_topic"] is None
+
+
 def test_prepare_excludes_other_group(tmp_path, monkeypatch):
     # large cap so the cap never fires — only the group filter decides membership
     stubs = [{"page_id": "p1", "source_id": "s1", "collections": ["hust-a"]},
@@ -325,6 +357,12 @@ def _fake_backend(automated=True, vision_capable=False):
     return _B()
 
 
+@pytest.fixture(autouse=True)
+def _no_drain_settle(monkeypatch):
+    """The drain waits for Notion's query index to settle before believing an empty prepare.
+    No test asserts on the real duration — the two that care inject their own `sleep` — so
+    zero it here rather than adding 2s per drained lane to the suite."""
+    monkeypatch.setattr(enrich, "_DRAIN_RECHECK_SECONDS", 0)
 def _fake_run_cfg():
     return _types.SimpleNamespace(
         output_language="english",
@@ -345,7 +383,9 @@ def test_drain_enrich_group_text_lane_stops_on_drained(tmp_path, monkeypatch):
     backend = _fake_backend(vision_capable=False)
     result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), backend, "Hustling")
 
-    assert calls["prepare"] == 1
+    # TWO prepares: an empty filtered query is not proof the lane is empty, because
+    # data_sources.query lags writes — the verdict is confirmed once before being believed.
+    assert calls["prepare"] == 2
     assert calls["apply"] == 0
     assert result["written"] == 0
     assert result["lanes"]["text"]["stop_reason"] == "drained"
@@ -358,7 +398,7 @@ def test_drain_enrich_group_text_lane_loops_then_drains(tmp_path, monkeypatch):
     calls = {"prepare": 0, "fill": 0, "apply": 0}
     monkeypatch.setattr(enrich, "prepare",
                         lambda *a, **k: (calls.__setitem__("prepare", calls["prepare"] + 1)
-                                         or next(counts)))
+                                         or next(counts, 0)))
 
     fill_calls = []
 
@@ -375,7 +415,9 @@ def test_drain_enrich_group_text_lane_loops_then_drains(tmp_path, monkeypatch):
     result = enrich.drain_enrich_group(env, _fake_run_cfg(), _Cols(), _vocab(), _B(),
                                        "Hustling")
 
-    assert calls["prepare"] == 2   # first call returns 2, second returns 0
+    # 3 calls: a batch of 2, then an empty result, then the confirmation that the lane
+    # really is empty — a lagging query must not be taken as proof on its own.
+    assert calls["prepare"] == 3
     assert calls["apply"] == 1
     assert len(fill_calls) == 1
     assert result["written"] == 2
@@ -468,7 +510,7 @@ def test_drain_enrich_group_api_raises_before_fill_when_over_cap(tmp_path, monke
     prepare_calls = iter([1, 0])
 
     def _fake_prepare(*a, **k):
-        n = next(prepare_calls)
+        n = next(prepare_calls, 0)
         # On the first call (n=1), prompt.txt already exists with the oversized content.
         return n
 
@@ -502,7 +544,7 @@ def test_drain_enrich_group_api_no_cap_proceeds_to_fill(tmp_path, monkeypatch):
     prepare_calls = iter([1, 0])
 
     def _fake_prepare(*a, **k):
-        n = next(prepare_calls)
+        n = next(prepare_calls, 0)
         return n
 
     class _ApiBacked(_fake_backend().__class__):
@@ -533,7 +575,7 @@ def test_drain_enrich_group_non_api_ignores_spend_cap(tmp_path, monkeypatch):
     prepare_calls = iter([1, 0])
 
     def _fake_prepare(*a, **k):
-        n = next(prepare_calls)
+        n = next(prepare_calls, 0)
         return n
 
     class _NonApiBacked(_fake_backend().__class__):
@@ -595,7 +637,7 @@ def test_drain_enrich_group_stops_between_batches(tmp_path, monkeypatch):
 def test_drain_retries_transient_fill_then_succeeds(tmp_path, monkeypatch):
     """A transient fill error is retried; a later attempt succeeds and the batch applies."""
     prep = iter([2, 0])  # one batch, then drained
-    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep, 0))
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 2, "failed": 0})
 
     attempts = {"n": 0}
@@ -618,7 +660,7 @@ def test_drain_retries_transient_fill_then_succeeds(tmp_path, monkeypatch):
 def test_drain_marks_batch_failed_and_advances_when_retries_exhausted(tmp_path, monkeypatch):
     """A persistently-malformed batch is marked Failed and the lane advances (not abandoned)."""
     prep = iter([2, 0])  # one bad batch, then nothing left (Failed items leave the pool)
-    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep, 0))
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
 
     # batch.json must exist for _mark_batch_failed to read it
@@ -649,7 +691,7 @@ def test_drain_marks_batch_failed_prints_group_progress(tmp_path, monkeypatch, c
     The printed line must contain 'enriched 0/5', '~3 left', and 'failed 2'.
     """
     prep = iter([2, 0])
-    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep, 0))
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 0, "failed": 0})
 
     (tmp_path / "enrich").mkdir()
@@ -697,7 +739,7 @@ def test_drain_raises_terminal_backend_error(tmp_path, monkeypatch):
 def test_drain_prints_group_progress_counter(tmp_path, monkeypatch, capsys):
     """When group_total is provided, drain prints a group-level enriched/total line after each batch."""
     prep = iter([3, 0])
-    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep, 0))
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
 
     class _B(_fake_backend(vision_capable=False).__class__):
@@ -715,7 +757,7 @@ def test_drain_prints_group_progress_counter(tmp_path, monkeypatch, capsys):
 def test_drain_no_group_progress_when_total_absent(tmp_path, monkeypatch, capsys):
     """When group_total is not passed (back-compat / --stage enrich), no progress line is printed."""
     prep = iter([3, 0])
-    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep))
+    monkeypatch.setattr(enrich, "prepare", lambda *a, **k: next(prep, 0))
     monkeypatch.setattr(enrich, "apply", lambda *a, **k: {"written": 3, "failed": 0})
 
     class _B(_fake_backend(vision_capable=False).__class__):
@@ -749,3 +791,309 @@ def test_apply_scrubs_fabricated_url_from_summary_and_externals(tmp_path, monkey
     assert "github.com/helloianneo/x" not in f["summary"]
     assert "github.com/helloianneo/x" not in f["externals"]
     assert "Xiaohei" in f["summary"]
+
+
+def test_drain_retries_only_the_items_a_partial_fill_missed(tmp_path, monkeypatch):
+    """A partial fill must cost only the items it missed.
+
+    The model returns 2 of 3 items; those 2 are applied, the retry prompt carries ONLY
+    the missing item, and after the attempts are exhausted only that item is Failed."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3)]
+
+    prep = iter([3, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep, 0)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    prompts = []
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            prompts.append((d / "prompt.txt").read_text(encoding="utf-8"))
+            batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+            good = [i for i in batch if i["page_id"] != "p2"]   # p2's line is always malformed
+            (d / "results.json").write_text(
+                json.dumps([{"page_id": i["page_id"]} for i in good]), encoding="utf-8")
+            return FillResult(filled=len(good), failed=len(batch) - len(good),
+                              unparsed=len(batch) - len(good))
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p3"]              # the parsed items landed on the first pass
+    assert len(prompts) == enrich._FILL_ATTEMPTS
+    assert "s2" in prompts[1]                   # retry prompt carries ONLY the missing item
+    assert "s1" not in prompts[1] and "s3" not in prompts[1]
+    assert failed == ["p2"]                     # p1/p3 were NOT marked Failed
+    assert result["written"] == 2 and result["failed"] == 1
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def _applier(enrich_dir, applied):
+    """Stand-in for apply(): records what results.json held and mimics the real cleanup —
+    tmp files are removed once a batch is written cleanly, so a retry must not depend on
+    batch.json still being there."""
+    def _apply(*a, **k):
+        results = json.loads((enrich_dir / "results.json").read_text(encoding="utf-8"))
+        applied.extend(r["page_id"] for r in results)
+        if results:
+            for name in ("batch.json", "prompt.txt", "results.json"):
+                (enrich_dir / name).unlink(missing_ok=True)
+        return {"written": len(results), "failed": 0}
+    return _apply
+
+
+def test_drain_marks_failed_only_what_the_last_partial_fill_still_missed(tmp_path, monkeypatch):
+    """The model answers only the first item of every batch, so each attempt writes some
+    and misses some — including the last one, after which apply has cleaned tmp away.
+    Only the item that never came back may be marked Failed."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3, 4)]
+
+    prep = iter([4, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep, 0)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    monkeypatch.setattr(enrich, "mark_failed", lambda env, pid, notes: failed.append(pid))
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+            (d / "results.json").write_text(
+                json.dumps([{"page_id": batch[0]["page_id"]}]), encoding="utf-8")
+            return FillResult(filled=1, failed=len(batch) - 1, unparsed=len(batch) - 1)
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p2", "p3"]
+    assert failed == ["p4"]
+    assert result["written"] == 3 and result["failed"] == 1
+
+
+def test_drain_failed_note_names_the_missing_items_when_the_last_retry_also_raises(
+        tmp_path, monkeypatch):
+    """Review round 1, Fix 3: the first attempt partially fills (leaving p3 missing), then
+    every retry of that lone missing item raises a transient exception. The items marked
+    Failed are the parse-missing ones (p3) — the note must say so, not just repeat the
+    unrelated exception text from the last attempt."""
+    from insta_save.backends.base import FillResult
+
+    d = tmp_path / "enrich"; d.mkdir()
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "collections": ["hust-a"],
+              "caption": f"caption {n}"} for n in (1, 2, 3)]
+
+    prep = iter([3, 0])
+
+    def _prepare(*a, **k):
+        n = next(prep, 0)
+        if n:
+            (d / "batch.json").write_text(
+                json.dumps({"group": "Hustling", "items": items}), encoding="utf-8")
+            (d / "prompt.txt").write_text("FULL PROMPT", encoding="utf-8")
+        return n
+
+    monkeypatch.setattr(enrich, "prepare", _prepare)
+    applied = []
+    monkeypatch.setattr(enrich, "apply", _applier(d, applied))
+
+    failed = []
+    notes = []
+    monkeypatch.setattr(enrich, "mark_failed",
+                        lambda env, pid, note: (failed.append(pid), notes.append(note)))
+
+    calls = {"n": 0}
+
+    class _B(_fake_backend(vision_capable=False).__class__):
+        @staticmethod
+        def fill(env, run_cfg, enrich_dir):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))["items"]
+                good = [i for i in batch if i["page_id"] != "p3"]
+                (d / "results.json").write_text(
+                    json.dumps([{"page_id": i["page_id"]} for i in good]), encoding="utf-8")
+                return FillResult(filled=len(good), failed=1, unparsed=1)
+            raise ValueError("network hiccup")   # every retry of the lone missing item fails
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path), _fake_run_cfg(), _Cols(), _vocab(), _B(), "Hustling",
+        sleep=lambda *_: None)
+
+    assert applied == ["p1", "p2"]
+    assert failed == ["p3"]                     # only the parse-missing item is marked
+    assert "missing from the model reply" in notes[0]   # matches what's actually being marked
+    assert "network hiccup" in notes[0]                 # the last attempt's own failure too
+    assert result["written"] == 2 and result["failed"] == 1
+
+
+def _vision_env(monkeypatch, tmp_path, slide_paths):
+    """A one-item Carousel batch whose recorded slide paths are `slide_paths`."""
+    from insta_save.config.collections import CollectionsConfig
+
+    cfg = CollectionsConfig(groups=("G",), collections={"c": {"group": "G", "extract": True}})
+    stubs = [{"page_id": "k1", "type": "Carousel", "collections": ["c"]}]
+    monkeypatch.setattr(enrich, "query_by_status", lambda env, status: stubs)
+    monkeypatch.setattr(
+        enrich,
+        "get_page_content",
+        lambda env, pid: {
+            "page_id": pid,
+            "source_id": pid,
+            "type": "Carousel",
+            "author": "a",
+            "caption": "c",
+            "slide_images": list(slide_paths),
+            "transcript": None,
+            "ocr_text": "o",
+            "transcript_language": "en",
+        },
+    )
+
+    class _Env:
+        tmp_dir = str(tmp_path)
+
+    vocab_g = Vocab(
+        content_types=["tool"],
+        cross_group_topics=["ai"],
+        _group_topics={"G": ["seo"]},
+        definitions={"tool": "x", "ai": "y", "seo": "z"},
+    )
+    return _Env(), cfg, vocab_g
+
+
+def _run_vision_prepare(env, cfg, vocab_g):
+    return enrich.prepare(
+        env,
+        group="G",
+        collections_cfg=cfg,
+        vocab=vocab_g,
+        char_budget=10**9,
+        max_items=None,
+        statuses=["Extracted"],
+        prompt_template="H {vocab_block} E",
+        kinds={"Carousel", "Post"},
+        image_token_budget=10**9,
+    )
+
+
+def test_prepare_warns_when_a_vision_item_s_slide_images_are_missing(monkeypatch, tmp_path, caplog):
+    """Notion keeps the slide PATHS but tmp/slides is transient. After a cleanup the vision lane
+    silently degraded to caption+OCR — 59 items were tagged blind before anyone noticed."""
+    env, cfg, vocab_g = _vision_env(monkeypatch, tmp_path, ["/nope/slide1.jpg", "/nope/slide2.jpg"])
+    with caplog.at_level("WARNING"):
+        assert _run_vision_prepare(env, cfg, vocab_g) == 1  # still staged, never skipped
+    assert "slide image" in caplog.text
+    assert "1" in caplog.text
+
+
+def test_prepare_is_quiet_when_the_slide_images_are_present(monkeypatch, tmp_path, caplog):
+    slide = tmp_path / "slide1.jpg"
+    slide.write_bytes(b"x")
+    env, cfg, vocab_g = _vision_env(monkeypatch, tmp_path, [str(slide)])
+    with caplog.at_level("WARNING"):
+        assert _run_vision_prepare(env, cfg, vocab_g) == 1
+    assert "slide image" not in caplog.text
+
+
+def _counting_prepare(returns, calls):
+    """prepare stub yielding a scripted sequence of batch sizes."""
+    it = iter(returns)
+
+    def _prepare(*a, **k):
+        calls["prepare"] += 1
+        return next(it, 0)
+
+    return _prepare
+
+
+def test_drain_confirms_a_drained_lane_with_a_second_prepare(tmp_path, monkeypatch):
+    """`data_sources.query` lags writes by seconds, so one empty result is not proof the lane
+    is empty — it cost a Carousel a second vision run on 2026-10-01. Confirm before believing."""
+    calls = {"prepare": 0, "apply": 0}
+    slept = []
+    monkeypatch.setattr(enrich, "prepare", _counting_prepare([0, 0], calls))
+    monkeypatch.setattr(
+        enrich,
+        "apply",
+        lambda *a, **k: calls.__setitem__("apply", calls["apply"] + 1)
+        or {"written": 0, "failed": 0},
+    )
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path),
+        _fake_run_cfg(),
+        _Cols(),
+        _vocab(),
+        _fake_backend(vision_capable=False),
+        "Hustling",
+        sleep=slept.append,
+    )
+
+    assert calls["prepare"] == 2
+    assert calls["apply"] == 0
+    assert slept, "the confirmation must let the write index settle first"
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+
+
+def test_drain_keeps_working_when_the_confirmation_finds_an_item(tmp_path, monkeypatch):
+    """The race this closes: an item another stage just moved to Extracted is invisible to the
+    first query. The lane must process it, not report itself drained."""
+    calls = {"prepare": 0, "apply": 0}
+    # empty -> confirmation finds 1 -> batch runs -> empty -> confirmed empty
+    monkeypatch.setattr(enrich, "prepare", _counting_prepare([0, 1, 0, 0], calls))
+    monkeypatch.setattr(
+        enrich,
+        "apply",
+        lambda *a, **k: calls.__setitem__("apply", calls["apply"] + 1)
+        or {"written": 1, "failed": 0},
+    )
+
+    result = enrich.drain_enrich_group(
+        _env(tmp_path),
+        _fake_run_cfg(),
+        _Cols(),
+        _vocab(),
+        _fake_backend(vision_capable=False),
+        "Hustling",
+        sleep=lambda s: None,
+    )
+
+    assert calls["apply"] == 1, "the item the first query missed was processed"
+    assert result["lanes"]["text"]["stop_reason"] == "drained"
+    assert result["written"] == 1

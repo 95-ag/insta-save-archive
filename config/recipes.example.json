@@ -1,0 +1,11 @@
+{
+  "target": "ExampleRecipeDB",
+  "families": {
+    "FamilyOne": "First dish family — what belongs here.",
+    "FamilyTwo": "Second dish family. A family is optional; a one-off dish takes a bare title."
+  },
+  "tag_axes": {
+    "tag-a": { "Taste": ["Savory"] },
+    "tag-b": { "Cuisine": ["CuisineOne"], "Course": ["Meal"] }
+  }
+}

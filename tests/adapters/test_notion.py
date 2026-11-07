@@ -1,3 +1,5 @@
+import types
+
 import pytest
 from insta_save.adapters import notion
 
@@ -46,7 +48,7 @@ def test_status_option_additions_appends_missing_keeping_existing():
 
 
 def test_status_option_additions_noop_when_all_present():
-    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed"]
+    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted", "Failed"]
     assert notion._status_option_additions(existing) is None
 
 
@@ -178,9 +180,17 @@ def test_slide_images_from_raw_resolves_paths():
         {"slide": 2, "text": None, "ocr_confidence": None, "image": "slides/ab/slide2.jpg"},
         {"slide": 3, "text": "C", "ocr_confidence": 0.8, "image": None},
     ]}}
-    out = notion._slide_images_from_raw(raw, tmp_dir="tmp", extract_version="v2.0-base-tuned")
+    out = notion._slide_images_from_raw(raw, data_dir="tmp", extract_version="v2.0-base-tuned")
     assert out == [os.path.abspath(os.path.join("tmp", "slides/ab/slide1.jpg")),
                    os.path.abspath(os.path.join("tmp", "slides/ab/slide2.jpg"))]
+
+
+def test_slide_images_resolve_against_data_dir():
+    import os
+
+    raw = {"v": {"carousel_slides": [{"slide": 1, "image": "slides/X/slide1.jpg"}]}}
+    out = notion._slide_images_from_raw(raw, data_dir="/d", extract_version="v")
+    assert out == [os.path.abspath("/d/slides/X/slide1.jpg")]
 
 
 def test_slide_images_from_raw_empty_when_no_slides():
@@ -227,6 +237,98 @@ def test_row_includes_tags():
 def test_row_tags_defaults_to_empty_list():
     page = {"id": "p4", "properties": {}}
     assert notion._row(page)["tags"] == []
+
+
+def test_row_includes_route_target():
+    page = {"id": "p5", "properties": {
+        "route_target": {"select": {"name": "ToolsDB"}},
+    }}
+    assert notion._row(page)["route_target"] == "ToolsDB"
+
+
+def test_row_route_target_none_when_absent():
+    page = {"id": "p6", "properties": {}}
+    assert notion._row(page)["route_target"] is None
+
+
+def test_requeue_for_retag_sets_extracted_and_clears_route(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    notion.requeue_for_retag(type("E", (), {"notion_token": "t"})(), "pg7")
+    assert captured == {
+        "page_id": "pg7",
+        "props": {"status": {"select": {"name": "Extracted"}}, "route_target": {"select": None}},
+    }
+
+
+def test_write_unroute_sets_tagged_status_and_clears_route_target(monkeypatch):
+    captured = {}
+
+    class _Pages:
+        def update(self, page_id, properties):
+            captured["page_id"] = page_id
+            captured["props"] = properties
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    notion.write_unroute(env, "pg42")
+
+    props = captured["props"]
+    assert captured["page_id"] == "pg42"
+    assert props["status"]["select"]["name"] == "Tagged"
+    assert props["route_target"] == {"select": None}
+    # write_unroute must NOT touch title/summary/tags/distribute fields
+    assert "title" not in props and "tags" not in props
+    assert "distribute_notes" not in props and "distribute_version" not in props
+
+
+def test_get_item_status_reads_live_status(monkeypatch):
+    class _Pages:
+        def retrieve(self, page_id):
+            return {"properties": {"status": {"select": {"name": "Distributed"}}}}
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    assert notion.get_item_status(env, "pg42") == "Distributed"
+
+
+def test_get_item_status_none_when_status_missing(monkeypatch):
+    class _Pages:
+        def retrieve(self, page_id):
+            return {"properties": {}}
+
+    class _Client:
+        def __init__(self, auth):
+            self.pages = _Pages()
+
+    monkeypatch.setattr(notion, "Client", _Client)
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+
+    env = type("E", (), {"notion_token": "t"})()
+    assert notion.get_item_status(env, "pg42") is None
 
 
 def test_requeue_sets_status_and_clears_failure_notes(monkeypatch):
@@ -305,3 +407,235 @@ def test_query_all_pages_paginates_and_returns_all(monkeypatch):
     # raw properties preserved
     assert "properties" in result[0]
     assert "properties" in result[1]
+
+
+def test_schema_property_additions_includes_primary_topic():
+    add = notion._schema_property_additions({"tags": {}})
+    assert add["primary_topic"] == {"select": {}}
+
+
+def test_schema_additions_include_distribute_properties():
+    add = notion._schema_property_additions({"tags": {}})
+    assert add["distribute_notes"] == {"rich_text": {}}
+    assert add["distribute_version"] == {"rich_text": {}}
+
+
+def test_status_additions_include_distributed_and_misrouted():
+    existing = ["Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed"]
+    names = [o["name"] for o in notion._status_option_additions(existing)]
+    assert "Distributed" in names and "Misrouted" in names
+    assert set(existing) <= set(names)
+
+
+def test_row_includes_primary_topic():
+    page = {"id": "p7", "properties": {
+        "primary_topic": {"select": {"name": "ui-ux"}},
+    }}
+    assert notion._row(page)["primary_topic"] == "ui-ux"
+
+
+def test_row_primary_topic_none_when_absent():
+    page = {"id": "p8", "properties": {}}
+    assert notion._row(page)["primary_topic"] is None
+
+
+class _SchemaEnv:
+    notion_token = "t"
+    notion_database_id = "db"
+
+    def __init__(self, recipe_db=""):
+        self.notion_recipe_database_id = recipe_db
+
+
+def _schema_client(monkeypatch, *, properties, status_options, sent):
+    class _DataSources:
+        def retrieve(self, data_source_id=None, **kw):
+            props = dict(properties)
+            props["status"] = {"select": {"options": [{"name": n} for n in status_options]}}
+            return {"properties": props}
+
+        def update(self, data_source_id=None, properties=None, **kw):
+            sent["properties"] = properties
+
+    class _Client:
+        def __init__(self, auth=None):
+            self.data_sources = _DataSources()
+
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    monkeypatch.setattr(notion, "_get_data_source_id", lambda c, db: f"ds-{db}")
+    monkeypatch.setattr(notion, "Client", _Client)
+
+
+def test_recipe_relation_spec_is_a_dual_property_to_the_recipe_data_source():
+    spec = notion._recipe_relation_spec("ds-1")
+    assert spec["relation"]["data_source_id"] == "ds-1"
+    assert spec["relation"]["type"] == "dual_property"
+    assert spec["relation"]["dual_property"] == {}
+
+
+def test_ensure_schema_adds_the_recipes_relation_when_the_db_is_configured(monkeypatch):
+    """Adding a property to the code is not enough - it must be created on the live DB.
+    enrich shipped without this once and every batch failed (lessons.md)."""
+    sent = {}
+    _schema_client(monkeypatch, properties={}, status_options=[], sent=sent)
+    notion.ensure_schema(_SchemaEnv(recipe_db="rdb"))
+    assert sent["properties"]["Recipes"]["relation"]["data_source_id"] == "ds-rdb"
+
+
+def test_ensure_schema_skips_the_relation_when_no_recipe_db_is_set(monkeypatch):
+    sent = {}
+    _schema_client(monkeypatch, properties={}, status_options=[], sent=sent)
+    notion.ensure_schema(_SchemaEnv(recipe_db=""))
+    assert "Recipes" not in sent["properties"]
+
+
+def test_ensure_schema_does_not_re_add_an_existing_relation(monkeypatch):
+    sent = {}
+    current = {k: {} for k in notion._V2_PROPERTIES}
+    current["Recipes"] = {"type": "relation", "relation": {}}
+    _schema_client(
+        monkeypatch,
+        properties=current,
+        status_options=list(notion._V2_STATUS_OPTIONS),
+        sent=sent,
+    )
+    notion.ensure_schema(_SchemaEnv(recipe_db="rdb"))
+    assert sent == {}, "schema was already current; nothing should be sent"
+
+
+def test_distribute_row_exposes_the_recipes_relation():
+    page = {
+        "id": "p1",
+        "properties": {
+            "title": {"title": []},
+            "source_id": {"rich_text": []},
+            "summary": {"rich_text": []},
+            "tags": {"multi_select": []},
+            "ig_link": {"url": None},
+            "Knowledge Base": {"relation": []},
+            "Recipes": {"relation": [{"id": "r1"}, {"id": "r2"}]},
+        },
+    }
+    assert notion._distribute_row(page)["recipes"] == ["r1", "r2"]
+
+
+def test_distribute_row_recipes_is_empty_when_the_property_is_absent():
+    """Items predate the relation; a missing property must read as no links, not crash."""
+    page = {
+        "id": "p1",
+        "properties": {
+            "title": {"title": []},
+            "source_id": {"rich_text": []},
+            "summary": {"rich_text": []},
+            "tags": {"multi_select": []},
+            "ig_link": {"url": None},
+            "Knowledge Base": {"relation": []},
+        },
+    }
+    assert notion._distribute_row(page)["recipes"] == []
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Spices - Rasam Powder", "rasam powder"),
+        ("Canned - Black Beans", "black beans"),
+        ("Flaxseed ", "flaxseed"),
+        ("Heavy cream", "heavy cream"),
+        ("Rice - Sushi", "sushi"),
+    ],
+)
+def test_normalise_grocery_name_strips_the_family_prefix_and_case(raw, expected):
+    assert notion.normalise_grocery_name(raw) == expected
+
+
+def _grocery_client(monkeypatch, names):
+    def _page(i, name):
+        return {"id": f"g{i}", "properties": {"Name": {"title": [{"plain_text": name}]}}}
+
+    class _DataSources:
+        def query(self, ds, **kw):
+            return {"results": [_page(i, n) for i, n in enumerate(names)], "has_more": False}
+
+    class _Client:
+        def __init__(self, auth=None):
+            self.data_sources = _DataSources()
+
+    monkeypatch.setattr(notion, "validate_notion", lambda env: None)
+    monkeypatch.setattr(notion, "_get_data_source_id", lambda c, db: "ds")
+    monkeypatch.setattr(notion, "Client", _Client)
+    return types.SimpleNamespace(notion_token="t", notion_grocery_database_id="g")
+
+
+def test_query_grocery_rows_keys_on_both_the_full_and_the_bare_name(monkeypatch):
+    env = _grocery_client(monkeypatch, ["Spices - Rasam Powder"])
+    out = notion.query_grocery_rows(env)
+    assert out["spices - rasam powder"] == "g0"
+    assert out["rasam powder"] == "g0"
+
+
+def test_an_unprefixed_row_wins_a_contested_bare_name(monkeypatch):
+    """'Pickle - Garlic' is a garlic pickle, not garlic. The row literally named 'Garlic' owns
+    the bare key; linking an ingredient line to the pickle would be a wrong link, and a wrong
+    link is worse than none."""
+    env = _grocery_client(monkeypatch, ["Pickle - Garlic", "Garlic"])
+    out = notion.query_grocery_rows(env)
+    assert out["garlic"] == "g1"
+    assert out["pickle - garlic"] == "g0"
+
+
+def test_a_contested_bare_name_with_no_unprefixed_row_is_dropped(monkeypatch):
+    """Neither claimant is 'the' item, so nothing matches and the ingredient is reported."""
+    env = _grocery_client(monkeypatch, ["Spices - Basil", "Fresh - Basil"])
+    out = notion.query_grocery_rows(env)
+    assert "basil" not in out
+    assert out["spices - basil"] == "g0" and out["fresh - basil"] == "g1"
+
+
+def test_grocery_keys_strips_a_buy_extra_qualifier():
+    """23 live rows are named `X + Extra` (the user's "buy extra" note). The bare name must
+    still be a lookup key, or `2 tsp salt` never matches `Spice - Salt + Extra`."""
+    keys = notion.grocery_keys("Spice - Salt + Extra")
+    assert "salt" in keys
+    assert "spice - salt + extra" in keys, "the full name stays addressable too"
+    assert "spice - salt" in keys, "and so does the prefixed name without the note"
+
+
+def test_grocery_keys_adds_a_singular_or_plural_variant():
+    assert "onion" in notion.grocery_keys("Onions")
+    assert "potato" in notion.grocery_keys("Potatoes")
+    assert "strawberries" in notion.grocery_keys("Strawberry")
+
+
+def test_grocery_keys_adds_an_ies_plural_for_a_name_ending_in_i():
+    """A name ending in `i` pluralises both ways in the wild — `chilli` becomes `chillies` as
+    often as `chillis` — and the recipe lines use the `-ies` spelling. Emitting only `+s` left 4
+    correct `Green chilli` links looking like the matcher had never produced them."""
+    keys = notion.grocery_keys("Green chilli")
+    assert "green chillies" in keys
+    assert "green chillis" in keys, "the other reading stays, since neither is predictable"
+
+
+def test_grocery_keys_does_not_vary_a_very_short_name():
+    """A 3-character stem would over-match: `oat` inside `oatmeal`, `ice` inside `ice cream`."""
+    keys = notion.grocery_keys("Oat")
+    assert keys == {"oat"}
+    assert notion.grocery_keys("Ahi") == {"ahi"}, "the guard applies to an -i name too"
+
+
+def test_grocery_keys_keeps_the_prefixed_and_bare_forms_distinct():
+    keys = notion.grocery_keys("Rice - Sonamasoori")
+    assert "rice - sonamasoori" in keys and "sonamasoori" in keys
+    assert "rice" not in keys, "the family prefix alone is not this row's name"
+
+
+def test_grocery_keys_fold_accents():
+    """Recipe lines spell the same item `jalapeno`, `jalapenos`, `jalapeño`, `jalapeños`.
+    Enumerating spellings in the alias list is how one gets missed — fold instead."""
+    assert "jalapeno" in notion.grocery_keys("Jalapeños")
+    assert "jalapenos" in notion.grocery_keys("Jalapeños")
+
+
+def test_normalise_grocery_name_folds_accents():
+    assert notion.normalise_grocery_name("3 Tbsp Chopped jalapeños") == "3 tbsp chopped jalapenos"
+    assert notion.normalise_grocery_name("Crème Fraîche") == "creme fraiche"

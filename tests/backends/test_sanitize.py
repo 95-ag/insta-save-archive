@@ -69,3 +69,39 @@ def test_strips_bare_domain_but_keeps_same_token_as_handle():
     clean, removed = scrub_fabricated(text, "no urls in source here")
     assert "github.com/foo/bar" not in clean
     assert "@github.io" in clean        # the @handle form is preserved
+
+
+def test_scrubbing_a_link_target_unwraps_the_label():
+    """A label pointing nowhere is worse than plain text: it still looks clickable. The URL
+    removal used to leave `[label]()`, and the empty-parens tidy reduced that to `[label]`."""
+    out, removed = scrub_fabricated(
+        "see [the docs](https://invented.example/x) for more", "see for more"
+    )
+    assert "[" not in out and "]" not in out
+    assert "the docs" in out
+    assert removed == ["https://invented.example/x"]
+
+
+def test_scrubbing_leaves_a_grounded_link_intact():
+    out, removed = scrub_fabricated(
+        "read [here](https://real.example/a)", "read https://real.example/a"
+    )
+    assert out == "read [here](https://real.example/a)"
+    assert removed == []
+
+
+def test_a_scrubbed_link_with_an_empty_label_leaves_nothing_behind():
+    out, _ = scrub_fabricated("a [](https://invented.example) b", "a b")
+    assert "[" not in out and "]" not in out and "(" not in out
+
+
+def test_a_scrubbed_bullet_link_keeps_its_label_text():
+    """The distribute case: `- 🔗 [x](bad)` used to become `- 🔗 [x]`."""
+    out, _ = scrub_fabricated("- 🔗 [Some Title](https://invented.example/p/1)", "nothing in here")
+    assert "[Some Title]" not in out
+    assert "Some Title" in out
+
+
+def test_a_bare_label_with_no_link_is_untouched():
+    out, removed = scrub_fabricated("see [the docs] for more", "see [the docs] for more")
+    assert out == "see [the docs] for more" and removed == []

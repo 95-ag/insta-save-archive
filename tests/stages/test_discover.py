@@ -35,9 +35,9 @@ def test_run_discover_runs_gate_outside_browser_context(monkeypatch, tmp_path):
     monkeypatch.setattr(discover, "crawl_all", lambda **k: order.append("crawl") or [])
     monkeypatch.setattr(discover, "run_inline_select", lambda *a, **k: order.append("gate"))
 
-    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    env = type("E", (), {"data_dir": str(tmp_path)})()
     discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
-                          tmp_dir=str(tmp_path), headed=False)
+                          data_dir=str(tmp_path), headed=False)
 
     assert order.index("gate") > order.index("pw_exit")     # gate AFTER the browser context
     assert order.index("crawl") < order.index("pw_exit")    # grid crawl INSIDE it
@@ -66,12 +66,12 @@ def test_crawl_all_writes_snapshots_and_reuses(tmp_path):
         return [{"shortcode": slug + "1", "url": "u"}], True
 
     discover.crawl_all(context=None, ig_username="me", collections_cfg=cfg,
-                       tmp_dir=tmp_path, crawl_fn=fake_crawl, fresh=True,
+                       data_dir=tmp_path, crawl_fn=fake_crawl, fresh=True,
                        names=None, max_age_min=360, now="2026-06-11T00:00:00Z")
     assert sorted(calls) == ["art", "dev"]
     calls.clear()
     discover.crawl_all(context=None, ig_username="me", collections_cfg=cfg,
-                       tmp_dir=tmp_path, crawl_fn=fake_crawl, fresh=False,
+                       data_dir=tmp_path, crawl_fn=fake_crawl, fresh=False,
                        names=None, max_age_min=360, now="2026-06-11T01:00:00Z")
     assert calls == []
 
@@ -80,7 +80,7 @@ def test_crawl_all_skips_collections_without_ids(tmp_path):
     cfg = CollectionsConfig(groups=("uncategorized",), collections={
         "NoIds": {"group": "uncategorized", "extract": False, "slug": None, "numeric_id": None}})
     skipped = discover.crawl_all(context=None, ig_username="me", collections_cfg=cfg,
-                                 tmp_dir=tmp_path, crawl_fn=lambda *a: ([], True),
+                                 data_dir=tmp_path, crawl_fn=lambda *a: ([], True),
                                  fresh=True, names=None, max_age_min=360)
     assert "NoIds" in skipped
 
@@ -201,9 +201,9 @@ def test_run_discover_configures_unconfigured_collections(monkeypatch, tmp_path)
     monkeypatch.setattr(discover, "crawl_all", lambda **k: [])
     monkeypatch.setattr(discover, "run_inline_select",
                         lambda path, names, **k: seen.update(names=list(names)))
-    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    env = type("E", (), {"data_dir": str(tmp_path)})()
     discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
-                          tmp_dir=str(tmp_path), headed=False)
+                          data_dir=str(tmp_path), headed=False)
     assert seen["names"] == ["B"]      # the still-uncategorized one is offered, despite no new names
 
 
@@ -230,9 +230,9 @@ def test_run_discover_collection_gate_framing(monkeypatch, tmp_path, capsys):
     # stub run_inline_select so no real tui interaction occurs
     monkeypatch.setattr(discover, "run_inline_select", lambda *a, **k: None)
 
-    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    env = type("E", (), {"data_dir": str(tmp_path)})()
     discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
-                          tmp_dir=str(tmp_path), headed=False)
+                          data_dir=str(tmp_path), headed=False)
     out = capsys.readouterr().out
     assert "configure collections" in out           # stage_section header rule
     assert "done · configure collections" in out    # stage_section footer rule
@@ -279,9 +279,9 @@ def test_run_discover_wraps_collection_gate_in_run_control_gate(monkeypatch, tmp
     monkeypatch.setattr(discover, "run_inline_select",
                         lambda *a, **k: events.append("gate-body"))
 
-    env = type("E", (), {"tmp_dir": str(tmp_path)})()
+    env = type("E", (), {"data_dir": str(tmp_path)})()
     discover.run_discover(env, ig_username="u", collections_path=str(tmp_path / "c.json"),
-                          tmp_dir=str(tmp_path), headed=False)
+                          data_dir=str(tmp_path), headed=False)
     assert events == ["enter", "gate-body", "exit"]
 
 
@@ -296,7 +296,7 @@ def test_crawl_all_advances_progress_per_collection(tmp_path):
         def set_current(self, s, item): bumps["current"].append(item)
         def bump(self, *a, **k): pass
     discover.crawl_all(context=object(), ig_username="u", collections_cfg=cfg,
-                       tmp_dir=str(tmp_path), crawl_fn=lambda *a, **k: ([], True), progress=_P())
+                       data_dir=str(tmp_path), crawl_fn=lambda *a, **k: ([], True), progress=_P())
     assert bumps["n"] == 2 and bumps["current"] == ["a", "b"]
 
 

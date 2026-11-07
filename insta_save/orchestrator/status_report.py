@@ -2,16 +2,24 @@
 
 build_status()   — one query_all_pages pass → per-group counts + TOTAL row
 retry_failed()   — for each Failed page, infer prior status and requeue
+retag_group()    — requeue a group's items tagged under an older enrich version
 """
 
 import logging
-from insta_save.adapters.notion import query_all_pages, requeue
+import time
+from insta_save.adapters.notion import (
+    get_item_status,
+    query_all_pages,
+    requeue,
+    requeue_for_retag,
+)
 from insta_save.helpers import observability
 from insta_save.helpers.observability import StageProgress
 
 log = logging.getLogger(__name__)
 
-_STATUSES = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed")
+_STATUSES = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
+             "Failed")
 
 
 def _parse_page(page: dict) -> tuple:
@@ -36,8 +44,8 @@ def _parse_page(page: dict) -> tuple:
 def build_status(env, collections_cfg) -> list[dict]:
     """One query_all_pages pass; tally per group.
 
-    Each row: {"group": name, "Imported": n, ..., "Routed": n, "Failed": n, "remaining": n}
-    where remaining = Imported + Queued + Extracted.
+    Each row: {"group": name, "Imported": n, ..., "Routed": n, "Distributed": n, "Misrouted": n,
+    "Failed": n, "remaining": n} where remaining = Imported + Queued + Extracted.
 
     An item is counted once per distinct group it touches (not once per collection).
     Rows are ordered by collections_cfg.groups, extra groups after, TOTAL last."""
@@ -133,3 +141,81 @@ def retry_failed(env) -> dict:
     log.info("status: requeued %d Failed items (%d→Extracted, %d→Queued)",
              requeued, to_extracted, to_queued)
     return {"requeued": requeued, "to_extracted": to_extracted, "to_queued": to_queued}
+
+
+_RETAGGABLE = ("Tagged", "Routed")
+
+
+def _enrich_version(props: dict) -> str | None:
+    text = "".join(
+        part.get("plain_text", "") for part in props.get("enrich_version", {}).get("rich_text", [])
+    )
+    return text or None
+
+
+def _is_stale(stamped: str | None, current: str) -> bool:
+    """Enrich stamps `<model>/<enrich_version>/<group>`, so the current version is one segment
+    of the stamp, never the whole of it."""
+    return stamped is None or current not in stamped.split("/")
+
+
+def retag_group(env, collections_cfg, group: str, *, dry_run: bool) -> dict:
+    """Requeue `group`'s Tagged/Routed items whose enrich_version is not the current one, so
+    the next enrich re-tags them under today's vocabulary.
+
+    Selected by enrich_group, the key the enrich drain is scoped by — selecting on
+    route_target once stranded a cross-tagged item where `--group` could never reach it.
+    Distributed is never touched: its page links carry the item title, which a re-enrich
+    rewrites. Each status is re-read live before its write because a filtered query lags.
+
+    One failed Notion call is counted and the loop moves on, as in retry_failed: a requeued
+    item is already Extracted, so a re-run picks up only what is left.
+
+    Returns {"selected", "requeued", "skipped_status_changed", "failed", "by_status"}."""
+    with observability.spinner(f"Scanning Notion for {group} items to re-tag…"):
+        pages = query_all_pages(env)
+
+    selected = []
+    for page in pages:
+        page_id, status, collections, _ = _parse_page(page)
+        if (
+            status in _RETAGGABLE
+            and collections_cfg.enrich_group(collections) == group
+            and _is_stale(_enrich_version(page.get("properties", {})), env.enrich_version)
+        ):
+            selected.append((page_id, status))
+
+    by_status = {s: sum(1 for _, st in selected if st == s) for s in _RETAGGABLE}
+    result = {
+        "selected": len(selected),
+        "requeued": 0,
+        "skipped_status_changed": 0,
+        "failed": 0,
+        "by_status": by_status,
+    }
+    if dry_run:
+        return result
+
+    with StageProgress("Re-tag") as progress:
+        bar = progress.add_bar("Requeue", total=len(selected))
+        for page_id, _ in selected:
+            try:
+                if get_item_status(env, page_id) not in _RETAGGABLE:
+                    result["skipped_status_changed"] += 1
+                else:
+                    requeue_for_retag(env, page_id)
+                    result["requeued"] += 1
+                    time.sleep(env.notion_write_delay)
+            except Exception as exc:  # noqa: BLE001 — one bad item must not abort the loop
+                log.error("status: re-tag failed for %s — %s", page_id, exc)
+                result["failed"] += 1
+            progress.advance(bar)
+
+    log.info(
+        "status: re-tag %s requeued %d, skipped %d (status changed), failed %d",
+        group,
+        result["requeued"],
+        result["skipped_status_changed"],
+        result["failed"],
+    )
+    return result

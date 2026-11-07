@@ -13,8 +13,10 @@ Two modes (run_cfg.enrich.api_mode):
     polled to completion. Per-item parallel batching is a future optimization.
 
 We deliberately do NOT use output_config.format structured outputs (uncertain
-typing in SDK 0.105.2). Instead the prompt instructs the model to emit ONLY a
-JSON array; parse_results_array strips any ```json fence and json.loads it.
+typing in SDK 0.105.2). Instead the prompt (enrich v2.1, shared across backends)
+instructs the model to emit one JSON object per line; parse_results_jsonl reads
+each line independently so one malformed line costs only its own item, mirroring
+claude_p.fill's contract exactly.
 
 Identity is normalized from the batch (normalize_results): only results whose page_id
 is a real batch item survive (fabricated ids dropped, de-duped), and source_id
@@ -30,7 +32,7 @@ import logging
 from pathlib import Path
 
 from insta_save.backends.base import (Budgets, FillResult,
-                                       parse_results_array, normalize_results)
+                                       parse_results_jsonl, normalize_results)
 
 log = logging.getLogger(__name__)
 
@@ -121,13 +123,20 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     else:
         text = _fill_sync(env, run_cfg, kwargs)
 
-    results = normalize_results(parse_results_array(text), items)
+    # v2.1 contract: one JSON object per reply line, same as claude_p.fill. A line the
+    # model mangled costs only its own item — the rest are written and the caller retries
+    # just the missing ones.
+    parsed, bad_lines = parse_results_jsonl(text)
+    results = normalize_results(parsed, items)
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
     filled = len(results)
     failed = max(len(items) - filled, 0)
+    if bad_lines:
+        log.warning("api fill (%s): %d unparsed reply line(s) — first: %s",
+                    run_cfg.enrich.api_mode, len(bad_lines), bad_lines[0][:200])
     log.info("api fill (%s): %d filled, %d failed", run_cfg.enrich.api_mode, filled, failed)
-    return FillResult(filled=filled, failed=failed)
+    return FillResult(filled=filled, failed=failed, unparsed=len(bad_lines))
 
 
 def _fill_sync(env, run_cfg, kwargs) -> str:

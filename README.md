@@ -4,7 +4,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **title, summary, and tags**, so you never need to re-open the original.
 
 > **Status:** the one-call orchestrator (`isa run --mode first-time|incremental`) is live —
-> a full clean run through every stage, resumable and crash-safe via Notion state. 546 tests passing.
+> a full clean run through every stage, resumable and crash-safe via Notion state, with a full unit suite.
 
 ## Contents
 
@@ -15,7 +15,7 @@ Turn your Instagram saves into a searchable, organized Notion database — each 
 **Reference**
 - [How it works](#how-it-works) — the pipeline and status flow
 - [Setup](#setup) · [Configuration](#configuration) · [Running](#running) · [Backends](#backends)
-- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends)
+- [Calibration](#calibration) · [The enrich loop](#the-enrich-loop-session-backends) · [Distribute](#distribute-optional) · [Recipe](#recipe-optional)
 - [Failures, guardrails, backup](#failures-guardrails-backup) · [Reprocessing](#reprocessing) · [Troubleshooting](#troubleshooting)
 - [Requirements](#requirements) · [Repo layout](#repo-layout)
 
@@ -91,12 +91,15 @@ flowchart LR
     C -->|"enrich · vocab locked by calibrate"| E[Tagged]
     D --> E
     E -->|"route · optional"| F[Routed]
+    F -->|"distribute · attended, optional"| G[Distributed]
     style D fill:#eee,stroke:#999
 ```
 
 - **Extract-path** items (collections you mark `extract=yes`) get transcript/OCR, then LLM enrichment.
 - **Deterministic** items (`extract=no`) are tagged straight from their collection — no transcript, no LLM.
 - **Calibrate** is a one-time human gate per group that locks its tag vocabulary before enrich runs.
+- **Distribute** (attended-only, not part of `isa run`) folds a `Routed` item's content into its
+  Knowledge-DB page; off-topic drops land in `Misrouted` instead — see [Distribute](#distribute-optional).
 
 `isa run` handles discovery and import, then a **sequencer** drives each group through the
 remaining steps one action at a time. `--fresh` (incremental mode) forces a re-crawl to catch new
@@ -117,6 +120,13 @@ the URL. Schema properties are created automatically on first write.
 | `IG_USERNAME` | Instagram handle (no `@`) |
 | `ANTHROPIC_API_KEY` | only for the `api` enrich backend |
 | `OLLAMA_BASE_URL` | only for `local` (default `http://localhost:11434`) |
+| `DATA_DIR` | optional; durable app data — crawl snapshots, slide images, backups (default `data`). `TMP_DIR` is staging only and safe to wipe |
+| `ENRICH_VERSION` | optional; overrides the default enrich prompt version (`v2.1-enrich`) |
+| `NOTION_KNOWLEDGE_DATABASE_ID` | the Knowledge-DB id — only for `distribute` |
+| `DISTRIBUTE_VERSION` | optional; overrides the default distribute prompt version (`v2.3-distribute`) |
+| `NOTION_RECIPE_DATABASE_ID` | the recipe DB id — only for `recipe` |
+| `NOTION_GROCERY_DATABASE_ID` | the grocery DB id — only for `recipe`, to link ingredients |
+| `RECIPE_VERSION` | optional; overrides the default recipe prompt version (`v1.0-recipe`) |
 
 ## Configuration
 
@@ -140,7 +150,7 @@ All config files live in `config/`. Private ones are gitignored.
 
 - **`enrich.backend`** — `claude-p | api | local | cowork | claude-code`. **`model`/`effort`** — effort maps to thinking budget (`api`), model size (`local`), advisory (sessions).
 - **`extract.transcript`** — `model`: `base | small | distil-large-v3`; `vad`: Silero voice-activity filter (recommended on).
-- **`extract.ocr.mode`** — `none | rapidocr`. RapidOCR runs on every carousel/post slide (images persisted to `tmp/slides/<shortcode>/` for the vision enrich lane) and on sampled reel frames (ephemeral).
+- **`extract.ocr.mode`** — `none | rapidocr`. RapidOCR runs on every carousel/post slide (images persisted to `data/slides/<shortcode>/` for the vision enrich lane) and on sampled reel frames (ephemeral).
 - **`batch.max_image_tokens`** — cap on total estimated image tokens per vision-lane batch (≈ 1600 tokens/slide); vision lane only. Text lane uses `max_char_budget`.
 - **`guardrails`** — hard caps; a run stops before exceeding them. Set `max_spend_usd` for the `api` backend.
 
@@ -175,9 +185,51 @@ Per-group + cross-group tags with one-line definitions. Built during **calibrati
 }
 ```
 
+Enrichment also names one **primary topic** per item — the single topic, drawn from that item's own
+`topics`, naming what the item is mainly about. It must be one of the item's own topics; if the
+model's answer doesn't validate, `primary_topic` is left empty rather than guessed. It exists to
+help routing (below) decide an item whose tags point at more than one page.
+
 ### `routes.json` — optional routing *(committed example)*
 
-Maps `tag > collection > group → route_target` (tag wins, then collection, then group default). Omit or empty to leave items at `Tagged`.
+```json
+{
+  "by_primary_topic": { "topic-a": "TopicTargetDB" },
+  "by_tag": [["tag-a", "ExampleTargetDB"], ["tag-b", "OtherTargetDB"]],
+  "by_collection": { "Example Collection A": "LearningDB" },
+  "by_group": { "GroupTwo": "MarketDB" }
+}
+```
+
+Maps an item to a `route_target`, first match wins:
+
+1. **The item's primary topic** — looked up in `by_primary_topic`, then as a tag in `by_tag`.
+2. **`by_tag`** — an ordered list; the highest-listed tag the item carries wins, whatever order
+   the item's own tags are in.
+3. **`by_collection`**, then **`by_group`** — the defaults.
+
+The primary topic goes first because it reflects what *this* item is about: a static priority
+list always resolves a tag combination to the same page, whichever item carries it. Keep a topic
+in `by_primary_topic` rather than `by_tag` when it should route only the items *about* it — as a
+`by_tag` rule it would also sweep in every item that merely carries the tag. Omit or empty
+`routes.json` to leave items at `Tagged`.
+
+Routing only evaluates items still at `Tagged` — editing `routes.json` doesn't retroactively move
+items already `Routed`. To re-evaluate those against the current file:
+
+```bash
+isa run --stage route --reroute             # re-evaluate Routed items, write changes
+isa run --stage route --reroute --dry-run   # preview before/after counts, write nothing
+```
+
+`--reroute` only touches items still `Routed` — `Distributed`/`Misrouted` items (already folded in
+or flagged) are never re-evaluated. `route_target` is rewritten only when it actually changes; an
+item whose route resolves to none returns to `Tagged` with `route_target` cleared. `--reroute`
+prints a breakdown, in both a dry-run and a live run, of how many of the rerouted items'
+destinations were actually changed by the item's primary topic — as opposed to plain
+tag/collection/group order — counted only when the primary topic's target differs from what order
+alone would have picked; a plain `route` run prints the same breakdown once at least one item
+routes.
 
 ## Running
 
@@ -193,14 +245,20 @@ isa backup [--restore-check]  # snapshot Notion to JSON (+ optional restore test
 **Flag reference (allowed values):**
 ```
 isa run   --mode  {first-time | incremental}        # default: incremental
-          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route}
+          --stage {discover | ingest | select | extract | calibrate | enrich | deterministic | route | distribute | recipe}
           --group <name>        # restrict to one group (e.g. calibrate a single group)
           --limit <N>           # cap items processed this run
           --lane  {text | vision}   # enrich only: text=Reels/IGTV (default), vision=Carousels/Posts
+          --target <page name>  # distribute only: the Knowledge-DB page to fold/rebuild
           --reextract           # re-run extract on already-Extracted items
           --retry-failed        # reprocess items currently in Failed
           --fresh               # force a current re-crawl (incremental mode)
-          --dry-run             # compute the plan, no writes
+          --apply               # apply a staged result: enrich (session backends) results.json, a reviewed distribute proposal, or staged recipe rows
+          --rebuild             # distribute only: reset a page to its template + its items to Tagged; mutually exclusive with --apply
+          --reroute             # route only: re-evaluate already-Routed items against the current routes.json
+          --retag               # enrich only, needs --group: requeue items tagged under an older enrich version
+          --yes                 # distribute/recipe --apply and distribute --rebuild: skip the confirmation prompt
+          --dry-run             # compute the plan, no writes (route --reroute: prints before/after counts, split by primary-topic vs order)
 isa status --retry-failed       # requeue Failed items to their inferred prior status
 ```
 Omit `--stage` to run the whole mode end-to-end. **Preflight** runs before any run (backend
@@ -256,9 +314,110 @@ modality lanes per group** — drain text first, then vision:
 In **Cowork**, one kickoff message per lane drives the loop; if the session dies, restart and
 Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do steps 1–3 automatically.
 
+## Recipe (optional)
+
+`distribute`'s sibling, for food saves. Where `distribute` **merges** an item into an existing
+Knowledge-DB page, `recipe` creates **one new row per recipe** in a recipe database — so there is
+nothing to merge, and the body is built as Notion blocks directly rather than through a markdown
+round-trip (a two-column layout cannot survive one). Attended only, like `distribute`.
+
+```bash
+isa run --stage recipe
+isa run --stage recipe --apply
+```
+
+Routing is ordinary: map the food tags in `config/routes.json` to the recipe DB's name, and the
+`route` stage labels those items like any other. `config/recipes.json` (gitignored) carries the
+destination name, the controlled list of dish **families** used to title rows `Family - Variant`,
+and a deterministic map from archive tag to recipe property.
+
+The first command writes nothing to the recipe DB. It resolves each routed item against the
+existing rows — by the `Recipes` relation, or by the source's Instagram shortcode appearing in a
+row's `Video Link` — and then:
+
+- **already captured** (a row with content) → the item is marked `Distributed`, no model call;
+- **a row with an EMPTY body** → the item stays `Routed` and is reported, never marked done
+  against an empty page;
+- **no row** → staged, structured by the backend, and written to `tmp/recipe/proposals.json`
+  plus `rejections.json`.
+
+An item whose source names no ingredients and no method is **not a recipe**: it is recorded with
+the model's stated reason and `--apply` marks it `Misrouted`, rather than creating an empty row.
+
+`--apply` creates each row with its body, then sets the two-way relation, then marks the item
+`Distributed` — in that order, so the relation only ever exists where content actually landed. A
+failed row write leaves the item `Routed` for the next run. Ingredient lines are matched to
+existing grocery rows by name and **never create one**; anything unmatched is listed in
+`tmp/recipe/unmatched_ingredients.json` for you to add by hand.
+
+## Distribute (optional)
+
+`route` only **labels** an item's destination (`route_target`); `distribute` is the stage that
+actually folds a routed item's content into its target page in the Knowledge DB,
+section by section, then sets a two-way relation back to the archive item. It's **attended
+only** — it never runs as part of `isa run --mode first-time|incremental`, and every apply goes
+through a diff review. The prompt favors a handful of broad top-level sections — reusing an
+existing heading when it fits, rather than one heading per item.
+
+```bash
+isa run --stage distribute --target "<page name>"
+isa run --stage distribute --target "<page name>" --apply
+```
+
+The first command writes **no page content**. It does touch Notion in two small ways: it ensures
+the archive schema has the distribute properties and statuses, and it marks items already linked
+to the page as `Distributed` without a model call. Then it prepares the batch, calls the backend,
+and stages `tmp/distribute/<slug>/` — including `diff.txt` (the per-section unified diff to review)
+and `proposed.md` (hand-editable before applying). Re-running the first command discards whatever
+is staged, **including a hand-edited `proposed.md`** — apply your edits before restaging.
+
+Both commands print a change summary first: each changed section (new/replaced, lines added/
+removed), then the items to check by hand — dropped (with reason), not mentioned (will be marked
+`Distributed` with a duplicate-skip note), and folded items whose link is missing (will stay
+`Routed`). Staging prints this summary and stops — nothing is written to the page yet.
+
+`--apply` prints the same summary, then asks: **Apply these changes** / **Show the full diff** /
+**Cancel — write nothing**. Cancelling (or Ctrl-C) writes nothing and keeps the staged files for
+next time. Pass `--yes` to skip the prompt for scripted use; without it, a non-interactive run
+(no terminal attached) refuses to apply rather than write unattended.
+
+Once you confirm, apply re-reads the live page, aborts if it changed since staging, then writes
+the reviewed sections and marks items `Distributed` (folded in, or skipped as a pure duplicate) or
+`Misrouted` (dropped as off-topic — its tags need fixing). It refuses, before writing anything, to
+rewrite a section it can't safely replace (one holding blocks the diff can't show, or nested
+blocks). A folded item whose link isn't on the applied page is left `Routed` for the next run and
+reported as a count.
+
+### Rebuilding a page
+
+If a page's routing or tags were wrong and you want to redo it, `--rebuild` resets it back to its
+template and returns its items to `Tagged` — without touching anything still `Routed` or waiting on
+a future distribute run:
+
+```bash
+isa run --stage distribute --target "<page name>" --rebuild
+```
+
+It resets every item related to the page, plus any `Distributed`/`Misrouted` item whose
+`route_target` is the page: the relation to the page is removed, status goes back to `Tagged`, and
+`route_target`, `distribute_notes`, `distribute_version` are cleared. Items are reset **before**
+the page content is touched, so a failure partway through never leaves a relation pointing at
+content that's already gone. The page's content region (everything from the first `heading_1`
+onward) is then deleted back to an empty template — dividers and empty paragraphs are kept, and the
+first `heading_1` is re-emptied to restore the build anchor. Like `--apply`'s section replace, it
+refuses, before writing anything, on a page holding content it can't safely show in a review (blocks
+outside headings/paragraphs/bullets/dividers, or anything with children).
+
+`--rebuild` shares the apply confirmation flow (**Rebuild** / **Cancel**, `--yes` to skip, refuses
+non-interactively), is mutually exclusive with `--apply`, is idempotent, and clears the page's
+staging directory.
+
+Requires `NOTION_KNOWLEDGE_DATABASE_ID` set in `.env` (see [Setup](#setup)).
+
 ## Failures, guardrails, backup
 
 - **Failure triage:** `isa status` lists per-group `Failed` + remaining. `Failed` items keep partial data + `failure_notes`. Retry: `isa status --retry-failed`, then re-run the stage.
+- **Enrich retries per item, not per batch:** the model returns tagging results as one JSON object per line; a line that doesn't parse is retried on its own, smaller batch, and only an item still unparsable after retries is marked `Failed` — a single bad reply never fails its whole batch.
 - **No-content:** on the first full batch, investigate *why* an item has no transcript/OCR/caption (extraction bug? over-aggressive VAD? carousel scope?) before trusting the deterministic branch.
 - **Guardrails:** set `guardrails.max_spend_usd` / `max_items_per_run` in `run.json`; the run stops before exceeding them.
 - **Backup:** `isa backup` before any bulk re-run; `isa backup --restore-check` periodically (a backup never restored isn't a backup).
@@ -267,6 +426,22 @@ Notion status resumes exactly where it left off. `claude-p`/`local`/`api` do ste
 
 `extract_version` and `enrich_version` are independent:
 - Re-extract (e.g. after a whisper upgrade) without re-enriching: `isa run --stage extract --reextract`.
+- Re-tag a group's items enriched under an older enrich version (e.g. after a prompt upgrade) —
+  an item tagged earlier can never elect a tag added since:
+
+  ```bash
+  isa run --stage enrich --group <name> --retag --dry-run   # count what would be requeued
+  isa run --stage enrich --group <name> --retag             # requeue them
+  isa run --stage enrich --group <name>                     # re-tag
+  isa run --stage route --group <name>                      # re-route
+  ```
+
+  `--retag` selects the group's `Tagged` and `Routed` items whose `enrich_version` stamp does not
+  carry the current version (`ENRICH_VERSION`), sends them back to `Extracted` and clears
+  `route_target`. Items are selected by the group they are enriched under. `Distributed` items are
+  never touched, because their page links carry the item title, which a re-enrich rewrites.
+  Selection reads only the version stamp: an edit to `tags.json` alone, under the same
+  `ENRICH_VERSION`, selects nothing.
 
 `raw_extraction` is never overwritten, so re-parsing slides/audio never requires re-scraping Instagram.
 

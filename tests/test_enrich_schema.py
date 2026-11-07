@@ -1,19 +1,20 @@
-# tests/test_enrich_schema.py
+# tests/test_es.py
 from insta_save import enrich_schema as es
 
 
 def test_valid_item_passes_through():
-    ct, topics = es.validate_item(
+    ct, topics, primary_topic = es.validate_item(
         {"content_type": "tool", "topics": ["seo", "web-dev"]},
         allowed_content_types=["tool", "tutorial"],
         allowed_topics=["seo", "web-dev", "ai"],
     )
     assert ct == "tool"
     assert topics == ["seo", "web-dev"]
+    assert primary_topic is None
 
 
 def test_out_of_vocab_content_type_is_blanked():
-    ct, topics = es.validate_item(
+    ct, topics, primary_topic = es.validate_item(
         {"content_type": "meme", "topics": ["seo"]},
         allowed_content_types=["tool"], allowed_topics=["seo"],
     )
@@ -22,7 +23,7 @@ def test_out_of_vocab_content_type_is_blanked():
 
 
 def test_topics_deduped_dropped_and_clamped():
-    ct, topics = es.validate_item(
+    ct, topics, primary_topic = es.validate_item(
         {"content_type": "tool",
          "topics": ["seo", "seo", "bogus", "web-dev", "ai", "design"]},
         allowed_content_types=["tool"],
@@ -34,7 +35,7 @@ def test_topics_deduped_dropped_and_clamped():
 
 
 def test_missing_or_empty_topics():
-    ct, topics = es.validate_item(
+    ct, topics, primary_topic = es.validate_item(
         {"content_type": "tool"}, allowed_content_types=["tool"], allowed_topics=["seo"])
     assert ct == "tool" and topics == []
 
@@ -49,7 +50,7 @@ def test_tags_for_blank_content_type_contributes_nothing():
 
 def test_max_topics_is_six():
     from insta_save import enrich_schema
-    assert enrich_schema.MAX_TOPICS == 6
+    assert es.MAX_TOPICS == 6
 
 
 def test_validate_item_keeps_up_to_six_topics():
@@ -57,5 +58,66 @@ def test_validate_item_keeps_up_to_six_topics():
     item = {"content_type": "tool", "topics": ["a", "b", "c", "d", "e", "f", "g"]}
     allowed_ct = {"tool"}
     allowed_topics = {"a", "b", "c", "d", "e", "f", "g"}
-    ct, topics = enrich_schema.validate_item(item, allowed_ct, allowed_topics)
+    ct, topics, primary_topic = es.validate_item(item, allowed_ct, allowed_topics)
     assert len(topics) == 6 and ct == "tool"
+
+
+def test_primary_topic_valid_is_kept():
+    ct, topics, primary_topic = es.validate_item(
+        {"content_type": "tool", "topics": ["seo", "web-dev"], "primary_topic": "web-dev"},
+        allowed_content_types=["tool"], allowed_topics=["seo", "web-dev", "ai"],
+    )
+    assert primary_topic == "web-dev"
+
+
+def test_primary_topic_absent_is_none():
+    ct, topics, primary_topic = es.validate_item(
+        {"content_type": "tool", "topics": ["seo"]},
+        allowed_content_types=["tool"], allowed_topics=["seo"],
+    )
+    assert primary_topic is None
+
+
+def test_primary_topic_not_in_item_topics_is_none():
+    # "ai" is valid vocab but this item didn't return it as one of its own topics
+    ct, topics, primary_topic = es.validate_item(
+        {"content_type": "tool", "topics": ["seo"], "primary_topic": "ai"},
+        allowed_content_types=["tool"], allowed_topics=["seo", "ai"],
+    )
+    assert primary_topic is None
+
+
+def test_primary_topic_dropped_by_vocab_validation_is_none():
+    # "bogus" is out-of-vocab so it never survives into the validated topics list
+    ct, topics, primary_topic = es.validate_item(
+        {"content_type": "tool", "topics": ["seo", "bogus"], "primary_topic": "bogus"},
+        allowed_content_types=["tool"], allowed_topics=["seo"],
+    )
+    assert primary_topic is None
+
+
+def test_primary_topic_clamped_away_by_max_topics_is_dropped():
+    """A primary topic the model named is only kept if it survived into the item's OWN validated
+    topics — and the clamp at MAX_TOPICS can remove it even though the tag was in vocab. Same
+    code path as an out-of-vocab primary topic, but reached a different way."""
+    allowed = [f"t{i}" for i in range(8)]
+    item = {
+        "topics": allowed,  # 8 valid topics; only the first MAX_TOPICS survive
+        "primary_topic": "t7",  # in vocab, but clamped out of `topics`
+        "content_type": "tool",
+    }
+    content_type, topics, primary = es.validate_item(
+        item, allowed_content_types=["tool"], allowed_topics=allowed
+    )
+    assert len(topics) == es.MAX_TOPICS
+    assert "t7" not in topics
+    assert primary is None
+
+
+def test_primary_topic_inside_the_clamp_survives():
+    allowed = [f"t{i}" for i in range(8)]
+    item = {"topics": allowed, "primary_topic": "t0", "content_type": "tool"}
+    _, topics, primary = es.validate_item(
+        item, allowed_content_types=["tool"], allowed_topics=allowed
+    )
+    assert primary == "t0" and "t0" in topics

@@ -20,7 +20,7 @@ _WALL_AFTER = 5
 _THROTTLE_MIN, _THROTTLE_MAX = 2.0, 4.0
 
 
-def build_reconcile_inputs(tmp_dir, collections_cfg, names=None):
+def build_reconcile_inputs(data_dir, collections_cfg, names=None):
     """Assemble (desired{sid:set}, post_urls{sid:url}, complete_map{collection:bool})
     from the per-collection snapshots."""
     desired, urls, complete = {}, {}, {}
@@ -28,7 +28,7 @@ def build_reconcile_inputs(tmp_dir, collections_cfg, names=None):
     for name in targets:
         meta = collections_cfg.collections.get(name, {})
         slug = meta.get("slug")
-        snap = read_snapshot(tmp_dir, slug) if slug else None
+        snap = read_snapshot(data_dir, slug) if slug else None
         if snap is None:
             log.debug("ingest: no snapshot for %s — skipping (not crawled?)", name)
             continue
@@ -123,7 +123,7 @@ def run_ingest(env, *, collections_cfg, names=None, confirmed_removed=None,
     from playwright.sync_api import sync_playwright
     from insta_save.adapters.instagram.session import ensure_authenticated, prepare_display
 
-    desired, urls, complete = build_reconcile_inputs(env.tmp_dir, collections_cfg, names)
+    desired, urls, complete = build_reconcile_inputs(env.data_dir, collections_cfg, names)
     state = notion.bulk_load_state(env)
     plan = reconcile(desired, urls, state, complete, confirmed_removed or set())
     refresh_targets = [(st["page_id"], urls[sid], sid)

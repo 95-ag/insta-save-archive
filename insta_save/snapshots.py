@@ -13,33 +13,33 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _snap_dir(tmp_dir) -> Path:
-    d = Path(tmp_dir) / "snapshots"
+def _snap_dir(data_dir) -> Path:
+    d = Path(data_dir) / "snapshots"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def snapshot_path(tmp_dir, slug: str) -> Path:
-    return _snap_dir(tmp_dir) / f"{slug}.json"
+def snapshot_path(data_dir, slug: str) -> Path:
+    return _snap_dir(data_dir) / f"{slug}.json"
 
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def write_snapshot(tmp_dir, *, name, slug, numeric_id, posts, complete, now=None) -> None:
+def write_snapshot(data_dir, *, name, slug, numeric_id, posts, complete, now=None) -> None:
     payload = {
         "name": name, "slug": slug, "numeric_id": numeric_id,
         "complete": bool(complete), "crawled_at": now or _utc_now(),
         "posts": posts,
     }
-    snapshot_path(tmp_dir, slug).write_text(
+    snapshot_path(data_dir, slug).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("snapshot: wrote %s (%d posts, complete=%s)", slug, len(posts), complete)
 
 
-def read_snapshot(tmp_dir, slug: str) -> dict | None:
-    p = snapshot_path(tmp_dir, slug)
+def read_snapshot(data_dir, slug: str) -> dict | None:
+    p = snapshot_path(data_dir, slug)
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))

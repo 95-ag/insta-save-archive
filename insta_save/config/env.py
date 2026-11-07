@@ -28,6 +28,12 @@ class EnvConfig:
     cookies_file: str
     ig_username: str = ""
     anthropic_api_key: str = ""
+    notion_knowledge_database_id: str = ""
+    notion_recipe_database_id: str = ""
+    notion_grocery_database_id: str = ""
+    recipe_version: str = "v1.0-recipe"
+    distribute_version: str = "v2.3-distribute"
+    data_dir: str = "data"
 
 
 def _env_float(key: str, default: float) -> float:
@@ -56,7 +62,7 @@ def load_env() -> EnvConfig:
         notion_database_id=os.getenv("NOTION_DATABASE_ID", "").strip(),
         tmp_dir=os.getenv("TMP_DIR", "tmp").strip(),
         extract_version=os.getenv("EXTRACT_VERSION", "v2.0-base-tuned").strip(),
-        enrich_version=os.getenv("ENRICH_VERSION", "v2.0-enrich").strip(),
+        enrich_version=os.getenv("ENRICH_VERSION", "v2.1-enrich").strip(),
         notion_write_delay=_env_float("NOTION_WRITE_DELAY", 0.4),
         extract_delay_min=extract_delay_min,
         extract_delay_max=extract_delay_max,
@@ -64,6 +70,12 @@ def load_env() -> EnvConfig:
         cookies_file=os.getenv("COOKIES_FILE", "session_cookies.json").strip(),
         ig_username=os.getenv("IG_USERNAME", "").strip(),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        notion_knowledge_database_id=os.getenv("NOTION_KNOWLEDGE_DATABASE_ID", "").strip(),
+        notion_recipe_database_id=os.getenv("NOTION_RECIPE_DATABASE_ID", "").strip(),
+        notion_grocery_database_id=os.getenv("NOTION_GROCERY_DATABASE_ID", "").strip(),
+        recipe_version=os.getenv("RECIPE_VERSION", "v1.0-recipe").strip(),
+        distribute_version=os.getenv("DISTRIBUTE_VERSION", "v2.3-distribute").strip(),
+        data_dir=os.getenv("DATA_DIR", "data").strip(),
     )
 
 

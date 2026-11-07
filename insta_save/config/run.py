@@ -1,7 +1,7 @@
 """Run configuration — how a single invocation behaves."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 VALID_MODES = {"first-time", "incremental"}
@@ -19,6 +19,12 @@ class EnrichConfig:
     model: str
     effort: str
     api_mode: str = "sync"
+
+
+@dataclass(frozen=True)
+class DistributeConfig:
+    backend: str
+    model: str
 
 
 @dataclass(frozen=True)
@@ -40,6 +46,13 @@ class RunConfig:
     guardrails_max_spend_usd: float | None
     deterministic_title_mode: str = "template"
     output_language: str = "english"
+    distribute: DistributeConfig = field(
+        default_factory=lambda: DistributeConfig("claude-p", "claude-sonnet"))
+    # Same shape as distribute, so the type is reused rather than cloned. Absent from run.json
+    # means "whatever distribute uses" - both are attended claude-p stages.
+    recipe: DistributeConfig = field(
+        default_factory=lambda: DistributeConfig("claude-p", "claude-sonnet")
+    )
 
 
 def _require(value, valid, label):
@@ -77,6 +90,16 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
     title_mode = _require(det_raw.get("title_mode", "template"), VALID_TITLE_MODES,
                           "deterministic.title_mode")
     output_language = data.get("output_language", "english")
+    dist_raw = data.get("distribute", {})
+    distribute = DistributeConfig(
+        backend=_require(dist_raw.get("backend", "claude-p"), VALID_BACKENDS, "distribute.backend"),
+        model=dist_raw.get("model", "claude-sonnet"),
+    )
+    rec_raw = data.get("recipe", dist_raw)
+    recipe = DistributeConfig(
+        backend=_require(rec_raw.get("backend", "claude-p"), VALID_BACKENDS, "recipe.backend"),
+        model=rec_raw.get("model", distribute.model),
+    )
     return RunConfig(
         mode=mode,
         enrich=enrich,
@@ -88,4 +111,6 @@ def load_run_config(path=_DEFAULT_RUN) -> RunConfig:
         guardrails_max_spend_usd=guard.get("max_spend_usd"),
         deterministic_title_mode=title_mode,
         output_language=output_language,
+        distribute=distribute,
+        recipe=recipe,
     )

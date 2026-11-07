@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from insta_save.config.run import load_run_config as _load_run
 from insta_save.config.collections import load_collections as _load_collections
 from insta_save.config.tags import load_vocab, load_vocab_or_empty
 from insta_save.adapters.notion import ensure_schema
+from insta_save.config.recipes import load_recipes
+from insta_save.helpers import tui
 from insta_save.helpers.observability import StageProgress, setup_logging
 from insta_save.stages.extract import run_extract_stage
 from insta_save.stages import enrich
@@ -20,10 +23,15 @@ from insta_save.backends.base import get_backend, TerminalBackendError
 from insta_save.config.routes import load_routes
 from insta_save.orchestrator import guardrails
 from insta_save.orchestrator.preflight import preflight
-from insta_save.orchestrator.status_report import build_status, retry_failed as _retry_failed
+from insta_save.orchestrator.status_report import (
+    build_status,
+    retag_group as _retag_group,
+    retry_failed as _retry_failed,
+)
 from insta_save.orchestrator.config_gate import ensure_run_json, run_config_gate
 
-STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic", "route"]
+STAGES = ["discover", "ingest", "select", "extract", "calibrate", "enrich", "deterministic",
+          "route", "distribute", "recipe"]
 
 
 def _guard(load, *args, **kwargs):
@@ -40,7 +48,131 @@ def _rel(p: str) -> str:
     """Return a relative form of an absolute log path for readable console output."""
     return os.path.relpath(str(p))
 
-_STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Failed", "remaining")
+def _distribute_label(source_id, title) -> str:
+    """Display text for an item preview line: the title, or the source_id when there is
+    none (never a placeholder — see data-integrity.md)."""
+    return title if title is not None else source_id
+
+
+def _format_distribute_preview(preview) -> str:
+    """Render an ApplyPreview compactly: one line per section change, then the item lists
+    a reviewer needs to check by hand (dropped, skipped, unaccounted, unverified).
+    Folded-and-linked items are only counted — the diff already shows what changed."""
+    lines = []
+    if preview.sections:
+        for section in preview.sections:
+            marker = "+ new" if section.action == "append" else "~ replace"
+            lines.append(f"  {marker} {section.heading!r} (+{section.added} -{section.removed})")
+    else:
+        lines.append("  No page content changes")
+    if preview.lost_lines:
+        lines.append(
+            f"  ⚠ lines dropped from existing sections — apply will refuse "
+            f"({len(preview.lost_lines)}):"
+        )
+        for heading, line in preview.lost_lines:
+            lines.append(f"    {heading!r}: {line}")
+
+    lines.append(f"  folded: {len(preview.folded)}")
+    if preview.dropped:
+        lines.append(f"  dropped ({len(preview.dropped)}):")
+        for source_id, title, reason in preview.dropped:
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"    - {_distribute_label(source_id, title)}{suffix}")
+    if preview.skipped:
+        lines.append(
+            f"  skipped as already covered, will be marked Distributed "
+            f"({len(preview.skipped)}):"
+        )
+        for source_id, title, reason in preview.skipped:
+            suffix = f" — {reason}" if reason else ""
+            lines.append(f"    - {_distribute_label(source_id, title)}{suffix}")
+    if preview.unmentioned:
+        lines.append(
+            f"  ⚠ accounted for in NO list — content is not on the page, will stay Routed "
+            f"({len(preview.unmentioned)}):"
+        )
+        for source_id, title in preview.unmentioned:
+            lines.append(f"    - {_distribute_label(source_id, title)}")
+    if preview.unverified:
+        lines.append(
+            f"  folded but the link is missing from the page, will stay Routed "
+            f"({len(preview.unverified)}):"
+        )
+        for source_id, title in preview.unverified:
+            lines.append(f"    - {_distribute_label(source_id, title)}")
+    return "\n".join(lines)
+
+
+def _format_rebuild_preview(preview) -> str:
+    """Render a RebuildPreview compactly: per-section block counts, items grouped by what
+    rebuild will do to them (reset to Tagged, or unlink only), and any refused sections a
+    reviewer must fix in Notion before rebuild will touch the page."""
+    lines = []
+    if preview.sections:
+        for heading, count in preview.sections:
+            lines.append(f"  section {heading!r}: {count} block(s) to delete")
+    else:
+        lines.append("  No sections")
+    lines.append(f"  blocks kept (dividers/empty paragraphs): {preview.blocks_kept}")
+    if preview.heading_needs_clearing:
+        lines.append("  content anchor heading still has text — will be cleared")
+
+    relations_only_ids = {source_id for source_id, _, _ in preview.relations_only}
+    reset_items = [row for row in preview.items if row[0] not in relations_only_ids]
+    if reset_items:
+        by_status: dict = {}
+        for source_id, title, status in reset_items:
+            by_status.setdefault(status, []).append((source_id, title))
+        lines.append(f"  items to reset to Tagged ({len(reset_items)}):")
+        for status in sorted(by_status):
+            lines.append(f"    {status}:")
+            for source_id, title in by_status[status]:
+                lines.append(f"      - {_distribute_label(source_id, title)}")
+
+    if preview.relations_only:
+        lines.append(f"  items to unlink only, status untouched ({len(preview.relations_only)}):")
+        for source_id, title, status in preview.relations_only:
+            lines.append(f"    - {_distribute_label(source_id, title)} ({status})")
+
+    if preview.refused:
+        lines.append(f"  refused sections ({len(preview.refused)}) — fix these in Notion first:")
+        for heading, kinds in preview.refused:
+            lines.append(f"    - {heading!r}: {', '.join(kinds)}")
+
+    return "\n".join(lines)
+
+
+def _decided_by_line(decided: dict) -> str:
+    """Render the "how was the route decided" breakdown shared by the route and reroute
+    summaries: how many items' destinations were actually changed by the item's primary
+    topic versus decided by plain by_tag/collection/group order (review fix round 1)."""
+    return (f"  decided by primary topic: {decided.get('primary', 0)}, "
+            f"by rule order: {decided.get('order', 0)}")
+
+
+def _format_reroute_summary(r: dict, dry_run: bool) -> str:
+    """Render a run_reroute_stage result: the headline counts, how the moved items' new
+    targets were decided, then one line per old -> new move so a reviewer can confirm only
+    the intended items shifted."""
+    headline = (
+        f"Reroute: {r.get('rerouted', 0)} rerouted, {r.get('unrouted', 0)} back to Tagged "
+        f"(no route), {r.get('unchanged', 0)} unchanged"
+    )
+    if r.get("skipped_stale", 0):
+        headline += f", {r['skipped_stale']} skipped (stale)"
+    if r.get("failed", 0):
+        headline += f", {r['failed']} failed"
+    headline += f"{' (dry-run)' if dry_run else ''}."
+    lines = [headline, _decided_by_line(r.get("decided_by", {}))]
+    moves = r.get("moves", {})
+    for (old, new), count in sorted(moves.items(), key=lambda kv: (kv[0][0] or "", kv[0][1] or "")):
+        lines.append(f"  {old or '(none)'} → {new or 'Tagged'} : {count}")
+    return "\n".join(lines)
+
+
+_STATUS_COLS = ("Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted",
+                "Failed", "remaining")
 
 
 def _print_status_table(rows: list[dict]) -> None:
@@ -82,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--reextract", action="store_true")
     run.add_argument("--retry-failed", action="store_true")
+    run.add_argument("--retag", action="store_true")
     run.add_argument("--prepare", action="store_true")
     run.add_argument("--apply", action="store_true")
     run.add_argument("--collection", default=None)
@@ -92,6 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lane", choices=["text", "vision"], default="text")
     run.add_argument("--status", action="store_true")
     run.add_argument("--select-mode", choices=["inline", "editor"], default="inline")
+    run.add_argument("--target", default=None,
+                     help="distribute: the route_target page name to ingest into")
+    run.add_argument("--rebuild", action="store_true",
+                     help="distribute: reset --target to its template and its items to Tagged")
+    run.add_argument("--reroute", action="store_true",
+                     help="route: re-evaluate already-Routed items against the current routes.json")
+    run.add_argument("--yes", action="store_true",
+                     help="skip the distribute apply/rebuild confirmation")
 
     st = sub.add_parser("status", help="Per-group counts: imported/extracted/tagged/failed/left.")
     st.add_argument("--retry-failed", action="store_true",
@@ -101,7 +242,43 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _dispatch_retag(args) -> None:
+    if args.stage != "enrich":
+        raise SystemExit("isa run --retag: only with --stage enrich")
+    if not args.group:
+        raise SystemExit("isa run --stage enrich --retag: --group is required")
+    env = _guard(_load_env)
+    collections_cfg = _guard(_load_collections)
+    print(f"Logging to {_rel(setup_logging('retag'))}")
+    r = _retag_group(env, collections_cfg, args.group, dry_run=args.dry_run)
+    by_status = r["by_status"]
+    selected = (
+        f"Retag {args.group}: selected {r['selected']} "
+        f"(Tagged {by_status['Tagged']}, Routed {by_status['Routed']})"
+    )
+    if args.dry_run:
+        print(f"{selected} — dry run, nothing written")
+        return
+    failed = f" · failed {r['failed']} (see the log)" if r["failed"] else ""
+    print(
+        f"{selected} · requeued {r['requeued']} · "
+        f"skipped {r['skipped_status_changed']} (status changed){failed}"
+    )
+    if r["failed"]:
+        print(
+            f"  To retry the failed items: re-run isa run --stage enrich --group {args.group} --retag"
+        )
+    if r["requeued"]:
+        print(
+            f"  Next: isa run --stage enrich --group {args.group}, "
+            f"then isa run --stage route --group {args.group}"
+        )
+
+
 def dispatch_run(args) -> None:
+    if args.retag:
+        _dispatch_retag(args)
+        return
     if args.stage == "extract":
         env = _guard(_load_env)
         run_cfg = _guard(_load_run)
@@ -136,6 +313,9 @@ def dispatch_run(args) -> None:
         # bad-args prepare — config/tags.json may not exist until calibrate has locked it.
         env = _guard(_load_env)
         run_cfg = _guard(_load_run)
+        # enrich writes primary_topic, so it needs the same schema guarantee as every other
+        # write stage — without it a DB predating the property fails the whole page update.
+        ensure_schema(env)
         backend = base.get_backend(run_cfg.enrich.backend)
         budgets = backend.batch_budgets(run_cfg)
 
@@ -157,11 +337,11 @@ def dispatch_run(args) -> None:
         statuses = ["Extracted"]
         if args.lane == "vision":
             kinds = {"Carousel", "Post"}
-            template = Path("prompts/enrich_vision_v2.0.txt").read_text(encoding="utf-8")
+            template = Path("prompts/enrich_vision_v2.1.txt").read_text(encoding="utf-8")
             image_budget = budgets.image_token_budget
         else:
             kinds = {"Reel", "IGTV"}
-            template = Path("prompts/enrich_v2.0.txt").read_text(encoding="utf-8")
+            template = Path("prompts/enrich_v2.1.txt").read_text(encoding="utf-8")
             image_budget = None
 
         if backend.AUTOMATED:
@@ -358,18 +538,284 @@ def dispatch_run(args) -> None:
         env = _guard(_load_env)
         collections_cfg = _guard(_load_collections)
         ensure_schema(env)
-        from insta_save.stages.route import run_route_stage
+        from insta_save.stages.route import run_route_stage, run_reroute_stage
         routes = load_routes()
         log_path = setup_logging("route")
         print(f"Logging to {_rel(log_path)}")
+        if args.reroute:
+            with StageProgress("Reroute") as progress:
+                r = run_reroute_stage(env, routes, collections_cfg, progress,
+                                      limit=args.limit, group=args.group, dry_run=args.dry_run,
+                                      write_delay=0 if args.dry_run else env.notion_write_delay)
+            print(_format_reroute_summary(r, args.dry_run))
+            return
         with StageProgress("Route") as progress:
             r = run_route_stage(env, routes, collections_cfg, progress,
                                 limit=args.limit, group=args.group, dry_run=args.dry_run,
                                 write_delay=0 if args.dry_run else env.notion_write_delay)
         print(f"Route: {r.get('routed', 0)} → Routed, {r.get('unrouted', 0)} left Tagged "
               f"(no mapping){' (dry-run)' if args.dry_run else ''}.")
+        # Suppressed when nothing routed: the breakdown would be all zeros. Pinned by
+        # test_route_summary_omits_the_decided_by_breakdown_when_nothing_routed.
+        if r.get("routed", 0):
+            print(_decided_by_line(r.get("decided_by", {})))
         return
 
+    if args.stage == "distribute":
+        from insta_save.backends import base
+        from insta_save.helpers.observability import flush_logs
+        from insta_save.stages import distribute
+
+        # Validate before loading anything — a bad invocation must not touch real config.
+        if args.rebuild and args.apply:
+            raise SystemExit(
+                "isa run --stage distribute: --rebuild and --apply cannot be combined"
+            )
+        if not args.target:
+            raise SystemExit("isa run --stage distribute: --target '<page name>' is required")
+        env = _guard(_load_env)
+        ensure_schema(env)
+        run_cfg = _guard(_load_run)
+        version = f"{run_cfg.distribute.model}/{env.distribute_version}"
+        log_path = setup_logging("distribute")
+        print(f"Logging to {_rel(log_path)}")
+
+        try:
+            if args.rebuild:
+                review = distribute.rebuild_preview(env, target=args.target)
+                print(_format_rebuild_preview(review))
+
+                if review.refused:
+                    problems = "; ".join(distribute.refusal_messages(review.refused))
+                    raise SystemExit(
+                        "isa run --stage distribute --rebuild: refusing — fix these sections "
+                        f"in Notion first: {problems}"
+                    )
+
+                if (not review.items and review.blocks_to_delete == 0
+                        and not review.heading_needs_clearing):
+                    print(f"Nothing to rebuild for {args.target!r}.")
+                    return
+
+                if not review.items and review.blocks_to_delete:
+                    print("⚠ No archive items are linked to this page — its content may be "
+                          "hand-built. Rebuilding deletes it.")
+
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage distribute --rebuild: refusing to change Notion "
+                        "without confirmation in a non-interactive run — re-run in a "
+                        "terminal or pass --yes"
+                    )
+                else:
+                    choice = tui.confirm_action(
+                        f"Rebuild {args.target!r}? This removes its distributed content and "
+                        "resets its items.",
+                        [
+                            ("Rebuild this page", "rebuild",
+                             "delete the page's content and reset its items to Tagged"),
+                            ("Cancel — change nothing", "cancel", "write nothing"),
+                        ],
+                    )
+                    proceed = choice == "rebuild"
+
+                if not proceed:
+                    print("Cancelled — nothing changed.")
+                    return
+
+                counts = distribute.rebuild(env, target=args.target)
+                print(f"Rebuilt {args.target!r}: {counts['items_reset']} item(s) reset to "
+                      f"Tagged, {counts['relations_removed']} relation(s) removed, "
+                      f"{counts['relations_only']} item(s) unlinked only, "
+                      f"{counts['blocks_deleted']} block(s) deleted, heading "
+                      f"{'cleared' if counts['heading_cleared'] else 'left as is'}.")
+                if counts.get("page_skipped"):
+                    print(f"  {args.target!r} has no content heading — only its items "
+                          "were reset.")
+                print("  Re-running after a partial failure is safe: already-reset items "
+                      "show as unlink-only next time.")
+                return
+
+            if args.apply:
+                review = distribute.preview(env, target=args.target)
+                print(_format_distribute_preview(review))
+                if review.lost_lines:
+                    proposed = distribute.staging_dir(env, args.target) / "proposed.md"
+                    raise SystemExit(
+                        f"isa run --stage distribute --apply: refusing — "
+                        f"{len(review.lost_lines)} line(s) would be dropped from existing "
+                        f"sections; restore them in {_rel(proposed)} or re-run fill"
+                    )
+
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage distribute --apply: refusing to write without "
+                        "confirmation in a non-interactive run — re-run in a terminal or "
+                        "pass --yes"
+                    )
+                else:
+                    proceed = False
+                    while True:
+                        choice = tui.confirm_action(
+                            f"Apply these changes to {args.target!r}?",
+                            [
+                                ("Apply these changes", "apply",
+                                 "write the section and item changes to the page"),
+                                ("Show the full diff", "diff",
+                                 "print the unified diff, then ask again"),
+                                ("Cancel — write nothing", "cancel",
+                                 "keep the staged files, write nothing"),
+                            ],
+                        )
+                        if choice == "diff":
+                            print(review.diff_text)
+                            continue
+                        proceed = choice == "apply"
+                        break
+
+                if not proceed:
+                    d = distribute.staging_dir(env, args.target)
+                    print(f"Cancelled — nothing written; staged files kept in {_rel(d)}.")
+                    return
+
+                counts = distribute.apply(env, target=args.target, version=version)
+                print(f"Distributed: {counts['folded']} folded in, {counts['skipped']} already "
+                      f"covered, {counts['misrouted']} misrouted.")
+                if counts.get("unaccounted", 0):
+                    print(f"  {counts['unaccounted']} item(s) appeared in no trailer list and "
+                          f"were left Routed for the next run — see the log.")
+                if counts.get("unverified", 0):
+                    print(f"  {counts['unverified']} folded item(s) had no link in the applied "
+                          f"page and were left Routed — see the log.")
+                return
+
+            routes = load_routes()
+            vocab = _guard(load_vocab)
+            budgets = base.get_backend(run_cfg.distribute.backend).batch_budgets(run_cfg)
+            n = distribute.prepare(env, target=args.target, routes=routes, vocab=vocab,
+                                   budgets=budgets, version=version)
+            if n == 0:
+                print(f"Nothing left to distribute for {args.target!r}.")
+                return
+            result = distribute.fill(
+                env, target=args.target, routes=routes, vocab=vocab, budgets=budgets,
+                model=run_cfg.distribute.model,
+                template=Path("prompts/distribute_v2.3.txt").read_text(encoding="utf-8"))
+            d = distribute.staging_dir(env, args.target)
+            print(_format_distribute_preview(distribute.preview(env, target=args.target)))
+            if result.get("failed_chunks"):
+                print(
+                    f"  ⚠ {result['failed_chunks']} of {result['calls']} call(s) failed after "
+                    f"retries — their items are NOT in this proposal and stay Routed. "
+                    f"Re-run after applying to pick them up; see the log."
+                )
+            print(f"Staged {n} items in {result['calls']} call(s) -> {_rel(d)}\n"
+                  f"  Review {_rel(d / 'diff.txt')}, edit {_rel(d / 'proposed.md')} if needed, then:\n"
+                  f"  isa run --stage distribute --target {args.target!r} --apply")
+            print("Nothing has been written to the page yet.")
+            return
+        except TerminalBackendError as exc:
+            flush_logs()
+            print(f"\n⏹  stopped · {exc}")
+            print("   This won't resolve by retrying now (usage limit / auth). "
+                  f"Resume later with: isa run --stage distribute --target {args.target!r}"
+                  f"{' --apply' if args.apply else ''}")
+            return
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc))
+
+    if args.stage == "recipe":
+        from insta_save.helpers.observability import flush_logs
+        from insta_save.stages import recipes
+
+        env = _guard(_load_env)
+        if not env.notion_recipe_database_id:
+            raise SystemExit(
+                "isa run --stage recipe: NOTION_RECIPE_DATABASE_ID is not set — point it at the "
+                "recipe database"
+            )
+        ensure_schema(env)
+        cfg = _guard(load_recipes)
+        run_cfg = _guard(_load_run)
+        version = f"{run_cfg.recipe.model}/{env.recipe_version}"
+        log_path = setup_logging("recipe")
+        print(f"Logging to {_rel(log_path)}")
+
+        try:
+            if args.apply:
+                if args.yes:
+                    proceed = True
+                elif not sys.stdin.isatty():
+                    raise SystemExit(
+                        "isa run --stage recipe --apply: refusing to write without confirmation "
+                        "in a non-interactive run — re-run in a terminal or pass --yes"
+                    )
+                else:
+                    choice = tui.confirm_action(
+                        f"Create the staged recipe rows in {cfg.target!r}?",
+                        [
+                            ("Create these rows", "apply", "write one new row per staged proposal"),
+                            (
+                                "Cancel — write nothing",
+                                "cancel",
+                                "keep the staged files, write nothing",
+                            ),
+                        ],
+                    )
+                    proceed = choice == "apply"
+                if not proceed:
+                    d = recipes.staging_dir(env)
+                    print(f"Cancelled — nothing written; staged files kept in {_rel(d)}.")
+                    return
+                counts = recipes.apply(env, cfg=cfg, version=version)
+                print(
+                    f"Recipes: {counts['created']} row(s) created, "
+                    f"{counts['misrouted']} misrouted."
+                )
+                if counts.get("failed"):
+                    print(
+                        f"  ⚠ {counts['failed']} row(s) failed to write and stay Routed — "
+                        f"see the log."
+                    )
+                return
+
+            n = recipes.prepare(env, cfg=cfg, version=version)
+            if n == 0:
+                print(f"Nothing left to turn into a recipe for {cfg.target!r}.")
+                return
+            result = recipes.fill(
+                env,
+                cfg=cfg,
+                model=run_cfg.recipe.model,
+                template=Path("prompts/recipe_v1.0.txt").read_text(encoding="utf-8"),
+            )
+            d = recipes.staging_dir(env)
+            print(
+                f"Staged {n} item(s): {result['proposed']} recipe(s), "
+                f"{result['rejected']} not a recipe -> {_rel(d)}"
+            )
+            if result.get("unanswered"):
+                print(f"  ⚠ {result['unanswered']} item(s) got no reply and stay Routed.")
+            print(
+                f"  Review {_rel(d / 'proposals.json')} and {_rel(d / 'rejections.json')}, then:\n"
+                f"  isa run --stage recipe --apply"
+            )
+            print("Nothing has been written to Notion yet.")
+            return
+        except TerminalBackendError as exc:
+            flush_logs()
+            print(f"\n⏹  stopped · {exc}")
+            print(
+                "   This won't resolve by retrying now (usage limit / auth). "
+                "Resume later with: isa run --stage recipe"
+            )
+            return
+        except (RuntimeError, ValueError) as exc:
+            raise SystemExit(str(exc))
     raise SystemExit(f"isa run --stage {args.stage}: not implemented yet (v2 — see ARCHITECTURE.md)")
 
 
@@ -466,6 +912,18 @@ def _print_plan(plan, dry_run: bool) -> None:
         for s in skipped:
             print(f"  - {s['group']} ({s['action']}): {s['reason']}")
 
+    # Deliberately NOT a warning: these items have nowhere to go until their destination
+    # exists, so flagging them as a problem every run is what drowned out real stalls.
+    unmapped = getattr(plan, "unmapped", [])
+    if unmapped:
+        total = sum(u["unrouted"] for u in unmapped)
+        print(
+            f"\n·  no routing mapping yet ({total} Tagged item(s) in "
+            f"{len(unmapped)} group(s)) — nothing to route until a rule exists:"
+        )
+        for u in unmapped:
+            print(f"  - {u['group']}: {u['unrouted']} Tagged, no matching rule")
+
     if plan.done:
         print(f"All groups complete.{label}")
         return
@@ -497,8 +955,8 @@ def _print_plan(plan, dry_run: bool) -> None:
         print(f"\nNext: {na.group} — {na.detail}{label}")
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if args.command == "run":
         if args.stage is None:
             _dispatch_mode(args)
@@ -515,7 +973,7 @@ def main() -> None:
         try:
             summary = run_discover(env, ig_username=ig_username,
                                    collections_path="config/collections.json",
-                                   tmp_dir=env.tmp_dir, headed=args.headed,
+                                   data_dir=env.data_dir, headed=args.headed,
                                    fresh=args.fresh, names=names)
         except RuntimeError as exc:
             raise SystemExit(str(exc))
@@ -527,7 +985,7 @@ def main() -> None:
         collections_cfg = _guard(_load_collections)
         log_path = setup_logging("backup")
         print(f"Logging to {_rel(log_path)}")
-        out_dir = Path(env.tmp_dir) / "backups"
+        out_dir = Path(env.data_dir) / "backups"
         if args.restore_check:
             # Find the newest backup file (ts format sorts lexically = chronologically).
             candidates = sorted(out_dir.glob("notion-*.json")) if out_dir.exists() else []

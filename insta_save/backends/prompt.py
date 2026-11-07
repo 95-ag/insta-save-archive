@@ -7,8 +7,6 @@ budget the prompt without re-rendering. Moved out of backends.claude_code so the
 api/local/cowork backends (#5) reuse the same contract (ARCHITECTURE D5)."""
 
 
-PROMPT_VERSION = "enrich_v2.0"
-
 # Conservative per-slide image-token estimate. Anthropic vision bills images as input
 # tokens ~ (w*h)/750 capped; a typical ~1080-wide IG portrait slide lands ~1600-1950
 # tokens. 1600 is a representative figure used only for batch sizing — cost is flat on a

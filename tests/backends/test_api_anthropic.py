@@ -120,6 +120,29 @@ def test_fill_normalizes_identity_from_batch(tmp_path, monkeypatch):
     assert out[0]["source_id"] == "s1"  # authoritative source_id from the batch
 
 
+def test_sync_fill_parses_jsonl_and_reports_unparsed(tmp_path, monkeypatch):
+    """Review round 1, Fix 1: the api backend must read the v2.1 JSON-Lines contract like
+    claude_p.fill does, not the old JSON-array parser — a realistic reply with one bad
+    line must not raise, must write the good items, and must report the unparsed count."""
+    items = [{"page_id": f"p{n}", "source_id": f"s{n}", "caption": "c"} for n in (1, 2, 3, 4)]
+    d = _enrich_dir(tmp_path, items)
+    payload = "\n".join([
+        json.dumps({"page_id": "p1", "source_id": "s1", "title": "T1", "summary": "S1",
+                    "externals": "", "content_type": "tool", "topics": []}),
+        json.dumps({"page_id": "p2", "source_id": "s2", "title": "T2", "summary": "S2",
+                    "externals": "", "content_type": "tool", "topics": []}),
+        '{"page_id": "p3", "summary": "he said "no" here"}',   # malformed: unescaped quote
+        json.dumps({"page_id": "p4", "source_id": "s4", "title": "T4", "summary": "S4",
+                    "externals": "", "content_type": "tool", "topics": []}),
+    ])
+    fake = _FakeMessages(payload)
+    monkeypatch.setattr(api, "_messages", lambda env, run_cfg: fake)
+    r = api.fill(env=_FakeEnv(), run_cfg=_FakeRun("sync"), enrich_dir=d)
+    assert r.filled == 3 and r.failed == 1 and r.unparsed == 1
+    out = json.loads((d / "results.json").read_text())
+    assert {o["page_id"] for o in out} == {"p1", "p2", "p4"}
+
+
 def test_batch_budgets_forwards_run_cfg():
     b = api.batch_budgets(_FakeRun())
     assert b.char_budget == 80000 and b.max_items == 15 and b.image_token_budget == 120000

@@ -1,3 +1,4 @@
+import dataclasses
 import pytest
 from insta_save.stages import extract
 
@@ -99,6 +100,25 @@ def test_run_item_post_uses_browser(monkeypatch):
     assert extract.run_extract_item(_env(), _run(), holder, item) == "extracted"
     assert written["carousel_slides"] == slides
     assert holder.opened is True
+
+
+@pytest.mark.parametrize(
+    "item_type, fn", [("Carousel", "extract_carousel"), ("Post", "extract_post")]
+)
+def test_slides_are_written_under_data_dir(monkeypatch, item_type, fn):
+    seen = {}
+    monkeypatch.setattr(extract, fn, lambda **k: seen.update(k) or [{"slide": 1}])
+    monkeypatch.setattr(extract, "write_extraction", lambda *a: None)
+    item = {
+        "page_id": "p",
+        "source_id": "S",
+        "ig_link": "https://www.instagram.com/p/ab/",
+        "type": item_type,
+        "collections": [],
+    }
+    env = dataclasses.replace(_env(), tmp_dir="/t", data_dir="/d")
+    extract.run_extract_item(env, _run(), _holder_returns("CTX"), item)
+    assert seen["data_dir"] == "/d" and "tmp_dir" not in seen
 
 
 def test_run_item_unknown_type_no_content(monkeypatch):

@@ -16,6 +16,9 @@ NAME = "local"; AUTOMATED = True; VISION_CAPABLE = False
 CHECKPOINT = 25
 
 # JSON schema for constrained decoding — mirrors enrich_schema.RESULT_FIELDS.
+# primary_topic is optional: it must be one of the item's own picked topics (see
+# enrich_schema.validate_item), so when topics is empty or nothing fits, the model
+# needs to be able to omit it rather than be forced to fabricate one.
 _RESULT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -24,6 +27,7 @@ _RESULT_SCHEMA = {
         "externals": {"type": "string"},
         "content_type": {"type": "string"},
         "topics": {"type": "array", "items": {"type": "string"}},
+        "primary_topic": {"type": "string"},
     },
     "required": ["page_id", "title", "summary", "content_type", "topics"],
 }

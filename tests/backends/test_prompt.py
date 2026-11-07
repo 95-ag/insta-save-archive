@@ -100,9 +100,9 @@ def test_vocab_block_splits_group_and_cross_group_lists():
     from insta_save.backends import prompt as P
     from insta_save.config.tags import Vocab
     vocab = Vocab(content_types=["tool"], cross_group_topics=["ai"],
-                  _group_topics={"Hustle": ["seo"]},
+                  _group_topics={"GroupOne": ["seo"]},
                   definitions={"tool": "App.", "ai": "AI.", "seo": "Search."})
-    block = P._vocab_block("Hustle", vocab)
+    block = P._vocab_block("GroupOne", vocab)
     assert "GROUP TOPICS" in block and "CROSS-GROUP TOPICS" in block
     # granular tag appears under GROUP TOPICS, cross tag appears under CROSS-GROUP TOPICS
     g_idx = block.index("GROUP TOPICS")

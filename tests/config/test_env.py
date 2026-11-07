@@ -5,7 +5,9 @@ from insta_save.config import env as envcfg
 def _set(monkeypatch, **kw):
     for k in ["NOTION_TOKEN", "NOTION_DATABASE_ID", "TMP_DIR", "EXTRACT_VERSION",
               "ENRICH_VERSION", "NOTION_WRITE_DELAY", "EXTRACT_DELAY_MIN", "EXTRACT_DELAY_MAX",
-              "DISPLAY_MODE", "COOKIES_FILE"]:
+              "DISPLAY_MODE", "COOKIES_FILE", "NOTION_KNOWLEDGE_DATABASE_ID", "DISTRIBUTE_VERSION",
+              "NOTION_RECIPE_DATABASE_ID", "NOTION_GROCERY_DATABASE_ID", "RECIPE_VERSION",
+              "DATA_DIR"]:
         monkeypatch.delenv(k, raising=False)
     for k, v in kw.items():
         monkeypatch.setenv(k, v)
@@ -59,10 +61,52 @@ def test_delay_min_exceeding_max_raises(monkeypatch):
 def test_enrich_version_default(monkeypatch):
     _set(monkeypatch)
     cfg = envcfg.load_env()
-    assert cfg.enrich_version == "v2.0-enrich"
+    assert cfg.enrich_version == "v2.1-enrich"
 
 
 def test_enrich_version_override(monkeypatch):
-    _set(monkeypatch, ENRICH_VERSION="v2.1-enrich")
+    _set(monkeypatch, ENRICH_VERSION="v9.9-custom")
     cfg = envcfg.load_env()
-    assert cfg.enrich_version == "v2.1-enrich"
+    assert cfg.enrich_version == "v9.9-custom"
+
+
+def test_load_env_reads_knowledge_database_id(monkeypatch):
+    _set(monkeypatch, NOTION_KNOWLEDGE_DATABASE_ID="kdb-123")
+    assert envcfg.load_env().notion_knowledge_database_id == "kdb-123"
+
+
+def test_load_env_distribute_version_defaults(monkeypatch):
+    _set(monkeypatch)
+    assert envcfg.load_env().distribute_version == "v2.3-distribute"
+
+
+def test_env_carries_the_recipe_and_grocery_database_ids(monkeypatch):
+    _set(monkeypatch, NOTION_RECIPE_DATABASE_ID="r", NOTION_GROCERY_DATABASE_ID="g")
+    cfg = envcfg.load_env()
+    assert cfg.notion_recipe_database_id == "r"
+    assert cfg.notion_grocery_database_id == "g"
+    assert cfg.recipe_version == "v1.0-recipe"
+
+
+def test_env_recipe_ids_default_to_empty(monkeypatch):
+    """Absent means the recipe stage is unavailable, not that it writes somewhere wrong."""
+    _set(monkeypatch)
+    cfg = envcfg.load_env()
+    assert cfg.notion_recipe_database_id == ""
+    assert cfg.notion_grocery_database_id == ""
+
+
+def test_data_dir_defaults_to_data(monkeypatch):
+    _set(monkeypatch)
+    assert envcfg.load_env().data_dir == "data"
+
+
+def test_data_dir_reads_env(monkeypatch):
+    _set(monkeypatch, DATA_DIR="/x/d")
+    assert envcfg.load_env().data_dir == "/x/d"
+
+
+def test_data_dir_independent_of_tmp_dir(monkeypatch):
+    _set(monkeypatch, TMP_DIR="/t")
+    cfg = envcfg.load_env()
+    assert cfg.tmp_dir == "/t" and cfg.data_dir == "data"

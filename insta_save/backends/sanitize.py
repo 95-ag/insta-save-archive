@@ -6,7 +6,9 @@ claude-p occasionally emits URLs or version numbers absent from the source conte
 scrub_fabricated removes those tokens (keeping surrounding words / tool names) so no
 invented specific is written to Notion. A URL is judged by HOST presence in the source
 (a deep path on an in-source host is kept — host-level check, intentional). @handles are
-left intact: creator handles are legit metadata the source text does not always contain."""
+left intact: creator handles are legit metadata the source text does not always contain.
+A markdown link is scrubbed as a UNIT: its label is unwrapped to plain text rather than left
+bracketed around nothing."""
 import re
 
 _URL_RE = re.compile(
@@ -14,6 +16,10 @@ _URL_RE = re.compile(
     r"|(?<!@)\b[\w.-]+\.(?:com|io|ai|gov|org|net|dev|co|app|xyz|video)\b[^\s)\]\"'>]*",
     re.IGNORECASE)
 _VERSION_RE = re.compile(r"\bv\d+(?:\.\d+)+(?:\.x)?\+?\b|\b\d+\.\d+\.\d+\b", re.IGNORECASE)
+# A markdown link must be handled as a UNIT: removing only the target leaves `[label]()`, which
+# the empty-parens tidy reduces to `[label]` — a label pointing nowhere that still looks
+# clickable. Unwrap to the bare label instead.
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(\s*([^)\s]+)\s*\)")
 
 
 def _host(url: str) -> str:
@@ -45,7 +51,15 @@ def scrub_fabricated(text, source_text):
         removed.append(tok)
         return ""
 
-    cleaned = _URL_RE.sub(_url_sub, text)
+    def _md_link_sub(m):
+        label, target = m.group(1), m.group(2)
+        if target.lower() in src or _host(target) in src:
+            return m.group(0)
+        removed.append(target)
+        return label
+
+    cleaned = _MD_LINK_RE.sub(_md_link_sub, text)
+    cleaned = _URL_RE.sub(_url_sub, cleaned)
     cleaned = _VERSION_RE.sub(_ver_sub, cleaned)
     cleaned = re.sub(r"\(\s*\)", "", cleaned)          # empty parens left by a removed URL
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)        # collapse doubled spaces

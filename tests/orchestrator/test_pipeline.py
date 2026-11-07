@@ -4,7 +4,7 @@ import insta_save.orchestrator.pipeline as pl
 
 
 def _env():
-    return SimpleNamespace(notion_write_delay=0, tmp_dir="/tmp", ig_username="u")
+    return SimpleNamespace(notion_write_delay=0, data_dir="/data", ig_username="u")
 
 
 def _done_plan():

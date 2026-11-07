@@ -1,3 +1,6 @@
+import types
+from pathlib import Path
+
 import pytest
 from cli.isa import build_parser
 
@@ -50,7 +53,7 @@ def test_run_extract_dispatches(monkeypatch):
 
     isa.dispatch_run(type("A", (), {
         "mode": "incremental", "stage": "extract", "group": "Hustling",
-        "limit": 5, "reextract": False, "retry_failed": False})())
+        "limit": 5, "reextract": False, "retry_failed": False, "retag": False})())
 
     assert calls["schema"] == "ENV"
     assert calls["stage"][0] == "ENV" and calls["stage"][1] == "EX"
@@ -61,7 +64,7 @@ def test_run_unimplemented_stage_raises():
     with __import__("pytest").raises(SystemExit):
         isa.dispatch_run(type("A", (), {
             "mode": "incremental", "stage": "discover", "group": None,
-            "limit": None, "reextract": False, "retry_failed": False,
+            "limit": None, "reextract": False, "retry_failed": False, "retag": False,
             "collection": None, "fresh": False, "dry_run": False, "headed": False,
             "confirm_removed": None, "apply": False, "prepare": False})())
 
@@ -119,6 +122,7 @@ def _patch_prepare_path(monkeypatch, prepare_return):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -149,6 +153,7 @@ def test_enrich_apply_calls_stage(monkeypatch):
     calls = {}
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -187,7 +192,7 @@ def _det_common(monkeypatch, run_obj):
 def _det_args(**kw):
     base = {"mode": "incremental", "stage": "deterministic", "group": None, "limit": None,
             "prepare": False, "apply": False, "reextract": False,
-            "retry_failed": False, "collection": None}
+            "retry_failed": False, "retag": False, "collection": None}
     base.update(kw)
     return type("A", (), base)()
 
@@ -261,6 +266,7 @@ def test_enrich_vision_lane_rejects_non_vision_backend(monkeypatch):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     args = isa.build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--group", "G", "--lane", "vision"])
     with pytest.raises(SystemExit) as e:
@@ -276,6 +282,7 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
     env = types.SimpleNamespace(tmp_dir="tmp")
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -283,10 +290,12 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
 
     calls = {"prepare": 0, "fill": 0, "apply": 0}
     counts = iter([2, 0])  # batch once, then drained
+    # The drain confirms an empty prepare before believing it; no need to wait in a test.
+    monkeypatch.setattr(isa.enrich, "_DRAIN_RECHECK_SECONDS", 0)
 
     def _prepare(*a, **k):
         calls["prepare"] += 1
-        return next(counts)
+        return next(counts, 0)
     monkeypatch.setattr(isa.enrich, "prepare", _prepare)
     monkeypatch.setattr(local_ollama, "fill",
                         lambda env, run_cfg, enrich_dir: calls.__setitem__("fill", calls["fill"] + 1)
@@ -299,7 +308,9 @@ def test_enrich_automated_backend_drains(monkeypatch, capsys):
         ["run", "--stage", "enrich", "--group", "Hustling"])
     isa.dispatch_run(args)
 
-    assert calls == {"prepare": 2, "fill": 1, "apply": 1}
+    # 3 prepares: the batch, the empty result, and the confirmation that the lane
+    # really is empty — a lagging query is not proof on its own.
+    assert calls == {"prepare": 3, "fill": 1, "apply": 1}
     assert "ENRICH_DRAINED group=Hustling lane=text" in capsys.readouterr().out
 
 
@@ -311,6 +322,7 @@ def test_enrich_automated_backend_stops_on_no_progress(monkeypatch, capsys):
     env = types.SimpleNamespace(tmp_dir="tmp")
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
@@ -343,6 +355,7 @@ def test_enrich_status_prints_remaining(monkeypatch, capsys):
     from insta_save.backends import cowork
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run_backend("local"))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(cowork, "status", lambda env, cols, group: 7)
     args = isa.build_parser().parse_args(
@@ -410,6 +423,125 @@ def test_route_dispatches_dry_run(monkeypatch):
     assert calls["kwargs"]["dry_run"] is True
 
 
+def test_route_reroute_dispatches_to_reroute_stage_not_route_stage(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong stage fn")))
+    calls = {}
+
+    def _fake_run_reroute(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                          dry_run=False, write_delay=0.0):
+        calls["kwargs"] = {"limit": limit, "group": group, "dry_run": dry_run}
+        return {"rerouted": 2, "unrouted": 1, "unchanged": 3, "failed": 0,
+                "moves": {("Old", "New"): 2, ("Old", None): 1}}
+    monkeypatch.setattr(route_mod, "run_reroute_stage", _fake_run_reroute)
+
+    args = isa.build_parser().parse_args(
+        ["run", "--stage", "route", "--reroute", "--group", "Biz", "--limit", "5"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["dry_run"] is False
+    assert calls["kwargs"]["limit"] == 5
+    assert calls["kwargs"]["group"] == "Biz"
+    out = capsys.readouterr().out
+    assert "2 rerouted" in out and "1 back to Tagged" in out and "3 unchanged" in out
+    assert "Old → New : 2" in out
+    assert "Old → Tagged : 1" in out
+
+
+def test_route_reroute_summary_includes_failed_when_nonzero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 2, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "2 failed" in capsys.readouterr().out
+
+
+def test_route_reroute_summary_omits_failed_when_zero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "failed" not in capsys.readouterr().out
+
+
+def test_route_reroute_summary_includes_skipped_stale_when_nonzero(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 0, "unrouted": 0, "unchanged": 0,
+                                         "skipped_stale": 3, "failed": 0, "moves": {}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    assert "3 skipped (stale)" in capsys.readouterr().out
+
+
+def test_route_reroute_summary_formats_missing_previous_target_as_none_marker(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 0, "unrouted": 1, "unchanged": 0,
+                                         "failed": 0, "moves": {(None, "NewDB"): 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "(none) → NewDB : 1" in out
+    assert "None → NewDB" not in out
+
+
+def test_route_reroute_dry_run_marks_summary(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    calls = {}
+
+    def _fake_run_reroute(env, routes, collections_cfg, progress, *, limit=None, group=None,
+                          dry_run=False, write_delay=0.0):
+        calls["kwargs"] = {"dry_run": dry_run}
+        return {"rerouted": 0, "unrouted": 0, "unchanged": 0, "failed": 0, "moves": {}}
+    monkeypatch.setattr(route_mod, "run_reroute_stage", _fake_run_reroute)
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute", "--dry-run"])
+    isa.dispatch_run(args)
+
+    assert calls["kwargs"]["dry_run"] is True
+    assert "(dry-run)" in capsys.readouterr().out
+
+
+def test_route_summary_prints_the_decided_by_breakdown_when_routed(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 2, "unrouted": 1, "failed": 0,
+                                         "decided_by": {"primary": 1, "order": 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic: 1" in out and "by rule order: 1" in out
+
+
+def test_route_summary_omits_the_decided_by_breakdown_when_nothing_routed(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 0, "unrouted": 3, "failed": 0,
+                                         "decided_by": {"primary": 0, "order": 0}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic" not in out
+
+
+def test_route_without_reroute_still_uses_route_stage(monkeypatch):
+    """--reroute defaults to False; a plain route run must not call run_reroute_stage."""
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrong stage fn")))
+    monkeypatch.setattr(route_mod, "run_route_stage",
+                        lambda *a, **k: {"routed": 1, "unrouted": 0, "failed": 0})
+
+    args = isa.build_parser().parse_args(["run", "--stage", "route"])
+    isa.dispatch_run(args)
+
+
 # ---------------------------------------------------------------------------
 # backup CLI tests
 # ---------------------------------------------------------------------------
@@ -419,7 +551,7 @@ def _patch_backup_common(monkeypatch, tmp_dir):
     import types
     import insta_save.backup as backup_mod
 
-    env = types.SimpleNamespace(tmp_dir=tmp_dir)
+    env = types.SimpleNamespace(tmp_dir=tmp_dir, data_dir=tmp_dir)
     monkeypatch.setattr(isa, "_load_env", lambda: env)
     monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
     monkeypatch.setattr(isa, "setup_logging", lambda name: "logpath")
@@ -457,6 +589,36 @@ def test_backup_command_calls_backup_and_prints_path(monkeypatch, tmp_path, caps
     out = capsys.readouterr().out
     assert "backup" in out.lower() or str(written_path) in out or "notion-" in out
     assert calls  # backup() was called
+
+
+def test_backup_writes_under_data_dir(monkeypatch, tmp_path):
+    env, _ = _patch_backup_common(monkeypatch, str(tmp_path / "t"))
+    env.data_dir = str(tmp_path / "d")
+    seen = {}
+
+    def _fake_backup(env_arg, *, out_dir, ts):
+        seen["out_dir"] = Path(out_dir)
+        written = Path(out_dir) / "notion-x.json"
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_text('{"snapshot_ts":"t","count":0,"pages":[]}', encoding="utf-8")
+        return written
+
+    monkeypatch.setattr(isa, "backup", _fake_backup)
+    monkeypatch.setattr(
+        isa,
+        "build_parser",
+        lambda: type(
+            "P",
+            (),
+            {
+                "parse_args": lambda self, argv=None: types.SimpleNamespace(
+                    command="backup", restore_check=False
+                )
+            },
+        )(),
+    )
+    isa.main()
+    assert seen["out_dir"] == tmp_path / "d" / "backups"
 
 
 def test_backup_command_restore_check_ok(monkeypatch, tmp_path, capsys):
@@ -567,6 +729,23 @@ def test_status_command_calls_build_status_and_prints_table(monkeypatch, capsys)
     assert "Hustling" in out
     assert "Biz" in out
     assert "TOTAL" in out
+
+
+def test_status_table_columns_include_distributed_and_misrouted():
+    assert isa._STATUS_COLS == (
+        "Imported", "Queued", "Extracted", "Tagged", "Routed",
+        "Distributed", "Misrouted", "Failed", "remaining",
+    )
+
+
+def test_status_table_prints_distributed_and_misrouted_counts(monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "200")
+    row = {"group": "TOTAL", "Imported": 0, "Queued": 0, "Extracted": 0, "Tagged": 0,
+           "Routed": 0, "Distributed": 41, "Misrouted": 17, "Failed": 0, "remaining": 0}
+    isa._print_status_table([row])
+    out = capsys.readouterr().out
+    assert "Distributed" in out and "Misrouted" in out
+    assert "41" in out and "17" in out
 
 
 def test_status_retry_failed_calls_retry_and_prints_summary(monkeypatch, capsys):
@@ -852,6 +1031,7 @@ def test_enrich_both_prepare_and_apply_raises(monkeypatch):
     import cli.isa as isa
     monkeypatch.setattr(isa, "_load_env", lambda: object())
     monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
     args = isa.build_parser().parse_args(
         ["run", "--stage", "enrich", "--prepare", "--apply", "--group", "Hustling"])
     with pytest.raises(SystemExit) as exc_info:
@@ -1047,3 +1227,988 @@ def test_stage_extract_load_run_error_raises_system_exit(monkeypatch):
     args = isa.build_parser().parse_args(["run", "--stage", "extract"])
     with pytest.raises(SystemExit):
         isa.dispatch_run(args)
+
+
+# ---------------------------------------------------------------------------
+# distribute stage CLI wiring
+# ---------------------------------------------------------------------------
+
+class _FakeTemplatePath:
+    """Stand-in for cli.isa's `Path` inside the distribute prepare path, so reading the
+    prompt template never touches the real filesystem."""
+
+    seen_paths: list = []
+
+    def __init__(self, *a, **k):
+        if a:
+            _FakeTemplatePath.seen_paths.append(a[0])
+
+    def read_text(self, encoding="utf-8"):
+        return "TEMPLATE"
+
+
+def _empty_distribute_preview(**overrides):
+    fields = dict(
+        sections=[],
+        folded=[],
+        unverified=[],
+        dropped=[],
+        skipped=[],
+        unmentioned=[],
+        diff_text="",
+        lost_lines=[],
+    )
+    return types.SimpleNamespace(**{**fields, **overrides})
+
+
+def _default_rebuild_preview():
+    """A RebuildPreview stand-in with something to rebuild, so the default `--rebuild` path
+    reaches the confirmation prompt instead of short-circuiting on "nothing to rebuild"."""
+    return types.SimpleNamespace(
+        sections=[("Section", 1)],
+        blocks_to_delete=1,
+        blocks_kept=0,
+        items=[("a", "Item A", "Distributed")],
+        relations_only=[],
+        refused=[],
+        heading_needs_clearing=False,
+    )
+
+
+def _default_rebuild_counts():
+    return {"items_reset": 1, "relations_removed": 1, "relations_only": 0,
+            "blocks_deleted": 1, "heading_cleared": True, "page_skipped": False}
+
+
+def _make_confirm(values):
+    """A scripted `tui.confirm_action` replacement — needs `*args, **kwargs` since
+    confirm_action is called positionally with (message, actions) (see lessons.md)."""
+    it = iter(values)
+    return lambda *a, **k: next(it)
+
+
+def _run_distribute_cli(monkeypatch, tmp_path, argv, *, preview=None, confirm=None,
+                        rebuild_preview=None, rebuild=None):
+    """Wire the distribute stage dispatch with lightweight stubs, then call isa.main(argv).
+
+    `tmp_path` keeps distribute.staging_dir's real mkdir off the repo's tmp/. `preview` and
+    `confirm` override the default stubs for distribute.preview (an empty no-op preview) and
+    tui.confirm_action (immediate "apply") — only reached by the apply path. `rebuild_preview`
+    and `rebuild` override the default stubs for the `--rebuild` path (a preview with one item
+    and one block to delete, and matching counts) — only reached with `--rebuild`."""
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
+        tmp_dir=str(tmp_path), distribute_version="v2.3-distribute"))
+    monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
+        distribute=types.SimpleNamespace(backend="claude-p", model="m")))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: None)
+    monkeypatch.setattr(isa, "load_routes", lambda: "ROUTES")
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+    monkeypatch.setattr(base, "get_backend", lambda name: types.SimpleNamespace(
+        batch_budgets=lambda run_cfg: types.SimpleNamespace(max_items=10, char_budget=1000)))
+    monkeypatch.setattr(isa, "Path", _FakeTemplatePath)
+    monkeypatch.setattr("insta_save.stages.distribute.preview",
+                        preview or (lambda env, **kw: _empty_distribute_preview()))
+    monkeypatch.setattr("insta_save.helpers.tui.confirm_action", confirm or _make_confirm(["apply"]))
+    monkeypatch.setattr("insta_save.stages.distribute.rebuild_preview",
+                        rebuild_preview or (lambda env, **kw: _default_rebuild_preview()))
+    monkeypatch.setattr("insta_save.stages.distribute.rebuild",
+                        rebuild or (lambda env, **kw: _default_rebuild_counts()))
+    isa.main(argv)
+
+
+def test_distribute_requires_a_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir=str(tmp_path)))
+    with pytest.raises(SystemExit, match="--target"):
+        isa.main(["run", "--stage", "distribute"])
+
+
+def test_distribute_prepare_then_fill_stages_without_applying(monkeypatch, tmp_path, capsys):
+    # NOTE: `seen.setdefault(key, kw) or <return>` (as the brief originally wrote this test)
+    # always evaluates to `kw` here, since dict.setdefault returns the just-inserted value and
+    # a non-empty kwargs dict is truthy — the `or <return>` branch never fires. Explicit
+    # closures avoid that trap and actually return the stubbed values.
+    seen = {}
+
+    def _fake_prepare(env, **kw):
+        seen["prepare"] = kw
+        return 3
+
+    def _fake_fill(env, **kw):
+        seen["fill"] = kw
+        return {"calls": 1, "folded": 3, "dropped": 0}
+
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", _fake_prepare)
+    monkeypatch.setattr("insta_save.stages.distribute.fill", _fake_fill)
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: pytest.fail("apply must not run without --apply"))
+    _run_distribute_cli(monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"])
+    assert seen["prepare"]["target"] == "Page B"
+    assert "--apply" in capsys.readouterr().out
+
+
+def test_distribute_fill_reads_the_v2_1_template(monkeypatch, tmp_path):
+    _FakeTemplatePath.seen_paths.clear()
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 1)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: {"calls": 1, "folded": 1, "dropped": 0})
+    _run_distribute_cli(monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"])
+    assert "prompts/distribute_v2.3.txt" in _FakeTemplatePath.seen_paths
+
+
+def test_distribute_apply_skips_prepare(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: pytest.fail("prepare must not run with --apply"))
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: {"folded": 2, "skipped": 1, "misrouted": 1,
+                                           "unknown": 0, "unverified": 0})
+    # --yes: the apply confirmation is covered separately below; sys.stdin isn't a tty
+    # under pytest, so without --yes this would hit the non-interactive refusal instead.
+    _run_distribute_cli(monkeypatch, tmp_path,
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"])
+    out = capsys.readouterr().out
+    assert "2 folded in" in out
+    assert "no link" not in out
+
+
+def test_distribute_apply_reports_unverified(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: {"folded": 2, "skipped": 0, "misrouted": 0,
+                                           "unknown": 0, "unverified": 1})
+    _run_distribute_cli(monkeypatch, tmp_path,
+                        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"])
+    out = capsys.readouterr().out
+    assert "1 folded item(s) had no link in the applied page" in out
+
+
+def test_distribute_reports_nothing_left(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 0)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: pytest.fail("fill must not run on an empty batch"))
+    _run_distribute_cli(monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"])
+    assert "Nothing left to distribute" in capsys.readouterr().out
+
+
+def test_distribute_ensure_schema_runs_before_prepare(monkeypatch, tmp_path):
+    """ensure_schema must run before prepare — the distribute props/statuses it creates
+    (distribute_notes/distribute_version, Distributed/Misrouted) must exist first."""
+    order = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(
+        tmp_dir=str(tmp_path), distribute_version="v2.3-distribute"))
+    monkeypatch.setattr(isa, "_load_run", lambda: types.SimpleNamespace(
+        distribute=types.SimpleNamespace(backend="claude-p", model="m")))
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: order.append("schema"))
+    monkeypatch.setattr(isa, "load_routes", lambda: "ROUTES")
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+    monkeypatch.setattr(base, "get_backend", lambda name: types.SimpleNamespace(
+        batch_budgets=lambda run_cfg: types.SimpleNamespace(max_items=10, char_budget=1000)))
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: order.append("prepare") or 0)
+    isa.main(["run", "--stage", "distribute", "--target", "Page B"])
+    assert order == ["schema", "prepare"]
+
+
+def test_distribute_prepare_runtime_error_becomes_system_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr("insta_save.stages.distribute.prepare",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            RuntimeError("distribute.prepare: the page's first heading_1 "
+                                        "is the template section")))
+    with pytest.raises(SystemExit, match="template section"):
+        _run_distribute_cli(monkeypatch, tmp_path,
+                            ["run", "--stage", "distribute", "--target", "Page B"])
+
+
+def test_distribute_apply_stops_before_prompt_on_lost_lines(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        "insta_save.stages.distribute.apply",
+        lambda env, **kw: pytest.fail("apply must not run when lines would be lost"),
+    )
+    with pytest.raises(SystemExit, match="proposed.md"):
+        _run_distribute_cli(
+            monkeypatch,
+            tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"],
+            preview=lambda env, **kw: _empty_distribute_preview(lost_lines=[("A", "- two")]),
+            confirm=lambda *a, **k: pytest.fail("must stop before the prompt"),
+        )
+    out = capsys.readouterr().out
+    assert "'A'" in out and "- two" in out
+
+
+def test_distribute_apply_runtime_error_becomes_system_exit(monkeypatch, tmp_path):
+    monkeypatch.setattr("insta_save.stages.distribute.apply",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            RuntimeError("distribute.apply: 'Page B' changed since prepare")))
+    with pytest.raises(SystemExit, match="changed since prepare"):
+        _run_distribute_cli(monkeypatch, tmp_path,
+                            ["run", "--stage", "distribute", "--target", "Page B",
+                             "--apply", "--yes"])
+
+
+def test_distribute_fill_terminal_backend_error_stops_cleanly(monkeypatch, tmp_path, capsys):
+    from insta_save.backends.base import TerminalBackendError
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 3)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: (_ for _ in ()).throw(
+                            TerminalBackendError("claude-p: access token has expired")))
+    _run_distribute_cli(monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"])
+    out = capsys.readouterr().out
+    assert "stopped" in out
+    assert "access token has expired" in out
+
+
+# ---------------------------------------------------------------------------
+# distribute apply — confirmation prompt
+# ---------------------------------------------------------------------------
+
+
+def _stub_distribute_apply(monkeypatch, calls):
+    monkeypatch.setattr(
+        "insta_save.stages.distribute.apply",
+        lambda env, **kw: calls.append(1) or {"folded": 1, "skipped": 0, "misrouted": 0,
+                                              "unknown": 0, "unverified": 0},
+    )
+
+
+def test_distribute_apply_confirm_apply_calls_apply_once(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm(["apply"]),
+    )
+    assert calls == [1]
+    assert "1 folded in" in capsys.readouterr().out
+
+
+def test_distribute_apply_confirm_diff_then_apply_prints_diff_and_applies(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    review = types.SimpleNamespace(
+        sections=[], folded=[], unverified=[], dropped=[], skipped=[], unmentioned=[],
+        diff_text="THE-FULL-DIFF", lost_lines=[],
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        preview=lambda env, **kw: review,
+        confirm=_make_confirm(["diff", "apply"]),
+    )
+    out = capsys.readouterr().out
+    assert "THE-FULL-DIFF" in out
+    assert calls == [1]
+
+
+def test_distribute_apply_confirm_cancel_does_not_apply(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm(["cancel"]),
+    )
+    assert calls == []
+    assert "Cancelled — nothing written" in capsys.readouterr().out
+
+
+def test_distribute_apply_confirm_ctrl_c_does_not_apply(monkeypatch, tmp_path, capsys):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+        confirm=_make_confirm([None]),
+    )
+    assert calls == []
+    assert "Cancelled — nothing written" in capsys.readouterr().out
+
+
+def test_distribute_apply_non_interactive_without_yes_refuses(monkeypatch, tmp_path):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    with pytest.raises(SystemExit, match="refusing to write without confirmation"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--apply"],
+            confirm=lambda *a, **k: confirmed.append(1),
+        )
+    assert calls == [] and confirmed == []
+
+
+def test_distribute_apply_yes_applies_without_confirm_even_when_not_a_tty(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    _stub_distribute_apply(monkeypatch, calls)
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--apply", "--yes"],
+        confirm=lambda *a, **k: confirmed.append(1),
+    )
+    assert calls == [1] and confirmed == []
+    assert "1 folded in" in capsys.readouterr().out
+
+
+def test_distribute_stage_prints_preview_summary_before_applying(monkeypatch, tmp_path, capsys):
+    """The staging (non-apply) path prints the preview summary and states that nothing has
+    been written to the page yet."""
+    monkeypatch.setattr("insta_save.stages.distribute.prepare", lambda env, **kw: 2)
+    monkeypatch.setattr("insta_save.stages.distribute.fill",
+                        lambda env, **kw: {"calls": 1, "folded": 2, "dropped": 0})
+    review = types.SimpleNamespace(
+        sections=[types.SimpleNamespace(heading="Workouts", action="replace", added=3, removed=1)],
+        folded=[], unverified=[], dropped=[], skipped=[],
+        unmentioned=[("z", "Unmentioned")],
+        diff_text="",
+        lost_lines=[],
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path, ["run", "--stage", "distribute", "--target", "Page B"],
+        preview=lambda env, **kw: review,
+    )
+    out = capsys.readouterr().out
+    assert "~ replace 'Workouts' (+3 -1)" in out
+    assert "Unmentioned" in out
+    assert "Nothing has been written to the page yet." in out
+    assert "--apply" in out
+
+
+# ---------------------------------------------------------------------------
+# distribute rebuild — CLI wiring
+# ---------------------------------------------------------------------------
+
+
+def test_distribute_rebuild_and_apply_cannot_combine(monkeypatch, tmp_path):
+    monkeypatch.setattr(isa, "_load_env", lambda: pytest.fail("must not load config"))
+    with pytest.raises(SystemExit, match="--rebuild and --apply cannot be combined"):
+        isa.main(["run", "--stage", "distribute", "--target", "Page B",
+                 "--rebuild", "--apply"])
+
+
+def test_distribute_rebuild_confirm_rebuild_calls_rebuild_once(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm(["rebuild"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1]
+    out = capsys.readouterr().out
+    assert "1 item(s) reset" in out
+    assert "1 relation(s) removed" in out
+    assert "1 block(s) deleted" in out
+
+
+def test_distribute_rebuild_confirm_cancel_does_not_rebuild(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm(["cancel"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == []
+    assert "Cancelled — nothing changed." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_confirm_ctrl_c_does_not_rebuild(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        confirm=_make_confirm([None]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == []
+    assert "Cancelled — nothing changed." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_non_interactive_without_yes_refuses(monkeypatch, tmp_path):
+    calls = []
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    with pytest.raises(SystemExit, match="refusing to change Notion without confirmation"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            confirm=lambda *a, **k: confirmed.append(1),
+            rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+        )
+    assert calls == [] and confirmed == []
+
+
+def test_distribute_rebuild_yes_rebuilds_without_confirm_even_when_not_a_tty(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    confirmed = []
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild", "--yes"],
+        confirm=lambda *a, **k: confirmed.append(1),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1] and confirmed == []
+    assert "1 item(s) reset" in capsys.readouterr().out
+
+
+def test_distribute_rebuild_refusals_raise_before_confirming(monkeypatch, tmp_path):
+    confirmed = []
+    rebuilt = []
+    review = types.SimpleNamespace(
+        sections=[("Off-topic", 0)], blocks_to_delete=0, blocks_kept=0, items=[],
+        relations_only=[], refused=[("Off-topic", ["image"])], heading_needs_clearing=False,
+    )
+    with pytest.raises(SystemExit, match="Off-topic"):
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            rebuild_preview=lambda env, **kw: review,
+            confirm=lambda *a, **k: confirmed.append(1),
+            rebuild=lambda env, **kw: rebuilt.append(1),
+        )
+    assert confirmed == [] and rebuilt == []
+
+
+def test_distribute_rebuild_nothing_to_rebuild_skips_confirm(monkeypatch, tmp_path, capsys):
+    confirmed = []
+    rebuilt = []
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[], refused=[],
+        heading_needs_clearing=False,
+    )
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=lambda *a, **k: confirmed.append(1),
+        rebuild=lambda env, **kw: rebuilt.append(1),
+    )
+    assert confirmed == [] and rebuilt == []
+    assert "Nothing to rebuild for 'Page B'." in capsys.readouterr().out
+
+
+def test_distribute_rebuild_heading_only_dirty_prompts_and_rebuilds(monkeypatch, tmp_path, capsys):
+    """No items and no blocks to delete, but the template anchor still carries text —
+    'Nothing to rebuild' must not fire, and confirming still runs rebuild."""
+    calls = []
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[], refused=[],
+        heading_needs_clearing=True,
+    )
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=_make_confirm(["rebuild"]),
+        rebuild=lambda env, **kw: calls.append(1) or _default_rebuild_counts(),
+    )
+    assert calls == [1]
+    out = capsys.readouterr().out
+    assert "Nothing to rebuild" not in out
+    assert "content anchor heading still has text" in out
+
+
+def test_distribute_rebuild_no_items_but_blocks_warns_before_prompting(
+    monkeypatch, tmp_path, capsys
+):
+    review = types.SimpleNamespace(
+        sections=[("Old Content", 4)], blocks_to_delete=4, blocks_kept=0, items=[],
+        relations_only=[], refused=[], heading_needs_clearing=False,
+    )
+    monkeypatch.setattr(isa.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+        rebuild_preview=lambda env, **kw: review,
+        confirm=_make_confirm(["cancel"]),
+    )
+    out = capsys.readouterr().out
+    assert "No archive items are linked to this page" in out
+    warn_pos = out.index("No archive items are linked")
+    cancel_pos = out.index("Cancelled — nothing changed.")
+    assert warn_pos < cancel_pos
+
+
+def test_distribute_rebuild_refusal_uses_plain_english_quick_access_wording(monkeypatch, tmp_path):
+    """The CLI refusal reuses distribute.refusal_messages' wording — never the raw
+    'quick_access' kind token a reader would have to decode."""
+    review = types.SimpleNamespace(
+        sections=[], blocks_to_delete=0, blocks_kept=0, items=[], relations_only=[],
+        refused=[("Z", ["quick_access"])], heading_needs_clearing=False,
+    )
+    with pytest.raises(SystemExit) as exc:
+        _run_distribute_cli(
+            monkeypatch, tmp_path,
+            ["run", "--stage", "distribute", "--target", "Page B", "--rebuild"],
+            rebuild_preview=lambda env, **kw: review,
+        )
+    assert "holds the Quick Access section" in str(exc.value)
+    assert "quick_access" not in str(exc.value)
+
+
+def test_distribute_rebuild_page_skipped_prints_items_only_line(monkeypatch, tmp_path, capsys):
+    counts = {"items_reset": 2, "relations_removed": 2, "relations_only": 0,
+              "blocks_deleted": 0, "heading_cleared": False, "page_skipped": True}
+    _run_distribute_cli(
+        monkeypatch, tmp_path,
+        ["run", "--stage", "distribute", "--target", "Page B", "--rebuild", "--yes"],
+        rebuild=lambda env, **kw: counts,
+    )
+    out = capsys.readouterr().out
+    assert "has no content heading" in out
+    assert "only its items were reset" in out
+
+
+# ---------------------------------------------------------------------------
+# _format_rebuild_preview
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_preview(*, sections=(), blocks_to_delete=0, blocks_kept=0, items=(),
+                     relations_only=(), refused=(), heading_needs_clearing=False):
+    return types.SimpleNamespace(
+        sections=list(sections), blocks_to_delete=blocks_to_delete, blocks_kept=blocks_kept,
+        items=list(items), relations_only=list(relations_only), refused=list(refused),
+        heading_needs_clearing=heading_needs_clearing,
+    )
+
+
+def test_format_rebuild_preview_none_title_falls_back_to_source_id(capsys):
+    preview = _rebuild_preview(items=[("src-id-9", None, "Distributed")])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "src-id-9" in out
+    assert "None" not in out
+
+
+def test_format_rebuild_preview_groups_items_by_status(capsys):
+    preview = _rebuild_preview(items=[
+        ("a", "Item A", "Distributed"),
+        ("b", "Item B", "Misrouted"),
+    ])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "Distributed" in out and "Misrouted" in out
+    assert "Item A" in out and "Item B" in out
+
+
+def test_format_rebuild_preview_lists_relations_only_separately_from_reset(capsys):
+    preview = _rebuild_preview(
+        items=[("a", "Item A", "Distributed"), ("b", "Item B", "Queued")],
+        relations_only=[("b", "Item B", "Queued")],
+    )
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "unlink" in out.lower()
+    assert "Item B" in out
+
+
+def test_format_rebuild_preview_lists_refused_sections_with_reason(capsys):
+    preview = _rebuild_preview(refused=[("Weird Section", ["image", "has_children"])])
+    print(isa._format_rebuild_preview(preview))
+    out = capsys.readouterr().out
+    assert "Weird Section" in out
+    assert "image" in out and "has_children" in out
+
+
+def test_format_rebuild_preview_flags_a_dirty_anchor_heading(capsys):
+    preview = _rebuild_preview(heading_needs_clearing=True)
+    print(isa._format_rebuild_preview(preview))
+    assert "still has text" in capsys.readouterr().out
+
+
+def test_format_rebuild_preview_omits_heading_line_when_already_clear(capsys):
+    preview = _rebuild_preview(heading_needs_clearing=False)
+    print(isa._format_rebuild_preview(preview))
+    assert "still has text" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _format_distribute_preview
+# ---------------------------------------------------------------------------
+
+
+def _preview(
+    *, sections=(), folded=(), unverified=(), dropped=(), skipped=(), unmentioned=(), lost_lines=()
+):
+    return types.SimpleNamespace(
+        sections=list(sections),
+        folded=list(folded),
+        unverified=list(unverified),
+        dropped=list(dropped),
+        skipped=list(skipped),
+        unmentioned=list(unmentioned),
+        lost_lines=list(lost_lines),
+    )
+
+
+def test_format_distribute_preview_dropped_with_reason_prints_title_and_reason(capsys):
+    preview = _preview(dropped=[("a", "Dropped Title", "off topic")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Dropped Title — off topic" in out
+
+
+def test_format_distribute_preview_dropped_without_reason_has_no_suffix_or_none(capsys):
+    preview = _preview(dropped=[("a", "Dropped Title", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Dropped Title" in out
+    assert "Dropped Title —" not in out
+    assert "None" not in out
+
+
+def test_format_distribute_preview_lists_unverified_items_under_their_heading(capsys):
+    preview = _preview(unverified=[("a", "Unverified Title")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "folded but the link is missing from the page" in out
+    assert "Unverified Title" in out
+
+
+def test_format_distribute_preview_falls_back_to_source_id_when_title_is_none(capsys):
+    preview = _preview(unmentioned=[("src-id-123", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "src-id-123" in out
+    assert "None" not in out
+
+
+def test_format_distribute_preview_warns_that_an_unaccounted_item_stays_routed(capsys):
+    preview = _preview(unmentioned=[("a", "Forgotten Title")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "accounted for in NO list" in out and "will stay Routed" in out
+    assert "Forgotten Title" in out
+
+
+def test_format_distribute_preview_prints_a_skipped_item_with_its_reason(capsys):
+    preview = _preview(skipped=[("a", "Skipped Title", "already covered above")])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "skipped as already covered" in out
+    assert "Skipped Title — already covered above" in out
+
+
+def test_format_distribute_preview_skipped_without_reason_has_no_dash_or_none(capsys):
+    preview = _preview(skipped=[("a", "Skipped Title", None)])
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "Skipped Title" in out
+    assert "Skipped Title —" not in out and "None" not in out
+
+
+def test_format_distribute_preview_lists_lost_lines_under_their_heading(capsys):
+    print(isa._format_distribute_preview(_preview(lost_lines=[("Workouts", "- old tip")])))
+    out = capsys.readouterr().out
+    assert "apply will refuse (1)" in out
+    assert "'Workouts': - old tip" in out
+
+
+def test_format_distribute_preview_with_no_sections_prints_no_changes_line(capsys):
+    preview = _preview()
+    print(isa._format_distribute_preview(preview))
+    out = capsys.readouterr().out
+    assert "No page content changes" in out
+
+
+def test_route_reroute_summary_prints_the_decided_by_breakdown(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 3, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {("Old", "New"): 3},
+                                         "decided_by": {"primary": 2, "order": 1}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "decided by primary topic: 2" in out
+    assert "by rule order: 1" in out
+
+
+def test_route_reroute_dry_run_also_prints_the_decided_by_breakdown(monkeypatch, capsys):
+    route_mod = _route_common(monkeypatch)
+    monkeypatch.setattr(route_mod, "run_reroute_stage",
+                        lambda *a, **k: {"rerouted": 1, "unrouted": 0, "unchanged": 0,
+                                         "failed": 0, "moves": {("Old", "New"): 1},
+                                         "decided_by": {"primary": 1, "order": 0}})
+    args = isa.build_parser().parse_args(["run", "--stage", "route", "--reroute", "--dry-run"])
+    isa.dispatch_run(args)
+    out = capsys.readouterr().out
+    assert "(dry-run)" in out
+    assert "decided by primary topic: 1" in out and "by rule order: 0" in out
+
+
+def test_enrich_ensure_schema_runs_before_the_drain(monkeypatch, tmp_path):
+    """enrich writes primary_topic, so ensure_schema must run before any page update — a DB
+    predating that property otherwise fails every batch with a ValidationError."""
+    order = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir=str(tmp_path)))
+    monkeypatch.setattr(isa, "_load_run", lambda: _fake_run())
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: order.append("schema"))
+    monkeypatch.setattr(isa, "load_vocab", lambda: "VOCAB")
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    from insta_save.backends import base
+
+    monkeypatch.setattr(
+        base,
+        "get_backend",
+        lambda name: types.SimpleNamespace(
+            NAME="local",
+            AUTOMATED=True,
+            VISION_CAPABLE=False,
+            batch_budgets=lambda run_cfg: types.SimpleNamespace(
+                max_items=15, char_budget=80000, image_token_budget=None
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "insta_save.stages.enrich.drain_enrich_group",
+        lambda *a, **kw: order.append("drain") or {"lanes": {"text": {"stop_reason": "drained"}}},
+    )
+    isa.main(["run", "--stage", "enrich", "--group", "GroupOne", "--lane", "text"])
+    assert order == ["schema", "drain"]
+
+
+# ---------------------------------------------------------------------------
+# recipe stage
+# ---------------------------------------------------------------------------
+
+
+def _recipe_env(recipe_db="rdb"):
+    return types.SimpleNamespace(
+        tmp_dir="tmp",
+        notion_recipe_database_id=recipe_db,
+        notion_grocery_database_id="gdb",
+        recipe_version="v1.0-recipe",
+    )
+
+
+def _recipe_cfg():
+    from insta_save.config.recipes import RecipeConfig
+
+    return RecipeConfig(target="TargetDB", families={"FamilyOne": "d"}, tag_axes={})
+
+
+def _stub_recipe(monkeypatch, *, staged=1, recipe_db="rdb", counts=None):
+    import cli.isa as isa
+    from insta_save.stages import recipes
+
+    seen = {"order": [], "apply": 0, "fill": 0}
+    monkeypatch.setattr(isa, "_load_env", lambda: _recipe_env(recipe_db))
+    run_cfg = types.SimpleNamespace(recipe=types.SimpleNamespace(backend="claude-p", model="m"))
+    monkeypatch.setattr(isa, "_load_run", lambda: run_cfg)
+    monkeypatch.setattr(isa, "ensure_schema", lambda env: seen["order"].append("ensure_schema"))
+    monkeypatch.setattr(isa, "load_recipes", lambda: _recipe_cfg(), raising=False)
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "x.log")
+
+    def _prepare(env, **kw):
+        seen["order"].append("prepare")
+        return staged
+
+    def _fill(env, **kw):
+        seen["fill"] += 1
+        return {"proposed": staged, "rejected": 0, "unanswered": 0}
+
+    def _apply(env, **kw):
+        seen["apply"] += 1
+        return counts or {"created": staged, "misrouted": 0, "failed": 0}
+
+    monkeypatch.setattr(recipes, "prepare", _prepare)
+    monkeypatch.setattr(recipes, "fill", _fill)
+    monkeypatch.setattr(recipes, "apply", _apply)
+    return seen
+
+
+def test_recipe_stage_without_apply_writes_nothing(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, staged=3)
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe"])
+    isa.dispatch_run(args)
+    assert seen["apply"] == 0 and seen["fill"] == 1
+    assert "3" in capsys.readouterr().out
+
+
+def test_recipe_stage_calls_ensure_schema_before_preparing(monkeypatch):
+    """The stage writes the Recipes relation, so the property must exist first."""
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch)
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "recipe"]))
+    assert seen["order"][0] == "ensure_schema"
+
+
+def test_recipe_stage_stops_when_nothing_is_staged(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, staged=0)
+    isa.dispatch_run(isa.build_parser().parse_args(["run", "--stage", "recipe"]))
+    assert seen["fill"] == 0
+    assert "Nothing" in capsys.readouterr().out
+
+
+def test_recipe_stage_refuses_without_a_configured_recipe_db(monkeypatch):
+    import cli.isa as isa
+
+    _stub_recipe(monkeypatch, recipe_db="")
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe"])
+    with pytest.raises(SystemExit, match="NOTION_RECIPE_DATABASE_ID"):
+        isa.dispatch_run(args)
+
+
+def test_recipe_stage_refuses_a_non_interactive_apply_without_yes(monkeypatch):
+    import sys as _sys
+
+    import cli.isa as isa
+
+    _stub_recipe(monkeypatch)
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False, raising=False)
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe", "--apply"])
+    with pytest.raises(SystemExit, match="--yes"):
+        isa.dispatch_run(args)
+
+
+def test_recipe_stage_applies_with_yes(monkeypatch, capsys):
+    import cli.isa as isa
+
+    seen = _stub_recipe(monkeypatch, counts={"created": 2, "misrouted": 1, "failed": 0})
+    args = isa.build_parser().parse_args(["run", "--stage", "recipe", "--apply", "--yes"])
+    isa.dispatch_run(args)
+    assert seen["apply"] == 1
+    out = capsys.readouterr().out
+    assert "2" in out and "1" in out
+
+
+def test_plan_report_lists_unmapped_groups_without_a_warning(capsys):
+    """An unmapped group is a finished outcome. Reporting it under ⚠ is what buried real
+    stalls: 5 parked groups warned on every incremental run."""
+    import types
+
+    import cli.isa as isa
+
+    plan = types.SimpleNamespace(
+        steps=[],
+        skipped=[],
+        done=True,
+        next_action=None,
+        unmapped=[
+            {"group": "GroupOne", "unrouted": 5, "reason": "no rule"},
+            {"group": "GroupTwo", "unrouted": 7, "reason": "no rule"},
+        ],
+    )
+    isa._print_plan(plan, dry_run=False)
+    out = capsys.readouterr().out
+    assert "no routing mapping yet (12 Tagged item(s) in 2 group(s))" in out
+    assert "GroupOne: 5 Tagged" in out
+    assert "⚠" not in out, "an unmapped group is not a warning"
+
+
+def test_plan_report_still_warns_for_a_genuinely_skipped_group(capsys):
+    import types
+
+    import cli.isa as isa
+
+    plan = types.SimpleNamespace(
+        steps=[],
+        done=True,
+        next_action=None,
+        unmapped=[],
+        skipped=[{"group": "GroupOne", "action": "route", "reason": "did not advance"}],
+    )
+    isa._print_plan(plan, dry_run=False)
+    out = capsys.readouterr().out
+    assert "⚠" in out and "did not advance" in out
+
+
+
+def _patch_retag_cli(monkeypatch):
+    calls = []
+    monkeypatch.setattr(isa, "_load_env", lambda: types.SimpleNamespace(tmp_dir="tmp"))
+    monkeypatch.setattr(isa, "_load_collections", lambda: "COLS")
+    monkeypatch.setattr(isa, "setup_logging", lambda name: "log")
+    monkeypatch.setattr(
+        isa,
+        "_retag_group",
+        lambda env, cfg, group, *, dry_run: calls.append((group, dry_run))
+        or {
+            "selected": 3,
+            "requeued": 0 if dry_run else 2,
+            "skipped_status_changed": 0 if dry_run else 1,
+            "failed": 0,
+            "by_status": {"Tagged": 2, "Routed": 1},
+        },
+    )
+    return calls
+
+
+def test_retag_requires_group(monkeypatch):
+    calls = _patch_retag_cli(monkeypatch)
+    with pytest.raises(SystemExit, match="--group"):
+        isa.main(["run", "--stage", "enrich", "--retag"])
+    assert calls == []
+
+
+def test_retag_refused_with_non_enrich_stage(monkeypatch):
+    calls = _patch_retag_cli(monkeypatch)
+    with pytest.raises(SystemExit, match="--stage enrich"):
+        isa.main(["run", "--stage", "route", "--group", "Content", "--retag"])
+    assert calls == []
+
+
+def test_retag_dry_run_prints_counts_and_says_nothing_written(monkeypatch, capsys):
+    calls = _patch_retag_cli(monkeypatch)
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag", "--dry-run"])
+    out = capsys.readouterr().out
+    assert calls == [("Content", True)]
+    assert "selected 3 (Tagged 2, Routed 1)" in out
+    assert "dry run" in out
+
+
+def test_retag_prints_requeued_and_skipped(monkeypatch, capsys):
+    calls = _patch_retag_cli(monkeypatch)
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag"])
+    out = capsys.readouterr().out
+    assert calls == [("Content", False)]
+    assert "requeued 2" in out and "skipped 1 (status changed)" in out
+    assert "failed" not in out
+
+
+def test_retag_reports_failed_items_and_how_to_resume(monkeypatch, capsys):
+    _patch_retag_cli(monkeypatch)
+    monkeypatch.setattr(
+        isa,
+        "_retag_group",
+        lambda env, cfg, group, *, dry_run: {
+            "selected": 3,
+            "requeued": 1,
+            "skipped_status_changed": 0,
+            "failed": 2,
+            "by_status": {"Tagged": 3, "Routed": 0},
+        },
+    )
+    isa.main(["run", "--stage", "enrich", "--group", "Content", "--retag"])
+    out = capsys.readouterr().out
+    assert "failed 2" in out
+    assert "re-run isa run --stage enrich --group Content --retag" in out

@@ -20,17 +20,14 @@ For EACH post below, produce these fields:
     Include full URLs exactly as they appear. If nothing qualifies, use an empty string.
 - content_type: choose EXACTLY ONE from the CONTENT-TYPE list below.
 - topics: choose 0 to 3 from the TOPICS list below. Only values from the list — do not invent.
+- primary_topic: the ONE topic from the topics you just picked for THIS post that names
+    what the post is mainly about — must be exactly one of this post's own topics, never a
+    value outside that list. If topics is empty, use an empty string.
 
 {vocab_block}
 
-Write the results as a JSON array to tmp/enrich/results.json. One object per post:
-  {
-    "page_id": "<exact page_id>",
-    "source_id": "<exact source_id>",
-    "title": "<title>",
-    "summary": "<summary>",
-    "externals": "<grouped externals or empty string>",
-    "content_type": "<one content-type>",
-    "topics": ["<topic>", ...]
-  }
-Include ALL posts below — one result object each.
+Write the results to tmp/enrich/results.json as JSON Lines: ONE JSON object per LINE,
+no surrounding array, no code fences, no prose — nothing but the lines. One line per post:
+  {"page_id": "<exact page_id>", "source_id": "<exact source_id>", "title": "<title>", "summary": "<summary>", "externals": "<grouped externals or empty string>", "content_type": "<one content-type>", "topics": ["<topic>", ...], "primary_topic": "<one topic from this post's topics above>"}
+Keep every string on a SINGLE line: escape internal quotes as \" and line breaks as \n.
+Include ALL posts below — one line each.

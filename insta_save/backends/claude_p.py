@@ -2,7 +2,7 @@
 """Headless `claude -p` enrich backend (AUTOMATED). Uses Claude Max via the claude CLI —
 no API key. fill() reads tmp/enrich/{batch.json,prompt.txt}, runs `claude -p --output-format
 json` with the prompt on STDIN (enrich prompts exceed argv limits), parses the envelope's
-`result` text into the results array, writes results.json. Mirrors api_anthropic's fill shape.
+`result` text as JSON Lines, writes results.json. Mirrors api_anthropic's fill shape.
 
 Spike-confirmed (2026-06-18): envelope text key is `result`; no fences in practice; claude -p
 reads slide images by file path so the vision lane works with the same IMAGES:-path prompt
@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from insta_save.backends.base import (Budgets, FillResult, parse_results_array,
+from insta_save.backends.base import (Budgets, FillResult, parse_results_jsonl,
                                        parse_results_object, normalize_results)
 
 log = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ VISION_CAPABLE = True
 _TIMEOUT_S = 600
 _INLINE_OVERRIDE = ("\n\nIMPORTANT: Do NOT write any files. Return ONLY the JSON result as "
                     "your reply — no prose, no explanation, no markdown code fences.")
+_TEXT_OVERRIDE = "\n\nIMPORTANT: Do NOT write any files. Reply with the requested content only."
 
 
 def batch_budgets(run_cfg) -> Budgets:
@@ -49,22 +50,28 @@ def _clean_cwd() -> str:
     return d
 
 
-def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
-    """Run the claude CLI headlessly; return the assistant's final text (the JSON array).
-    Prompt goes on stdin. ALWAYS runs from a clean cwd outside the repo so no project
-    CLAUDE.md/skills/agents are auto-discovered (~30k+ tokens saved per call). The cwd is
-    removed after the call (try/finally) so no scratch files linger; _clean_cwd() recreates
-    it on the next call, keeping prompt-cache behaviour unchanged. `add_dirs` grants the Read
-    tool access to extra directories WITHOUT loading project context — vision batches pass the
-    slide-image dirs (Claude Code confines file reads to its workspace, so the image dirs must
-    be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+def _run_claude_p(prompt: str, model: str, add_dirs=None, *, output="json") -> str:
+    """Run the claude CLI headlessly; return the assistant's final text — the JSON array
+    for output="json" (fences stripped defensively), or the raw reply text for
+    output="text" (markdown-shaped replies, e.g. a distribute consolidation, where fence
+    stripping would corrupt a trailing fenced JSON trailer). Prompt goes on stdin. ALWAYS
+    runs from a clean cwd outside the repo so no project CLAUDE.md/skills/agents are
+    auto-discovered (~30k+ tokens saved per call). The cwd is removed after the call
+    (try/finally) so no scratch files linger; _clean_cwd() recreates it on the next call,
+    keeping prompt-cache behaviour unchanged. `add_dirs` grants the Read tool access to
+    extra directories WITHOUT loading project context — vision batches pass the
+    slide-image dirs (Claude Code confines file reads to its workspace, so the image dirs
+    must be explicitly allowed). Raises RuntimeError on non-zero exit or error envelope."""
+    if output not in ("json", "text"):
+        raise ValueError(f"_run_claude_p: unknown output mode {output!r}")
+    override = _INLINE_OVERRIDE if output == "json" else _TEXT_OVERRIDE
     cmd = ["claude", "-p", "--model", _cli_model(model), "--output-format", "json"]
     for d in add_dirs or []:
         cmd += ["--add-dir", d]
     cwd = _clean_cwd()
     try:
         proc = subprocess.run(
-            cmd, input=prompt + _INLINE_OVERRIDE, capture_output=True, text=True,
+            cmd, input=prompt + override, capture_output=True, text=True,
             timeout=_TIMEOUT_S, cwd=cwd,
         )
     finally:
@@ -85,6 +92,8 @@ def _run_claude_p(prompt: str, model: str, add_dirs=None) -> str:
         # is_terminal_error classifier sees the auth wording and stops instead of retrying.
         raise RuntimeError(f"claude -p error: {str(envelope.get('result') or envelope)[:500]}")
     text = envelope["result"]
+    if output == "text":
+        return text.strip()
     # spike showed no fences in practice; strip defensively (harmless if absent)
     return text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
@@ -99,6 +108,15 @@ def propose_vocab(prompt: str, model: str) -> dict:
     return parse_results_object(text)
 
 
+def consolidate(prompt: str, model: str) -> str:
+    """Raw response text for a distribute consolidation prompt.
+
+    Deliberately unparsed: the reply is markdown with a JSON trailer, not a JSON object, so
+    parse_results_object would be wrong here. Uses text mode — the JSON-mode fence-stripping
+    would corrupt the trailing fenced JSON trailer. The stage's parse_proposal handles it."""
+    return _run_claude_p(prompt, model, output="text")
+
+
 def fill(env, run_cfg, enrich_dir) -> FillResult:
     d = Path(enrich_dir)
     batch = json.loads((d / "batch.json").read_text(encoding="utf-8"))
@@ -109,8 +127,24 @@ def fill(env, run_cfg, enrich_dir) -> FillResult:
     add_dirs = sorted({os.path.dirname(p)
                        for it in items for p in (it.get("slide_images") or [])}) or None
     text = _run_claude_p(prompt, run_cfg.enrich.model, add_dirs=add_dirs)
-    results = normalize_results(parse_results_array(text), items)
+    # v2.1 contract: one JSON object per reply line, though the reader reassembles a value
+    # split across lines. A value the model mangled costs only its own item — the rest are
+    # written and the caller retries just the missing ones.
+    parsed, bad_chunks = parse_results_jsonl(text)
+    results = normalize_results(parsed, items)
+    # results.json stays a JSON ARRAY on disk so apply() is unchanged.
     (d / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
+    if bad_chunks:
+        # The log truncates, so keep the whole reply: without it the next occurrence is
+        # undiagnosable (the 2026-09-30 batch losses could only be inferred from counts).
+        (d / "raw_reply.txt").write_text(text, encoding="utf-8")
+        log.warning(
+            "claude-p fill: %d unparsed reply value(s) — first: %s — full reply kept at %s",
+            len(bad_chunks),
+            bad_chunks[0][:200],
+            d / "raw_reply.txt",
+        )
     log.info("claude-p fill: %d filled, %d failed", len(results), max(len(items) - len(results), 0))
-    return FillResult(filled=len(results), failed=max(len(items) - len(results), 0))
+    return FillResult(filled=len(results), failed=max(len(items) - len(results), 0),
+                      unparsed=len(bad_chunks))

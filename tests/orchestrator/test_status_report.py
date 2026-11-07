@@ -178,6 +178,29 @@ def test_build_status_remaining_is_imported_plus_queued_plus_extracted(monkeypat
     assert hustling["remaining"] == 3  # Imported + Queued + Extracted (not Tagged/Routed/Failed)
 
 
+def test_build_status_counts_distributed_and_misrouted_as_terminal(monkeypatch):
+    pages = [
+        _page("p1", "Imported", ["Reels"]),
+        _page("p2", "Distributed", ["Reels"]),
+        _page("p3", "Misrouted", ["Reels"]),
+    ]
+    monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
+
+    rows = status_report.build_status("env", _COLLECTIONS_CFG)
+    hustling = next(r for r in rows if r["group"] == "Hustling")
+    total = next(r for r in rows if r["group"] == "TOTAL")
+    assert hustling["Distributed"] == 1 and hustling["Misrouted"] == 1
+    assert total["Distributed"] == 1 and total["Misrouted"] == 1
+    assert hustling["remaining"] == 1  # only the Imported item; both new statuses are terminal
+    assert total["remaining"] == 1
+
+
+def test_build_status_statuses_follow_pipeline_order():
+    assert status_report._STATUSES == (
+        "Imported", "Queued", "Extracted", "Tagged", "Routed", "Distributed", "Misrouted", "Failed",
+    )
+
+
 # --- retry_failed ---
 
 def test_retry_failed_infers_extracted_when_has_content(monkeypatch):
@@ -265,3 +288,168 @@ def test_retry_failed_only_processes_failed_pages(monkeypatch):
 
     status_report.retry_failed("env")
     assert requeue_calls == ["p1"]  # only the Failed page
+
+
+
+# --- retag_group ---
+
+
+def _retag_page(page_id, status, collections, enrich_version, route_target=None):
+    page = _page(page_id, status, collections)
+    props = page["properties"]
+    props["enrich_version"] = {
+        "rich_text": [{"plain_text": enrich_version}] if enrich_version else []
+    }
+    props["route_target"] = {"select": {"name": route_target} if route_target else None}
+    return page
+
+
+def _retag_env():
+    return type("E", (), {"enrich_version": "v2.1-enrich", "notion_write_delay": 0})()
+
+
+def _patch_retag(monkeypatch, pages, *, live=None):
+    writes = []
+    monkeypatch.setattr(status_report, "query_all_pages", lambda env: pages)
+    monkeypatch.setattr(
+        status_report,
+        "get_item_status",
+        lambda env, pid: (live or {}).get(pid) or _status_of(pages, pid),
+    )
+    monkeypatch.setattr(status_report, "requeue_for_retag", lambda env, pid: writes.append(pid))
+    monkeypatch.setattr(status_report.time, "sleep", lambda s: None)
+    return writes
+
+
+def _status_of(pages, pid):
+    page = next(p for p in pages if p["page_id"] == pid)
+    return page["properties"]["status"]["select"]["name"]
+
+
+def test_retag_selects_by_enrich_group_not_route_target(monkeypatch):
+    pages = [
+        _retag_page("in-g", "Routed", ["Reels"], "v2.0-enrich", route_target="Biz Page"),
+        _retag_page("out", "Routed", ["Fashion"], "v2.0-enrich", route_target="Hustle Page"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["in-g"]
+    assert result["selected"] == 1
+
+
+def test_retag_skips_current_version_items(monkeypatch):
+    pages = [
+        _retag_page("old", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("new", "Tagged", ["Reels"], "v2.1-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["old"]
+
+
+def test_retag_selects_item_with_no_enrich_version(monkeypatch):
+    pages = [_retag_page("never", "Tagged", ["Reels"], None)]
+    writes = _patch_retag(monkeypatch, pages)
+    status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["never"]
+
+
+def test_retag_never_touches_distributed(monkeypatch):
+    pages = [
+        _retag_page(pid, status, ["Reels"], "v2.0-enrich")
+        for pid, status in [
+            ("d", "Distributed"),
+            ("m", "Misrouted"),
+            ("e", "Extracted"),
+            ("f", "Failed"),
+        ]
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == []
+    assert result["selected"] == 0
+
+
+def test_retag_skips_item_whose_live_status_changed(monkeypatch):
+    pages = [_retag_page("p", "Tagged", ["Reels"], "v2.0-enrich")]
+    writes = _patch_retag(monkeypatch, pages, live={"p": "Distributed"})
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == []
+    assert result["skipped_status_changed"] == 1
+    assert result["requeued"] == 0
+
+
+def test_retag_dry_run_writes_nothing(monkeypatch):
+    pages = [
+        _retag_page("a", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("b", "Routed", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=True)
+    assert writes == []
+    assert result == {
+        "selected": 2,
+        "requeued": 0,
+        "skipped_status_changed": 0,
+        "failed": 0,
+        "by_status": {"Tagged": 1, "Routed": 1},
+    }
+
+
+def test_retag_requeues_and_counts(monkeypatch):
+    pages = [
+        _retag_page("a", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("b", "Routed", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["a", "b"]
+    assert result["requeued"] == 2
+
+
+def test_retag_reads_the_version_segment_enrich_stamps(monkeypatch):
+    pages = [
+        _retag_page("current", "Routed", ["Reels"], "sonnet/v2.1-enrich/Hustling"),
+        _retag_page("stale", "Routed", ["Reels"], "sonnet/v2.0-enrich/Hustling"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["stale"]
+    assert result["selected"] == 1
+
+
+def test_retag_counts_a_failed_write_and_keeps_going(monkeypatch):
+    pages = [
+        _retag_page("bad", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("good", "Tagged", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+
+    def requeue(env, pid):
+        if pid == "bad":
+            raise RuntimeError("notion: requeue_for_retag failed on bad")
+        writes.append(pid)
+
+    monkeypatch.setattr(status_report, "requeue_for_retag", requeue)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["good"]
+    assert result["requeued"] == 1
+    assert result["failed"] == 1
+
+
+def test_retag_counts_a_failed_status_read_and_keeps_going(monkeypatch):
+    pages = [
+        _retag_page("bad", "Tagged", ["Reels"], "v2.0-enrich"),
+        _retag_page("good", "Tagged", ["Reels"], "v2.0-enrich"),
+    ]
+    writes = _patch_retag(monkeypatch, pages)
+
+    def status(env, pid):
+        if pid == "bad":
+            raise ConnectionError("network down")
+        return "Tagged"
+
+    monkeypatch.setattr(status_report, "get_item_status", status)
+    result = status_report.retag_group(_retag_env(), _COLLECTIONS_CFG, "Hustling", dry_run=False)
+    assert writes == ["good"]
+    assert result["failed"] == 1
